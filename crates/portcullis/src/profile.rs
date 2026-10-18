@@ -63,6 +63,16 @@ pub struct ProfileSpec {
     #[serde(default)]
     pub obligations: Vec<ObligationSpec>,
 
+    /// Operations declared to run without approval.
+    ///
+    /// Consent is explicit: every operation whose level is above `never`
+    /// (including one left at its default level) must be listed here or in
+    /// `obligations`, and not in both. [`ProfileSpec::build`] refuses the
+    /// profile otherwise, naming each operation. The key may be omitted only
+    /// when no operation needs it.
+    #[serde(default)]
+    pub autonomous: Vec<ObligationSpec>,
+
     /// Path access restrictions.
     #[serde(default)]
     pub paths: Option<PathsSpec>,
@@ -123,6 +133,29 @@ pub struct CapabilitiesSpec {
     pub spawn_agent: CapabilityLevel,
 }
 
+impl CapabilitiesSpec {
+    /// These levels as a [`CapabilityLattice`](crate::capability::CapabilityLattice).
+    pub fn to_lattice(&self) -> crate::capability::CapabilityLattice {
+        crate::capability::CapabilityLattice {
+            read_files: self.read_files,
+            write_files: self.write_files,
+            edit_files: self.edit_files,
+            run_bash: self.run_bash,
+            glob_search: self.glob_search,
+            grep_search: self.grep_search,
+            web_search: self.web_search,
+            web_fetch: self.web_fetch,
+            git_commit: self.git_commit,
+            git_push: self.git_push,
+            create_pr: self.create_pr,
+            manage_pods: self.manage_pods,
+            spawn_agent: self.spawn_agent,
+            #[cfg(not(kani))]
+            extensions: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 fn default_always() -> CapabilityLevel {
     CapabilityLevel::Always
 }
@@ -151,7 +184,8 @@ impl Default for CapabilitiesSpec {
     }
 }
 
-/// An operation requiring explicit human approval.
+/// An operation named in a profile's `obligations` (requires approval) or
+/// `autonomous` (runs without one) list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObligationSpec {
@@ -181,6 +215,27 @@ pub enum ObligationSpec {
     ManagePods,
     /// Spawn agent requires approval.
     SpawnAgent,
+}
+
+impl ObligationSpec {
+    /// The spelling of `op` in a profile's `obligations` / `autonomous` list.
+    pub fn from_operation(op: Operation) -> Self {
+        match op {
+            Operation::ReadFiles => ObligationSpec::ReadFiles,
+            Operation::WriteFiles => ObligationSpec::WriteFiles,
+            Operation::EditFiles => ObligationSpec::EditFiles,
+            Operation::RunBash => ObligationSpec::RunBash,
+            Operation::GlobSearch => ObligationSpec::GlobSearch,
+            Operation::GrepSearch => ObligationSpec::GrepSearch,
+            Operation::WebSearch => ObligationSpec::WebSearch,
+            Operation::WebFetch => ObligationSpec::WebFetch,
+            Operation::GitCommit => ObligationSpec::GitCommit,
+            Operation::GitPush => ObligationSpec::GitPush,
+            Operation::CreatePr => ObligationSpec::CreatePr,
+            Operation::ManagePods => ObligationSpec::ManagePods,
+            Operation::SpawnAgent => ObligationSpec::SpawnAgent,
+        }
+    }
 }
 
 impl From<&ObligationSpec> for Operation {
@@ -328,6 +383,28 @@ impl ProfileSpec {
         toml::from_str(toml_str).map_err(|e| ProfileError::Toml(e.to_string()))
     }
 
+    /// The capability levels this profile states, defaults applied.
+    fn capability_lattice(&self) -> crate::capability::CapabilityLattice {
+        self.capabilities.to_lattice()
+    }
+
+    /// The consent declaration, checked against the levels: refused, naming
+    /// each operation, when one above `never` is in neither `obligations` nor
+    /// `autonomous`, or is in both.
+    fn check_consent(&self) -> Result<(), ProfileError> {
+        let mut probe = PermissionLattice::supervised();
+        probe.capabilities = self.capability_lattice();
+        probe.obligations = Obligations {
+            approvals: self.obligations.iter().map(Operation::from).collect(),
+        };
+        probe.autonomous = Obligations {
+            approvals: self.autonomous.iter().map(Operation::from).collect(),
+        };
+        probe
+            .check_consent()
+            .map_err(|e| ProfileError::Validation(format!("profile '{}': {e}", self.name)))
+    }
+
     /// Validate the profile specification.
     pub fn validate(&self) -> Result<(), ProfileError> {
         if self.name.is_empty() {
@@ -353,7 +430,7 @@ impl ProfileSpec {
             }
         }
 
-        Ok(())
+        self.check_consent()
     }
 
     /// Build a [`PermissionLattice`] from this profile specification.
@@ -362,28 +439,13 @@ impl ProfileSpec {
     pub fn build(&self) -> Result<PermissionLattice, ProfileError> {
         self.validate()?;
 
-        let capabilities = crate::capability::CapabilityLattice {
-            read_files: self.capabilities.read_files,
-            write_files: self.capabilities.write_files,
-            edit_files: self.capabilities.edit_files,
-            run_bash: self.capabilities.run_bash,
-            glob_search: self.capabilities.glob_search,
-            grep_search: self.capabilities.grep_search,
-            web_search: self.capabilities.web_search,
-            web_fetch: self.capabilities.web_fetch,
-            git_commit: self.capabilities.git_commit,
-            git_push: self.capabilities.git_push,
-            create_pr: self.capabilities.create_pr,
-            manage_pods: self.capabilities.manage_pods,
-            spawn_agent: self.capabilities.spawn_agent,
-            #[cfg(not(kani))]
-            extensions: std::collections::BTreeMap::new(),
-        };
+        let capabilities = self.capability_lattice();
 
         let mut obligations = Obligations::default();
         for ob in &self.obligations {
             obligations.insert(Operation::from(ob));
         }
+        let autonomous: Vec<Operation> = self.autonomous.iter().map(Operation::from).collect();
 
         // The agent-harness floor is unioned in for EVERY profile, including a
         // profile with no `paths:` section at all (which otherwise yields an
@@ -440,22 +502,21 @@ impl ProfileSpec {
             .clone()
             .unwrap_or_else(|| format!("{} profile", self.name));
 
-        let lattice = PermissionLattice {
-            id: uuid::Uuid::new_v4(),
-            description,
-            derived_from: None,
-            capabilities,
-            obligations,
-            paths,
-            budget,
-            commands: CommandLattice::permissive(),
-            time,
-            uninhabitable_constraint: true,
-            minimum_isolation: None,
-            created_at: chrono::Utc::now(),
-            created_by: "profile".to_string(),
+        // Every policy field is set below; `supervised()` only supplies a fresh
+        // id, timestamp and the enforced uninhabitable constraint.
+        let mut lattice = PermissionLattice::supervised().with_description(description);
+        lattice.capabilities = capabilities;
+        lattice.obligations = obligations;
+        lattice.autonomous = Obligations {
+            approvals: autonomous.into_iter().collect(),
         };
+        lattice.paths = paths;
+        lattice.budget = budget;
+        lattice.commands = CommandLattice::permissive();
+        lattice.time = time;
+        lattice.created_by = "profile".to_string();
 
+        // Consent was checked by `validate` above, against these same levels.
         Ok(lattice.normalize())
     }
 
@@ -923,6 +984,7 @@ mod tests {
         let yaml = r#"
 name: custom-agent
 description: "A custom agent profile"
+autonomous: [read_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]
 capabilities:
   read_files: always
   write_files: never
@@ -955,6 +1017,7 @@ time:
         let spec = ProfileSpec::from_yaml(
             r#"
 name: my-profile
+autonomous: [read_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]
 capabilities:
   read_files: always
   write_files: never
@@ -974,6 +1037,7 @@ capabilities:
             description: None,
             capabilities: CapabilitiesSpec::default(),
             obligations: vec![],
+            autonomous: vec![],
             paths: None,
             budget: None,
             time: None,
@@ -999,6 +1063,7 @@ budget:
         let yaml = r#"
 name: roundtrip-test
 description: "Test roundtrip"
+autonomous: [read_files, write_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]
 capabilities:
   read_files: always
   write_files: low_risk
@@ -1024,6 +1089,7 @@ capabilities:
             r#"
 name: my-agent
 description: "loaded at runtime"
+autonomous: [read_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]
 capabilities:
   read_files: always
   write_files: never
@@ -1053,6 +1119,7 @@ budget:
             r#"
 name = "toml-agent"
 description = "loaded from TOML"
+autonomous = ["read_files", "edit_files", "glob_search", "grep_search", "web_search", "web_fetch", "git_commit", "create_pr"]
 
 [capabilities]
 read_files = "always"
@@ -1107,6 +1174,7 @@ max_cost_usd = "3.00"
             dir.path().join("empty-name.yaml"),
             r#"
 name: ""
+autonomous: [read_files, write_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]
 capabilities:
   read_files: always
 "#,
@@ -1192,6 +1260,7 @@ capabilities:
             r#"
 name: codegen
 description: "Stricter codegen — read-only"
+autonomous: [read_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]
 capabilities:
   read_files: always
   write_files: never
@@ -1228,6 +1297,7 @@ capabilities:
             dir.path().join("brand-new.yaml"),
             r#"
 name: brand-new
+autonomous: [read_files, write_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]
 capabilities:
   read_files: always
   git_push: never
@@ -1257,12 +1327,12 @@ capabilities:
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("alpha.yaml"),
-            "name: alpha\ncapabilities:\n  read_files: always\n  git_push: never\n",
+            "name: alpha\nautonomous: [read_files, write_files, edit_files, glob_search, grep_search, web_search, web_fetch, git_commit, create_pr]\ncapabilities:\n  read_files: always\n  git_push: never\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("beta.toml"),
-            "name = \"beta\"\n\n[capabilities]\nread_files = \"always\"\ngit_push = \"never\"\n",
+            "name = \"beta\"\nautonomous = [\"read_files\", \"write_files\", \"edit_files\", \"glob_search\", \"grep_search\", \"web_search\", \"web_fetch\", \"git_commit\", \"create_pr\"]\n\n[capabilities]\nread_files = \"always\"\ngit_push = \"never\"\n",
         )
         .unwrap();
 

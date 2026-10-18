@@ -122,7 +122,10 @@ mod tests {
         state.authz_policy = state.authz_policy.with_operator_identity(&root);
         let id = Uuid::new_v4();
         let mut lattice = portcullis::PermissionLattice::permissive();
-        lattice.obligations.insert(portcullis::Operation::GitCommit);
+        lattice.declare(
+            portcullis::Operation::GitCommit,
+            portcullis::ConsentMode::RequiresApproval,
+        );
         let policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(lattice),
         };

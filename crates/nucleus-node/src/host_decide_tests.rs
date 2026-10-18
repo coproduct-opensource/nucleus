@@ -279,7 +279,10 @@ fn no_run_bash() -> PermissionLattice {
 
 fn approval_gated() -> PermissionLattice {
     let mut p = PermissionLattice::permissive();
-    p.obligations.insert(Operation::GitCommit);
+    p.declare(
+        Operation::GitCommit,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     p
 }
 

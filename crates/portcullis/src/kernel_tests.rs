@@ -21,6 +21,20 @@ fn trusted_term_input(name: &str) -> crate::ActionInput {
     )
 }
 
+/// Every permitted operation declared autonomous: what these fixtures meant,
+/// before consent was explicit, by listing no obligations.
+fn autonomous_builder(
+    caps: crate::capability::CapabilityLattice,
+) -> crate::PermissionLatticeBuilder {
+    PermissionLattice::builder().capabilities_with(caps, crate::ConsentMode::Autonomous)
+}
+
+/// [`autonomous_builder`], built.
+fn autonomous_lattice(caps: crate::capability::CapabilityLattice) -> PermissionLattice {
+    let b = autonomous_builder(caps);
+    b.build().expect("every permitted op is declared")
+}
+
 #[test]
 fn test_basic_allow() {
     let perms = PermissionLattice::safe_pr_fixer();
@@ -171,7 +185,7 @@ fn test_path_blocked() {
 
 #[test]
 fn test_session_id_stable() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let kernel = Kernel::new(perms);
 
     let id1 = kernel.session_id();
@@ -534,7 +548,7 @@ fn test_decision_with_action_term_serializes() {
 
 #[test]
 fn test_decision_count() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     assert_eq!(kernel.decision_count(), 0);
@@ -546,7 +560,7 @@ fn test_decision_count() {
 
 #[test]
 fn test_zero_charge_is_noop() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     let remaining = kernel.remaining_usd();
@@ -557,7 +571,7 @@ fn test_zero_charge_is_noop() {
 
 #[test]
 fn test_negative_charge_is_noop() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     let remaining = kernel.remaining_usd();
@@ -606,7 +620,7 @@ fn test_complete_mediation_coverage() {
 
 #[test]
 fn test_pre_post_permission_hashes_stable() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     let (d1, _token) = kernel.decide(Operation::ReadFiles, "/a");
@@ -621,25 +635,23 @@ fn test_pre_post_permission_hashes_stable() {
 fn test_doc_editor_kernel_session() {
     // doc-editor: read all, write docs, no network, no bash, no push
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("doc-editor-like")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::LowRisk,
-            edit_files: CapabilityLevel::LowRisk,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Never,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::LowRisk,
+        edit_files: CapabilityLevel::LowRisk,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Never,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("doc-editor-like");
 
     let mut kernel = Kernel::new(perms);
 
@@ -709,7 +721,7 @@ fn test_monotone_sequence_property() {
 
 #[test]
 fn test_exposure_starts_empty() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let kernel = Kernel::new(perms);
 
     assert_eq!(kernel.exposure().count(), 0);
@@ -720,25 +732,23 @@ fn test_exposure_starts_empty() {
 fn test_exposure_accumulates_on_allow() {
     // Use a profile that allows reads and web_fetch without uninhabitable_state obligations
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("read-and-fetch")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("read-and-fetch");
 
     let mut kernel = Kernel::new(perms);
 
@@ -778,25 +788,23 @@ fn test_exposure_does_not_accumulate_on_deny() {
 #[test]
 fn test_exposure_monotone_never_decreases() {
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("all-read")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("all-read");
 
     let mut kernel = Kernel::new(perms);
 
@@ -819,28 +827,26 @@ fn test_dynamic_exposure_gate_blocks_exfil() {
     // No uninhabitable_state obligations in the lattice because we construct one
     // without running normalize().
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
     // Clear any obligations the builder might have added
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem
     // from flow control (which would deny earlier via FlowViolation).
@@ -871,27 +877,25 @@ fn test_dynamic_exposure_gate_blocks_exfil() {
 #[test]
 fn test_dynamic_exposure_gate_with_pre_approval() {
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem.
     let mut kernel = Kernel::capability_only(perms);
@@ -918,27 +922,25 @@ fn test_dynamic_exposure_gate_with_pre_approval() {
 #[test]
 fn test_dynamic_exposure_gate_now_gates_local_sinks() {
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem.
     let mut kernel = Kernel::capability_only(perms);
@@ -963,25 +965,23 @@ fn test_dynamic_exposure_gate_now_gates_local_sinks() {
 #[test]
 fn test_exposure_transition_in_decision_trace() {
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("read-only")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Never,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Never,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("read-only");
 
     let mut kernel = Kernel::new(perms);
 
@@ -1016,28 +1016,28 @@ fn test_runbash_dynamic_gate_omnibus() {
     // complete the uninhabitable_state (it projects PrivateData too).
     use crate::capability::CapabilityLattice;
     use crate::CommandLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("bash-and-web")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Never,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .commands(CommandLattice::permissive())
-        .build();
+    let mut perms = autonomous_builder(CapabilityLattice {
+        read_files: CapabilityLevel::Never,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .description("bash-and-web")
+    .commands(CommandLattice::permissive())
+    .build()
+    .expect("consent is declared");
 
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem.
     let mut kernel = Kernel::capability_only(perms);
@@ -1324,7 +1324,7 @@ fn test_from_certificate_enforces_restrictions() {
 
 #[test]
 fn test_kernel_without_certificate_has_no_provenance() {
-    let kernel = Kernel::new(PermissionLattice::default());
+    let kernel = Kernel::new(PermissionLattice::supervised());
     assert!(kernel.provenance().is_none());
 }
 
@@ -1979,26 +1979,24 @@ fn causal_decide_key_test_write_depending_on_adversarial_denied() {
 fn causal_decide_exposure_still_tracked_for_audit() {
     // #654: ExposureTracker is still updated for audit/reporting.
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
-    perms.obligations.approvals.clear();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     let mut kernel = Kernel::new(perms);
     kernel.enable_flow_control();
@@ -2326,11 +2324,11 @@ mod decider_parity {
         // `permissive()` is itself normalized, so it arrives holding the
         // uninhabitable-state obligations for ITS all-`Always` capabilities.
         // They are recomputed below for the generated ones.
-        policy.obligations = crate::Obligations::default();
+        policy.declare_all(crate::ConsentMode::Autonomous);
         for (op, level) in Operation::ALL.into_iter().zip(levels.iter().copied()) {
             set_level(&mut policy.capabilities, op, level);
             if level == CapabilityLevel::LowRisk {
-                policy.obligations.insert(op);
+                policy.declare(op, crate::ConsentMode::RequiresApproval);
             }
         }
         policy.normalize()

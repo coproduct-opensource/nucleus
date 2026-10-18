@@ -95,8 +95,18 @@ pub(crate) fn trifecta_lattice() -> Result<portcullis::PermissionLattice> {
     let mut lattice = portcullis::profile::ProfileRegistry::default()
         .resolve("research-web")
         .context("the research-web profile")?;
-    lattice.capabilities.write_files = portcullis::CapabilityLevel::Always;
-    lattice.capabilities.edit_files = portcullis::CapabilityLevel::Always;
+    // Autonomous, as they were before consent was explicit: the harness wants
+    // the exposure gate, not a static approval, to be what holds the exfil.
+    for op in [
+        portcullis::Operation::WriteFiles,
+        portcullis::Operation::EditFiles,
+    ] {
+        lattice.grant(
+            op,
+            portcullis::CapabilityLevel::Always,
+            portcullis::ConsentMode::Autonomous,
+        );
+    }
     Ok(lattice)
 }
 

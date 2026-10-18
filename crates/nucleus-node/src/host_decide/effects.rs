@@ -652,7 +652,10 @@ mod tests {
     }
     fn gated() -> super::super::SharedPodPolicy {
         let mut policy = PermissionLattice::permissive();
-        policy.obligations.insert(Operation::GitCommit);
+        policy.declare(
+            Operation::GitCommit,
+            portcullis::ConsentMode::RequiresApproval,
+        );
         super::super::test_policy(policy)
     }
     fn request_and_grant(policy: &mut PodPolicy, digest: ArgsDigest) -> Uuid {
@@ -692,7 +695,10 @@ mod tests {
     #[test]
     fn an_ordinary_grant_never_declassifies_a_session_tainted_since() {
         let mut lattice = PermissionLattice::permissive();
-        lattice.obligations.insert(Operation::GitPush);
+        lattice.declare(
+            Operation::GitPush,
+            portcullis::ConsentMode::RequiresApproval,
+        );
         let shared = super::super::test_policy(lattice);
         let digest = ArgsDigest::new([7; 32]);
         let commit = |policy: &mut PodPolicy| {

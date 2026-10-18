@@ -264,7 +264,7 @@ pub fn project(perms: &PermissionLattice, config: &DropoutConfig) -> PermissionL
     // to be ≤ (fewer than) the original. So we either keep original or drop to empty.
     // We do NOT re-enforce uninhabitable_state on projected capabilities, because filling
     // dropped caps with Always would add spurious obligations, making the result smaller.
-    let obligations = if config.sub_lattices.is_active(SubLatticeMask::OBLIGATIONS) {
+    let mut obligations = if config.sub_lattices.is_active(SubLatticeMask::OBLIGATIONS) {
         perms.obligations.clone()
     } else {
         // Dropped → empty obligations (most permissive = ⊤ for obligations)
@@ -309,9 +309,35 @@ pub fn project(perms: &PermissionLattice, config: &DropoutConfig) -> PermissionL
         )
     };
 
+    // Consent, ⊤ the same way: a raised operation (dropped field, now
+    // `Always`) the original never permitted is declared autonomous — no
+    // original decision constrains it — unless the kept obligations name it;
+    // with the obligations dimension dropped, every permitted operation is.
+    let mut autonomous = crate::capability::Obligations::default();
+    for op in crate::capability::Operation::ALL {
+        if capabilities.level_for(op) == crate::capability::CapabilityLevel::Never
+            || obligations.requires(op)
+        {
+            continue;
+        }
+        let was_permitted =
+            perms.capabilities.level_for(op) > crate::capability::CapabilityLevel::Never;
+        if !was_permitted
+            || !config.sub_lattices.is_active(SubLatticeMask::OBLIGATIONS)
+            || perms.consent_for(op) == crate::ConsentMode::Autonomous
+        {
+            autonomous.insert(op);
+        } else {
+            // Kept obligations, permitted before, not autonomous before: the
+            // original was undeclared here, and stays obligated.
+            obligations.insert(op);
+        }
+    }
+
     PermissionLattice {
         capabilities,
         obligations,
+        autonomous,
         paths,
         budget,
         commands,
@@ -900,7 +926,8 @@ mod tests {
             sub_mask in arb_sub_lattice_mask(),
             cap_mask in arb_capability_mask(),
         ) {
-            let perms = PermissionLattice { capabilities: caps, ..Default::default() };
+            let perms = PermissionLattice::supervised()
+                .with_capabilities(caps, crate::ConsentMode::Autonomous);
 
             let config = DropoutConfig {
                 sub_lattices: sub_mask,
@@ -921,8 +948,10 @@ mod tests {
             caps_b in arb_capability_lattice(),
             cap_mask in arb_capability_mask(),
         ) {
-            let a = PermissionLattice { capabilities: caps_a, ..Default::default() };
-            let b = PermissionLattice { capabilities: caps_b, ..Default::default() };
+            let a = PermissionLattice::supervised()
+                .with_capabilities(caps_a, crate::ConsentMode::Autonomous);
+            let b = PermissionLattice::supervised()
+                .with_capabilities(caps_b, crate::ConsentMode::Autonomous);
 
             let config = DropoutConfig {
                 sub_lattices: SubLatticeMask::all(),

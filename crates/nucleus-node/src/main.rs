@@ -1143,6 +1143,8 @@ async fn main() -> Result<(), ApiError> {
         container_recovery::drain(docker, &state.state_dir, &state.authority).await?;
     }
     info!("restored certificate authority for {restored_authority} pod(s)");
+    // Recovery above stopped every previous-life workload: settle what they left registered.
+    state.authority.release_previous_life().await;
 
     // Enroll this executor's Ed25519 public key with the trust-service, once,
     // before serving. Every receipt POST is signed with the matching private
@@ -1159,7 +1161,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/snapshot", post(pod_api::snapshot_pod))
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .merge(workload_result::routes())
-        .merge(pod_api::effect_approvals::routes())
+        .merge(pod_api::routes())
         .merge(memory_space_api::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(

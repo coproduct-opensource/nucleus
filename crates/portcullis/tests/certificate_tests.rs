@@ -94,8 +94,15 @@ fn arb_capability_lattice() -> impl Strategy<Value = portcullis::CapabilityLatti
 /// Build a PermissionLattice from arbitrary capabilities.
 #[allow(clippy::field_reassign_with_default)]
 fn perms_from_caps(caps: portcullis::CapabilityLattice) -> PermissionLattice {
-    let mut p = PermissionLattice::default();
+    // Consent as it was before it was explicit: what `supervised()` obligates
+    // stays obligated, every other permitted operation is declared autonomous.
+    let mut p = PermissionLattice::supervised();
     p.capabilities = caps;
+    for op in p.capabilities.permitted_operations() {
+        if !p.obligations.requires(op) {
+            p.declare(op, portcullis::ConsentMode::Autonomous);
+        }
+    }
     p.normalize()
 }
 

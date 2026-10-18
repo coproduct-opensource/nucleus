@@ -1464,7 +1464,11 @@ mod tests {
         for e in effects {
             portcullis::effect_surface::grant_effect(&mut perms.capabilities, e);
         }
-        perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
+        perms.grant(
+            portcullis::Operation::WebFetch,
+            CapabilityLevel::LowRisk,
+            portcullis::ConsentMode::Autonomous,
+        );
 
         let cert = LatticeCertificate::mint_with_holder_key(
             perms,

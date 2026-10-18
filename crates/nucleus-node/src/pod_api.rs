@@ -10,6 +10,7 @@
 //! Nothing about the behaviour changes in this move.
 
 pub(crate) mod effect_approvals;
+pub(crate) mod ended;
 
 use crate::auth::CallerScope;
 use crate::{ApiError, NodeState, PodHandle, PodInfo};
@@ -17,6 +18,12 @@ use axum::Json;
 use axum::extract::{Extension, Path as AxumPath, State};
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// The per-pod routes mounted beside `main.rs`'s own: effect approvals, and
+/// whether a pod has ended (`ended`).
+pub(crate) fn routes() -> axum::Router<NodeState> {
+    effect_approvals::routes().route("/v1/pods/{id}/ended", axum::routing::get(ended::ended))
+}
 
 /// The node's live pod registry: pod id → handle, behind an async lock. A
 /// read-only clone of this `Arc` is what a [`PodListView`] holds to serve the

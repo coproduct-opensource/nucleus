@@ -46,7 +46,10 @@ fn pending(state: &mut PodPolicy, body: &[u8]) -> (ArgsDigest, EffectRequest, uu
 }
 fn policy() -> crate::host_decide::SharedPodPolicy {
     let mut lattice = portcullis::PermissionLattice::permissive();
-    lattice.obligations.insert(portcullis::Operation::GitCommit);
+    lattice.declare(
+        portcullis::Operation::GitCommit,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     crate::host_decide::test_policy(lattice)
 }
 #[test]

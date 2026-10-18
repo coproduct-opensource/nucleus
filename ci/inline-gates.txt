@@ -11,7 +11,14 @@
 # Regenerate with `cargo xtask ci-spec inline-gates > ci/inline-gates.txt`
 # (annotations are carried forward).
 #
-# UNCOVERED_CEILING = 90
+# UNCOVERED_CEILING = 89
+#
+# 2026-10-14: 90 → 89. `The gate reads the machine report, not the console
+# (#2562)` (coverage-matrix.yml, `Mutation Testing`) is no longer an inline gate:
+# its branching moved to `cargo xtask mutants-gate decide`, which also closes
+# the defect the shell reader had (a cancelled run's report counts only what it
+# reached, so `tested == total` read from inside it passed). The decision's
+# fixtures run as `mutants-gate --self-test` in the same job.
 #
 # 2026-10-13: 91 → 90. `Ratchet down` (clippy-ratchet.yml) is no longer an
 # inline gate: its branching, arithmetic and operand guard moved to
@@ -116,7 +123,6 @@ ck-policy-aeneas.yml::ck-policy-aeneas::Verify generated Lean matches committed 
 ck-policy-aeneas.yml::ck-policy-aeneas::Ban sorry / admit / native_decide in our proof file | UNCOVERED: no falsifier yet
 ck-policy-lean.yml::ck-policy-lean::Ban sorry / admit / native_decide / sorryAx in ck-policy Lean | UNCOVERED: no falsifier yet
 clippy-ratchet.yml::ratchet-falsifier::RED on a ceiling below actual, GREEN when restored | UNCOVERED: no falsifier yet
-coverage-matrix.yml::mutants::The gate reads the machine report, not the console (#2562) | UNCOVERED: no falsifier yet
 crates-publish.yml::publish::Publish in dependency order (idempotent) | UNCOVERED: no falsifier yet
 dylint-separation.yml::dylint::Run cb4a_separation over the broker crates | UNCOVERED: no falsifier yet
 dylint-separation.yml::dylint::Run workload_identity_isolation over the spawn-path crate | UNCOVERED: no falsifier yet

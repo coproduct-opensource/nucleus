@@ -19,7 +19,10 @@ fn operator() -> Operator {
 /// A pod whose policy asks the operator for every push.
 fn gated() -> super::super::SharedPodPolicy {
     let mut policy = PermissionLattice::permissive();
-    policy.obligations.insert(Operation::GitPush);
+    policy.declare(
+        Operation::GitPush,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     super::super::test_policy(policy)
 }
 

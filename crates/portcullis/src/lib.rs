@@ -37,13 +37,14 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use portcullis::{Operation, PermissionLattice, CapabilityLevel};
+//! use portcullis::{CapabilityLevel, ConsentMode, Operation, PermissionLattice};
 //!
-//! // Create a permission set with dangerous capabilities
-//! let mut perms = PermissionLattice::default();
-//! perms.capabilities.read_files = CapabilityLevel::Always;    // Private data
-//! perms.capabilities.web_fetch = CapabilityLevel::LowRisk;    // Untrusted content
-//! perms.capabilities.git_push = CapabilityLevel::LowRisk;     // Exfiltration
+//! // Create a permission set with dangerous capabilities. Raising an operation
+//! // from `Never` declares its consent in the same step: there is no default.
+//! let mut perms = PermissionLattice::supervised();
+//! perms.grant(Operation::ReadFiles, CapabilityLevel::Always, ConsentMode::Autonomous); // Private data
+//! perms.grant(Operation::WebFetch, CapabilityLevel::LowRisk, ConsentMode::Autonomous); // Untrusted content
+//! perms.grant(Operation::GitPush, CapabilityLevel::LowRisk, ConsentMode::Autonomous); // Exfiltration
 //!
 //! // The meet operation detects the uninhabitable_state and adds approval obligations
 //! let safe = perms.meet(&perms);
@@ -339,7 +340,8 @@ pub use heyting::{ConditionalPermission, HeytingAlgebra};
 pub use intent::{IntentKind, WorkIntent};
 pub use isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation};
 pub use lattice::{
-    DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
+    ConsentError, ConsentMode, DelegationError, EffectivePermissions, PermissionLattice,
+    PermissionLatticeBuilder,
 };
 pub use modal::{CapabilityModal, EscalationPath, EscalationStep, ModalContext, ModalPermissions};
 pub use path::{

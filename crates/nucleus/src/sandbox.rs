@@ -1315,9 +1315,9 @@ mod tests {
 
     #[allow(clippy::field_reassign_with_default)]
     fn permissive_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice::default();
+        let mut policy = PermissionLattice::supervised();
         policy.paths = PathLattice::default();
-        policy.obligations = Obligations::default();
+        policy.declare_all(portcullis::ConsentMode::Autonomous);
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
@@ -1325,9 +1325,9 @@ mod tests {
 
     #[allow(clippy::field_reassign_with_default)]
     fn sensitive_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice::default();
+        let mut policy = PermissionLattice::supervised();
         policy.paths = PathLattice::block_sensitive();
-        policy.obligations = Obligations::default();
+        policy.declare_all(portcullis::ConsentMode::Autonomous);
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
@@ -1731,7 +1731,10 @@ mod tests {
     fn test_write_requires_approval() {
         let tmp = tempdir().unwrap();
         let mut policy = permissive_policy();
-        policy.obligations.insert(Operation::WriteFiles);
+        policy.declare(
+            Operation::WriteFiles,
+            portcullis::ConsentMode::RequiresApproval,
+        );
 
         let mut kernel = Kernel::new(policy.clone());
 

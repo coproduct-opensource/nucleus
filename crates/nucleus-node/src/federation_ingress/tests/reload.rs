@@ -12,28 +12,28 @@ use super::*;
 use crate::pod_authority::registry::ReloadOutcome;
 
 /// One node, one binding (A) whose ceiling and allowance each test rewrites.
-struct Live {
-    st: IngressState,
+pub(super) struct Live {
+    pub(super) st: IngressState,
     a: Issuer,
     /// The second tenant, so a reload has a tenant set to keep; it signs nothing.
     b: Issuer,
-    path: PathBuf,
+    pub(super) path: PathBuf,
     /// Days added to the real UTC date, as the allowance reads it.
     day: Arc<AtomicI64>,
-    dir: tempfile::TempDir,
+    pub(super) dir: tempfile::TempDir,
     /// A distinct subject per exchange, so no token is a replay of another.
     n: std::sync::atomic::AtomicU32,
 }
 
 /// The binding's ceiling: `codegen` with an explicit budget and window.
-fn ceiling(budget: u32, from: DateTime<Utc>, until: DateTime<Utc>) -> PermissionLattice {
+pub(super) fn ceiling(budget: u32, from: DateTime<Utc>, until: DateTime<Utc>) -> PermissionLattice {
     let mut l = PermissionLattice::codegen();
     l.budget.max_cost_usd = rust_decimal::Decimal::from(budget);
     l.time = TimeLattice::between(from, until);
     l
 }
 
-fn open_window() -> (DateTime<Utc>, DateTime<Utc>) {
+pub(super) fn open_window() -> (DateTime<Utc>, DateTime<Utc>) {
     let now = Utc::now();
     (
         now - chrono::Duration::seconds(60),
@@ -107,7 +107,7 @@ ceiling = {{ profile = "read_only" }}
 }
 
 impl Live {
-    fn new(a_ceiling: &PermissionLattice, per_day: Option<&str>) -> Self {
+    pub(super) fn new(a_ceiling: &PermissionLattice, per_day: Option<&str>) -> Self {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (a, b) = (Issuer::new(ISS_A, "key-a"), Issuer::new(ISS_B, "key-b"));
         let dir = tempfile::tempdir().unwrap();
@@ -160,7 +160,7 @@ impl Live {
     }
 
     /// A fresh token through the exchange, as `POST /v1/pods` would then use it.
-    async fn exchange(&self) -> Result<Admission, Refusal> {
+    pub(super) async fn exchange(&self) -> Result<Admission, Refusal> {
         let sub = format!("agent-{}", self.n.fetch_add(1, Ordering::SeqCst));
         let resp = exchange(
             &self.st,
@@ -174,7 +174,11 @@ impl Live {
     }
 
     /// Admit a pod of `budget` USD and keep it: it holds its allocation.
-    async fn admit(&self, who: &Admission, budget: u32) -> Result<uuid::Uuid, crate::ApiError> {
+    pub(super) async fn admit(
+        &self,
+        who: &Admission,
+        budget: u32,
+    ) -> Result<uuid::Uuid, crate::ApiError> {
         let pod = uuid::Uuid::new_v4();
         self.st
             .authority
@@ -197,12 +201,24 @@ impl Live {
     }
 
     /// The binding's persisted ledger record.
-    fn ledger_file(&self) -> Value {
+    pub(super) fn ledger_file(&self) -> Value {
         serde_json::from_slice(&std::fs::read(self.ledger_path()).unwrap()).unwrap()
+    }
+
+    /// Set binding A's `settle` mode in the file and reload it.
+    pub(super) fn settle(&self, mode: &str) -> ReloadOutcome {
+        let mut doc: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&self.path).unwrap()).unwrap();
+        doc["caller"].as_array_mut().unwrap()[0]
+            .as_table_mut()
+            .unwrap()
+            .insert("settle".into(), toml::Value::String(mode.into()));
+        std::fs::write(&self.path, toml::to_string(&doc).unwrap()).unwrap();
+        self.st.authority.reload_registry(false)
     }
 }
 
-fn refused_with(r: &Result<uuid::Uuid, crate::ApiError>, what: &str) -> bool {
+pub(super) fn refused_with(r: &Result<uuid::Uuid, crate::ApiError>, what: &str) -> bool {
     matches!(r, Err(crate::ApiError::Authority(m)) if m.contains(what))
 }
 
@@ -658,16 +674,7 @@ async fn a_metered_binding_charges_the_day_what_its_pods_spent() {
     let usd = |s: &str| rust_decimal::Decimal::from_str(s).unwrap();
     let (from, until) = open_window();
     let live = Live::new(&ceiling(100, from, until), Some("5"));
-    let settle = |mode: &str| {
-        let mut doc: toml::Table =
-            toml::from_str(&std::fs::read_to_string(&live.path).unwrap()).unwrap();
-        doc["caller"].as_array_mut().unwrap()[0]
-            .as_table_mut()
-            .unwrap()
-            .insert("settle".into(), toml::Value::String(mode.into()));
-        std::fs::write(&live.path, toml::to_string(&doc).unwrap()).unwrap();
-        live.st.authority.reload_registry(false)
-    };
+    let settle = |mode: &str| live.settle(mode);
     // Not yet metered: a pod that ran is charged its whole allocation.
     let who = live.exchange().await.unwrap();
     let whole = live.admit(&who, 2).await.unwrap();

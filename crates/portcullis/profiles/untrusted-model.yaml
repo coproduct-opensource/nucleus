@@ -67,6 +67,16 @@ capabilities:
   manage_pods: never
   spawn_agent: never
 
+# Consent is explicit: every operation above `never` is
+# listed in exactly one of `obligations` (requires approval) or
+# `autonomous`; an undeclared one is refused by name.
+autonomous:
+  - read_files
+  - write_files
+  - edit_files
+  - glob_search
+  - grep_search
+
 paths:
   blocked:
     - "**/.ssh/**"
