@@ -103,6 +103,12 @@ pub enum SandboxTier {
     /// the workload shared the node's uid and could read its signing keys.
     #[serde(rename = "insecure-shared-uid")]
     InsecureSharedUid,
+    /// The node ran on the bare tier separated (Program C, C2): the workload
+    /// ran at a subordinate host uid, in its own user namespace, and could not
+    /// read the node's keys. A host process, not a microVM: a verifier that
+    /// requires one refuses it by this name, whatever `backend` says.
+    #[serde(rename = "separated-local")]
+    SeparatedLocal,
 }
 
 impl SandboxTier {
@@ -115,7 +121,7 @@ impl SandboxTier {
     pub fn is_driver(&self) -> bool {
         match self {
             Self::Driver => true,
-            Self::InsecureSharedUid => false,
+            Self::InsecureSharedUid | Self::SeparatedLocal => false,
         }
     }
 }
@@ -413,6 +419,9 @@ pub fn verify_execution(
     match sandbox_tier {
         SandboxTier::Driver => {}
         SandboxTier::InsecureSharedUid => return Err(ExecutionError::InsecureSharedUid),
+        // Separated, but a host process: never a protected microVM, even if
+        // a claim paired it with `backend = firecracker`.
+        SandboxTier::SeparatedLocal => return Err(ExecutionError::NotProtectedMicroVm),
     }
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),

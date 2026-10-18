@@ -35,6 +35,15 @@ use nucleus_spec::tier2_artifacts::{FirstShipped, GuestCapability};
 use crate::signed_proxy::ProxyTarget;
 use crate::{ApiError, NodeState};
 
+#[derive(Debug)]
+pub(crate) struct LocalPod {
+    pub(crate) child: tokio::sync::Mutex<tokio::process::Child>,
+    pub(crate) signed_proxy: tokio::sync::Mutex<Option<crate::signed_proxy::SignedProxy>>,
+    /// The workload door this pod's proxy was given (`--workload-door`): the
+    /// one the admission record's injected environment names (#3219).
+    pub(crate) workload_door: PathBuf,
+}
+
 /// The socket's name in the pod directory. Short, because a Unix socket path
 /// is limited to ~104 bytes on macOS and the pod directory is not.
 pub(crate) const SOCKET_FILE: &str = "proxy.sock";
@@ -54,6 +63,14 @@ pub(crate) fn proxy_env(state: &NodeState) -> [(&'static str, String); 1] {
         "NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS",
         hex::encode(state.approval_signer.verifying_key().to_bytes()),
     )]
+}
+
+/// Provision `command` (a local pod's proxy) for this transport: [`proxy_env`],
+/// and no shared secret, none inherited from the node's own environment either.
+pub(crate) fn provision(command: &mut tokio::process::Command, state: &NodeState) {
+    command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
+    command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
+    command.envs(proxy_env(state));
 }
 
 /// Where the node's `SignedProxy` forwards, given what the proxy announced.
