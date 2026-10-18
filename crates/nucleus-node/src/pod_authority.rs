@@ -2209,7 +2209,7 @@ pub(crate) async fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()
         .map_err(std::io::Error::other)?
 }
 
-fn write_whole_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_whole_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let dir = path
         .parent()

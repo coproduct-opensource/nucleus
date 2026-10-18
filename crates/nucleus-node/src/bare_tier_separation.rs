@@ -203,9 +203,9 @@ impl SubordinatePool {
             .ids(offset.max(nucleus::FIRST_POD_OFFSET))
             .map_err(|e| failed(e.to_string()))?;
         let advanced = offset.max(nucleus::FIRST_POD_OFFSET).saturating_add(1);
-        let staged = self.next.with_extension("next.tmp");
-        std::fs::write(&staged, advanced.to_string())
-            .and_then(|()| std::fs::rename(&staged, &self.next))
+        // Persist the advance through a host crash before handing the id to a pod.
+        // The authority writer syncs the staging file and the directory after rename.
+        crate::pod_authority::write_whole_sync(&self.next, advanced.to_string().as_bytes())
             .map_err(|e| failed(format!("{}: {e}", self.next.display())))?;
         Ok(ids)
     }
