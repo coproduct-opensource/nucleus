@@ -52,6 +52,8 @@ inductive CmdKey where
   | awsDefaultRegion | workloadApiPort | net
   -- the operator's Landlock waiver (#2696 P3c): node configuration, no secret
   | workloadLandlock
+  -- the node's confirmation that the VM has no NIC and no egress proxy (#3493)
+  | workloadNetwork
   -- any other (unclassified) base key
   | otherPublic
   deriving DecidableEq, Repr
@@ -66,7 +68,7 @@ def CmdKey.isPerPodSecret : CmdKey → Bool
 /-- Per-node / per-fleet shared config — safe to bake (every clone shares it). -/
 def CmdKey.isSharedConfig : CmdKey → Bool
   | .approvalPubkeys | .auditS3Bucket | .auditS3Endpoint | .auditS3Prefix | .auditS3Region
-  | .awsDefaultRegion | .workloadApiPort | .net | .workloadLandlock => true
+  | .awsDefaultRegion | .workloadApiPort | .net | .workloadLandlock | .workloadNetwork => true
   | _ => false
 
 /-- Model of `SnapshotSafety` (snapshot.rs:155). -/

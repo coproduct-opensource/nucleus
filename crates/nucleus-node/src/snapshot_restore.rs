@@ -329,6 +329,7 @@ mod tests {
             smt: false,
             cpu_template: None,
             barrier_protocol: BARRIER_PROTOCOL,
+            network_isolated: false,
         };
 
         // A base with recognisable contents.
@@ -373,6 +374,7 @@ mod tests {
             smt: false,
             cpu_template: None,
             barrier_protocol: crate::snapshot_store::BARRIER_PROTOCOL,
+            network_isolated: false,
         };
         assert!(
             matches!(place_base(tmp.path(), &d, None), Err(NoBase::NotJailed)),
@@ -490,6 +492,7 @@ mod tests {
             smt: false,
             cpu_template: None,
             barrier_protocol: BARRIER_PROTOCOL,
+            network_isolated: false,
         };
         let published = store.publish(staged, &d, Vec::new()).expect("publish");
 

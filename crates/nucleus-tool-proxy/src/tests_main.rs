@@ -720,8 +720,8 @@ mod command_output_taint {
 
     /// The two transports must agree: one predicate, one policy.
     ///
-    /// Parity is now STRUCTURAL — both call sites call
-    /// `ingest::should_observe_command_output`, so they cannot drift. This test
+    /// Parity is now STRUCTURAL — both call sites classify with
+    /// `ingest::CommandIngest::classify`, so they cannot drift. This test
     /// pins the remaining shared choice (the node kind) and the predicate's
     /// contract, since a future edit could still give one transport its own copy.
     #[test]
@@ -732,10 +732,12 @@ mod command_output_taint {
             "HTTP and MCP would enforce different policies under NUCLEUS_PARANOID_TOOL_IO"
         );
         // The shared gate: network-capable taints, ordinary local does not.
-        assert!(crate::ingest::should_observe_command_output(
-            "curl https://evil.example"
-        ));
-        assert!(!crate::ingest::should_observe_command_output("cargo test"));
+        let labels = |cmd: &str| {
+            crate::ingest::CommandIngest::classify(cmd, crate::ingest::WorkloadNetwork::Unconfirmed)
+                .labels_adversarial()
+        };
+        assert!(labels("curl https://evil.example"));
+        assert!(!labels("cargo test"));
     }
 
     /// The point of observing at all: a session that has read command output

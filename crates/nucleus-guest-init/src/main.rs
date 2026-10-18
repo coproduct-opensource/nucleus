@@ -346,6 +346,10 @@ fn run() -> Result<(), String> {
     // (#2696 P3c). Without it the tool-proxy refuses them on a kernel that
     // cannot enforce Landlock.
     let landlock_waiver = boot::landlock_waiver_flag(&cmdline);
+    // The node's confirmation that this VM has no NIC, no egress proxy and no
+    // credentialed upstream (#3493).
+    // Read here, before the barrier, so a restored clone carries its base's answer.
+    let network_isolated = boot::workload_network_isolated_flag(&cmdline);
 
     // Local HTTP adapters are useful even in a vsock-only pod. This enables
     // loopback only; external routes and the egress fence are configured below.
@@ -773,7 +777,14 @@ fn run() -> Result<(), String> {
         .seal(remount_root_ro)
         .map_err(|e| e.to_string())?;
 
-    let err = boot.exec(|proof| exec_proxy(proof, &spec_path, landlock_waiver, child_env));
+    let err = boot.exec(|proof| {
+        exec_proxy(
+            proof,
+            &spec_path,
+            [landlock_waiver, network_isolated],
+            child_env,
+        )
+    });
     Err(format!("failed to exec {PROXY_BIN}: {err}"))
 }
 
@@ -1335,7 +1346,7 @@ impl GuestBin {
 fn exec_proxy(
     _sealed: SealedProof,
     spec_path: &str,
-    landlock_waiver: Option<&str>,
+    node_flags: [Option<&str>; 2],
     child_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 ) -> std::io::Error {
     // Article 12 record-keeping ON for the live path (EU AI Act Art. 12): every
@@ -1361,7 +1372,7 @@ fn exec_proxy(
         .arg(spec_path)
         .arg("--art12-log")
         .arg("/run/nucleus/art12.jsonl")
-        .args(landlock_waiver)
+        .args(node_flags.into_iter().flatten())
         .envs(child_env)
         .exec()
 }

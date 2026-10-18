@@ -410,3 +410,32 @@ async fn the_real_proxy_runs_confined_with_no_route_out() {
     assert!(log.contains("egress proxy confined and serving"), "{log}");
     proxy.shutdown().await;
 }
+
+/// #3493: which pods may get a proxy, decided before their VM is configured, so
+/// the node never confirms network isolation for a VM a proxy may be attached to.
+/// Any doubt counts as "may": a profile label naming no profile included.
+#[test]
+fn a_proxy_may_attach_only_where_a_configured_proxy_could_start() {
+    use nucleus_spec::isolation_profile::{IsolationProfile, PROFILE_LABEL};
+    let standard: nucleus_spec::PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#,
+    )
+    .expect("spec deserializes");
+    let mut eval_cell = standard.clone();
+    IsolationProfile::EvalCell.label(&mut eval_cell);
+    let mut unknown = standard.clone();
+    unknown
+        .metadata
+        .labels
+        .insert(PROFILE_LABEL.to_string(), "no-such-profile".to_string());
+    let configured = ProxyConfig::from_flags(Some("/proxy".into()), 1000, 1000);
+    for spec in [&standard, &eval_cell, &unknown] {
+        assert!(!may_attach(spec, &ProxyConfig::NotConfigured));
+    }
+    assert!(!may_attach(&standard, &configured));
+    assert!(may_attach(&eval_cell, &configured));
+    assert!(
+        may_attach(&unknown, &configured),
+        "an unreadable profile is doubt"
+    );
+}

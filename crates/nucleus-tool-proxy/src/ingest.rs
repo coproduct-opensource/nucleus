@@ -186,6 +186,10 @@ pub(crate) const COMMAND_OUTPUT_NODE_KIND: NodeKind = NodeKind::McpToolResult;
 /// containment — that is the pod's default-deny egress, which stops the fetch
 /// rather than labelling it. `NUCLEUS_PARANOID_TOOL_IO=1` still blanket-taints
 /// for operators who want no heuristic in the path at all.
+///
+/// The live path asks this through [`CommandIngest::classify`], which keeps the
+/// classifier's verdict for the record; this predicate is its test surface.
+#[cfg(test)]
 pub(crate) fn command_output_is_external(command: &str) -> bool {
     !matches!(
         portcullis::egress::analyze_egress(command),
@@ -200,16 +204,124 @@ pub(crate) fn paranoid_tool_io() -> bool {
         .unwrap_or(false)
 }
 
-/// **The** decision for whether a `run` result is an ingest — one function, both
-/// transports.
+/// What the NODE told this proxy about the workload's network (#3493).
+///
+/// `command_output_is_external` answers "could this command reach the
+/// network?" from its text. A pod whose VM has no network interface answers it
+/// for every command at once: nothing a `run` child starts can open a route out.
+/// What it can still reach is the workload door, whose tool calls (`web_fetch`
+/// and the rest) label their own replies; a pod with a credentialed upstream,
+/// whose replies are not labelled adversarial, is never confirmed.
+/// That answer is taken only from the node: guest-init passes
+/// `--workload-network-isolated` when the node put
+/// `guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG` on the kernel command line,
+/// which the node writes from the VM configuration it built. Never from the pod
+/// spec, an environment variable, or the workload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkloadNetwork {
+    /// The node confirmed the VM has no network interface, no egress proxy and
+    /// no credentialed upstream.
+    NodeConfirmedIsolated,
+    /// No confirmation: every runtime but a confirmed microVM, and today's
+    /// behaviour.
+    Unconfirmed,
+}
+
+/// How one `run` result enters the session: **the** decision, one function for
+/// both transports.
 ///
 /// HTTP and MCP each having their own copy of this policy is not hypothetical:
 /// `NUCLEUS_PARANOID_TOOL_IO` once covered MCP and not HTTP, so enabling it
 /// bought partial coverage with nothing to indicate half the surface was
-/// uncovered. Parity is now structural — there is one predicate and both call
-/// sites call it — rather than a property a test has to keep re-checking.
-pub(crate) fn should_observe_command_output(command: &str) -> bool {
-    paranoid_tool_io() || command_output_is_external(command)
+/// uncovered. Parity is structural — both call sites classify here and observe
+/// through [`observe_command_output`].
+///
+/// Only the INTEGRITY label depends on [`WorkloadNetwork`]. Command output is
+/// not given a confidentiality label by this path in any arm, so none is
+/// lowered; and the classifier's verdict is kept ([`Self::audit_extension`]) so
+/// the run's record still says an interpreter or network tool ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CommandIngest {
+    /// The classifier found no network reach: not observed (a `cargo test`).
+    Local,
+    /// `NUCLEUS_PARANOID_TOOL_IO=1`: observed adversarial whatever the command.
+    Paranoid,
+    /// Could reach the network and nothing says it cannot: observed adversarial.
+    External(portcullis::egress::EgressRisk),
+    /// Flagged by the classifier, in a VM the node confirmed has no network
+    /// path: its output cannot hold bytes from outside the session, so it is not
+    /// labelled adversarial.
+    NetworkUnreachable(portcullis::egress::EgressRisk),
+}
+
+impl CommandIngest {
+    /// Classify `command` for a workload whose network is `network`.
+    pub(crate) fn classify(command: &str, network: WorkloadNetwork) -> Self {
+        if paranoid_tool_io() {
+            return Self::Paranoid;
+        }
+        Self::of(portcullis::egress::analyze_egress(command), network)
+    }
+
+    /// The decision over a classifier verdict, without the environment.
+    fn of(risk: portcullis::egress::EgressRisk, network: WorkloadNetwork) -> Self {
+        match (risk, network) {
+            (portcullis::egress::EgressRisk::None, _) => Self::Local,
+            (risk, WorkloadNetwork::Unconfirmed) => Self::External(risk),
+            (risk, WorkloadNetwork::NodeConfirmedIsolated) => Self::NetworkUnreachable(risk),
+        }
+    }
+
+    /// Whether the output is observed as [`COMMAND_OUTPUT_NODE_KIND`].
+    pub(crate) fn labels_adversarial(&self) -> bool {
+        matches!(self, Self::Paranoid | Self::External(_))
+    }
+
+    /// The classifier's verdict and what it did to the label, for the run's
+    /// verdict record. `None` when the classifier was not consulted or found
+    /// nothing.
+    pub(crate) fn audit_extension(&self) -> Option<(String, String)> {
+        use portcullis::egress::EgressRisk;
+        let (risk, outcome) = match self {
+            Self::External(r) => (r, "labelled adversarial"),
+            Self::NetworkUnreachable(r) => (
+                r,
+                "not labelled: the node confirmed the workload has no network path",
+            ),
+            Self::Local | Self::Paranoid => return None,
+        };
+        let verdict = match risk {
+            EgressRisk::DirectEgress { program, .. } => format!("direct egress ({program})"),
+            EgressRisk::ScriptingEgress { interpreter } => {
+                format!("scripting egress ({interpreter})")
+            }
+            EgressRisk::None => return None,
+        };
+        Some((
+            "command_egress".to_string(),
+            format!("{verdict}; {outcome}"),
+        ))
+    }
+}
+
+/// Observe a `run` result on the session graph as [`CommandIngest`] decided.
+/// The one write both transports make; `bytes` are the result bytes the agent
+/// receives, content-addressed onto the node.
+pub(crate) async fn observe_command_output(
+    graph: &Mutex<FlowGraph>,
+    ingest: &CommandIngest,
+    bytes: &[u8],
+) -> Option<u64> {
+    if !ingest.labels_adversarial() {
+        return None;
+    }
+    observe_into_graph(
+        graph,
+        COMMAND_OUTPUT_NODE_KIND,
+        false,
+        ingest_content_hash(bytes),
+    )
+    .await
 }
 
 /// Taint COMMAND OUTPUT as adversarial — the HTTP twin of
@@ -221,31 +333,25 @@ pub(crate) fn should_observe_command_output(command: &str) -> bool {
 /// `grep_search`, `web_search`); this one did not, so bash-fetched content
 /// entered the session with no flow node at all.
 ///
-/// Now observed by DEFAULT when the command could reach the network — see
-/// [`command_output_is_external`] — and always under
-/// `NUCLEUS_PARANOID_TOOL_IO=1`. A `cargo test` still does not taint, so the
-/// "one privileged action then locked" cost that kept the old default off is
-/// paid only by commands that actually fetch.
+/// Observed as [`CommandIngest`] decided: by default when the command could
+/// reach the network, unless the node confirmed it cannot, and always under
+/// `NUCLEUS_PARANOID_TOOL_IO=1`. A `cargo test` does not taint.
 ///
 /// Observed regardless of exit status: a failing `curl`'s stderr is still bytes
 /// the agent read, and a command that failed may well have fetched first. Called
 /// only after the command actually RAN, so a denied operation leaks no taint.
 pub(crate) async fn http_observe_command_output(
     state: &AppState,
-    command: &str,
+    ingest: &CommandIngest,
     output: &std::process::Output,
 ) {
-    if !should_observe_command_output(command) {
-        return;
-    }
     // Both streams in one node: they are one ingest event, and content-addressing
     // them separately would imply two independent sources.
     let mut bytes = Vec::with_capacity(output.stdout.len() + output.stderr.len());
     bytes.extend_from_slice(&output.stdout);
     bytes.extend_from_slice(&output.stderr);
-    http_observe_flow(state, COMMAND_OUTPUT_NODE_KIND, &bytes).await;
+    observe_command_output(&state.flow_graph, ingest, &bytes).await;
 }
-
 #[cfg(test)]
 mod command_ingest_tests {
     use super::*;
@@ -388,3 +494,7 @@ mod graph_ingest_tests {
         assert_eq!(fg.len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "ingest_network_tests.rs"]
+mod network_tests;

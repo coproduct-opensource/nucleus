@@ -425,7 +425,8 @@ fn boot_args_maximal() -> String {
         Some(15012),
         target.as_ref(),
         None,
-    );
+    )
+    .confirming_network_isolation(&spec, &crate::egress_proxy::ProxyConfig::NotConfigured);
     config.boot_source.boot_args.unwrap_or_default()
 }
 
@@ -670,6 +671,139 @@ fn net_plan_lowers_to_exactly_one_bound_tap() {
     // other host bridge/interface.
     assert_eq!(ifaces[0].host_dev_name, plan.tap_name);
     assert_eq!(ifaces[0].guest_mac, plan.guest_mac);
+}
+
+// ----- #3493: the node confirms network isolation from the lowered config ----
+
+/// A node that runs an egress proxy for eval cells.
+#[cfg(target_os = "linux")]
+fn proxy_configured() -> crate::egress_proxy::ProxyConfig {
+    crate::egress_proxy::ProxyConfig::from_flags(Some("/proxy".into()), 1000, 1000)
+}
+
+/// The command line `from_spec` builds for `spec`, with or without a network plan, after
+/// the confirmation step the launch path chains onto it.
+#[cfg(target_os = "linux")]
+fn confirmed_line(
+    spec: &PodSpec,
+    plan: Option<&net::NetPlan>,
+    proxy: &crate::egress_proxy::ProxyConfig,
+) -> String {
+    FirecrackerConfig::from_spec(
+        spec,
+        std::path::Path::new("/unused/firecracker.log"),
+        std::path::Path::new("/unused/vsock.sock"),
+        &host(&image(true, false)),
+        plan,
+        "aa00bb11-approval-pubkeys",
+        None,
+        None,
+        None,
+    )
+    .confirming_network_isolation(spec, proxy)
+    .boot_source
+    .boot_args
+    .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn confirms(line: &str) -> usize {
+    line.split_whitespace()
+        .filter(|t| *t == nucleus_spec::guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG)
+        .count()
+}
+
+/// A VM lowered with no NIC, no egress proxy and no credentialed upstream carries the
+/// confirmation exactly once.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_vm_with_no_outbound_path_is_confirmed_isolated() {
+    let none = crate::egress_proxy::ProxyConfig::NotConfigured;
+    let line = confirmed_line(&base_spec(), None, &none);
+    assert_eq!(confirms(&line), 1, "{line}");
+    // A node with a proxy still confirms a standard pod: no proxy is attached to it.
+    let line = confirmed_line(&base_spec(), None, &proxy_configured());
+    assert_eq!(confirms(&line), 1, "{line}");
+}
+
+/// A VM given a tap is never confirmed, whatever else holds.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_vm_with_a_nic_is_never_confirmed_isolated() {
+    let plan = net::NetworkAllocator::new()
+        .allocate(uuid::Uuid::new_v4(), "nuc-test".to_string())
+        .expect("allocate net plan");
+    let none = crate::egress_proxy::ProxyConfig::NotConfigured;
+    let line = confirmed_line(&base_spec(), Some(&plan), &none);
+    assert_eq!(confirms(&line), 0, "{line}");
+    assert!(
+        line.contains("nucleus.net="),
+        "the NIC is configured: {line}"
+    );
+}
+
+/// No NIC, but an eval cell on a node with a proxy: not confirmed, because the proxy is an
+/// outbound path whose replies the tool-proxy does not observe.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_vm_that_may_get_an_egress_proxy_is_not_confirmed_isolated() {
+    let mut spec = base_spec();
+    nucleus_spec::isolation_profile::IsolationProfile::EvalCell.label(&mut spec);
+    let line = confirmed_line(&spec, None, &proxy_configured());
+    assert_eq!(confirms(&line), 0, "{line}");
+}
+
+/// No NIC, but a credentialed upstream: not confirmed, because its replies come back
+/// through the broker labelled `ModelPlan`, which is not adversarial.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_vm_with_a_credentialed_upstream_is_not_confirmed_isolated() {
+    let spec: PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},
+            "credentialed_egress":[{"name":"model-api","upstream":"https://model-api.invalid/v1","header":"authorization"}]}}"#,
+    )
+    .expect("spec deserializes");
+    assert!(!spec.spec.credentialed_egress.is_empty());
+    let none = crate::egress_proxy::ProxyConfig::NotConfigured;
+    let line = confirmed_line(&spec, None, &none);
+    assert_eq!(confirms(&line), 0, "{line}");
+}
+
+/// The decision itself, over the lowered NIC list, on every host: only all three absent.
+#[test]
+fn isolation_is_confirmed_only_with_no_outbound_path() {
+    let plan = net::NetworkAllocator::new()
+        .allocate(uuid::Uuid::new_v4(), "nuc-test".to_string())
+        .expect("allocate net plan");
+    let nic = lower_network_interfaces(Some(&plan));
+    let none = lower_network_interfaces(None);
+    for proxy in [false, true] {
+        for upstreams in [false, true] {
+            assert_eq!(
+                network_isolation_confirmed(&none, proxy, upstreams),
+                !proxy && !upstreams,
+                "no NIC, proxy {proxy}, upstreams {upstreams}"
+            );
+            assert!(!network_isolation_confirmed(&nic, proxy, upstreams));
+        }
+    }
+}
+
+/// The launch path chains the confirmation onto the config it hands the VMM. Pinned against
+/// the source: `spawn_firecracker_pod` needs a real KVM host.
+#[test]
+fn the_launch_path_confirms_from_the_config_it_boots() {
+    let src = include_str!("main.rs");
+    let at = src
+        .find(".confirming_network_isolation(spec, &state.egress_proxy)")
+        .expect("spawn_firecracker_pod confirms network isolation");
+    let from_spec = src
+        .find("FirecrackerConfig::from_spec(")
+        .expect("the launch builds its config");
+    let serialized = src[at..]
+        .find("serde_json::to_vec_pretty(&config)")
+        .expect("the launch serializes its config after confirming");
+    assert!(from_spec < at && serialized > 0);
 }
 
 // ----- Invariant (4): seccomp only disabled on explicit request --------

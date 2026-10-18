@@ -2444,7 +2444,8 @@ async fn spawn_firecracker_pod(
                     jail_layout.as_ref(),
                 )
                 .requiring_host_spec(state.broker_enforcing.is_required())
-                .waiving_workload_landlock(state.workload_landlock);
+                .waiving_workload_landlock(state.workload_landlock)
+                .confirming_network_isolation(spec, &state.egress_proxy);
                 let config_json = serde_json::to_vec_pretty(&config)
                     .map_err(|err| ApiError::Driver(format!("config serialize failed: {err}")))?;
                 // The host copy at `config_path` stays for operators to inspect; the
