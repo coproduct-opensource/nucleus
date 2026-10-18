@@ -91,10 +91,11 @@ pub(crate) async fn write(
 /// other bits; refuse it inside `state_dir`.
 fn prepare_dir(dir: &Path, state_dir: &Path) -> Result<(), String> {
     let absolute = |p: &Path| std::path::absolute(p).map_err(|e| format!("{}: {e}", p.display()));
-    let (abs_dir, abs_state) = (absolute(dir)?, absolute(state_dir)?);
-    let state = abs_state.canonicalize().unwrap_or(abs_state);
-    let inside = |d: &Path| d.starts_with(&state);
-    if inside(&abs_dir) || abs_dir.canonicalize().is_ok_and(|d| inside(&d)) {
+    let abs_dir = resolve_directory(&absolute(dir)?)?;
+    let state = state_dir
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", state_dir.display()))?;
+    if abs_dir.starts_with(&state) {
         return Err(format!(
             "{} is inside the state directory; the operator's identity is not the node's",
             dir.display()
@@ -121,6 +122,33 @@ fn prepare_dir(dir: &Path, state_dir: &Path) -> Result<(), String> {
             dir.display()
         )),
         Err(e) => Err(format!("{}: {e}", dir.display())),
+    }
+}
+
+/// Resolve existing ancestors even when the requested directory does not exist yet.
+/// Otherwise a symlink to the state directory hides a new child from the containment check.
+fn resolve_directory(path: &Path) -> Result<PathBuf, String> {
+    let mut ancestor = path;
+    let mut missing = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut resolved) => {
+                for component in missing.into_iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let name = ancestor
+                    .file_name()
+                    .ok_or_else(|| format!("{}: {e}", path.display()))?;
+                missing.push(name.to_os_string());
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| format!("{}: {e}", path.display()))?;
+            }
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
     }
 }
 
@@ -157,6 +185,14 @@ mod tests {
         std::fs::create_dir(&state).expect("state");
         assert!(prepare_dir(&state.join("operator"), &state).is_err());
         assert!(prepare_dir(&state, &state).is_err());
+
+        let alias = root.path().join("state-alias");
+        std::os::unix::fs::symlink(&state, &alias).expect("state symlink");
+        assert!(prepare_dir(&alias.join("new/operator"), &state).is_err());
+        assert!(
+            !state.join("new").exists(),
+            "refuse before creating anything"
+        );
 
         let fresh = root.path().join("operator");
         prepare_dir(&fresh, &state).expect("fresh");
