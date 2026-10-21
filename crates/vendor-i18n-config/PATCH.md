@@ -12,5 +12,10 @@ No advisory is ignored. Remove this patch when an upstream release makes it
 unnecessary.
 
 Two regression tests cover locale/asset parsing and duplicate-key rejection.
-The production source is otherwise unchanged. The standalone workspace keeps vendored
+The crate also denies Nucleus's seven production panic lints, forbids unsafe
+code, and makes two elided lifetime arguments explicit for the pinned Rust
+toolchain. A temporary production panic was refused by clippy::panic before
+removal and a clean clippy run. These are enforcement and annotation changes;
+the only production behavior change is the TOML parser replacement.
+The standalone workspace keeps vendored
 code out of Nucleus's first-party workspace lint and formatting policy.

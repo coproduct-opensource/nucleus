@@ -2,6 +2,20 @@
 //! parsing functions) for the
 //! [cargo-i18n](https://crates.io/crates/cargo_i18n) tool/system.
 
+#![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 mod fluent;
 mod gettext;
 
@@ -142,7 +156,7 @@ impl<'a> Crate<'a> {
     /// otherwise return None.
     pub fn parent_active_config(
         &self,
-    ) -> Result<Option<(&'_ Crate, &'_ I18nConfig)>, I18nConfigError> {
+    ) -> Result<Option<(&'_ Crate<'_>, &'_ I18nConfig)>, I18nConfigError> {
         match self.parent {
             Some(parent) => parent.active_config(),
             None => Ok(None),
@@ -152,7 +166,9 @@ impl<'a> Crate<'a> {
     /// Identify the config which should be used for this crate, and
     /// the crate (either this crate or one of it's parents)
     /// associated with that config.
-    pub fn active_config(&self) -> Result<Option<(&'_ Crate, &'_ I18nConfig)>, I18nConfigError> {
+    pub fn active_config(
+        &self,
+    ) -> Result<Option<(&'_ Crate<'_>, &'_ I18nConfig)>, I18nConfigError> {
         debug!("Resolving active config for {0}", self);
         match &self.i18n_config {
             Some(config) => {
@@ -401,12 +417,13 @@ mod parser_compatibility_tests {
 
     #[test]
     fn fluent_configuration_retains_locale_and_asset_path() {
-        let config: I18nConfig = toml::from_str(
-            "fallback_language = 'en-US'\n[fluent]\nassets_dir = 'i18n'\n",
-        )
-        .unwrap();
+        let config: I18nConfig =
+            toml::from_str("fallback_language = 'en-US'\n[fluent]\nassets_dir = 'i18n'\n").unwrap();
         assert_eq!(config.fallback_language.to_string(), "en-US");
-        assert_eq!(config.fluent.unwrap().assets_dir, std::path::Path::new("i18n"));
+        assert_eq!(
+            config.fluent.unwrap().assets_dir,
+            std::path::Path::new("i18n")
+        );
         assert!(config.subcrates.is_empty());
     }
 

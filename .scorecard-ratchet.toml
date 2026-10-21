@@ -273,9 +273,12 @@ population_floor = 278
 # 2026-10-13 (Program B M1, merged with the above): new crate nucleus-memory-context, the
 # pure kernel that decides what a run may see of shared memory and whether a publish is
 # valid, declares all seven from its first commit. Combined 43 of 100 = 43.00%.
-floor_bp = 4300
+# 2026-10-20 (#3503): the maintained i18n-config patch adds one production crate
+# and denies all seven panic lints (red-first production panic, restored clean).
+# 44 of 101 = 43.56%; both floors rise with the measured obligation.
+floor_bp = 4356
 floor_set = "measurement"
-population_floor = 100
+population_floor = 101
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
