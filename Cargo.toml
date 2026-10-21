@@ -1,3 +1,8 @@
+[patch.crates-io]
+# age's localization dependency still uses unmaintained basic-toml (RUSTSEC-2026-0374).
+# Keep its public API while using the maintained parser; see crates/vendor-i18n-config/PATCH.md.
+i18n-config = { path = "crates/vendor-i18n-config" }
+
 [workspace]
 members = [
     "crates/nucleus-request-proof",
@@ -106,6 +111,7 @@ members = [
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
 # portcullis-python requires Python + maturin; build with: cd crates/portcullis-python && maturin develop
 exclude = [
+    "crates/vendor-i18n-config", # Third-party maintenance patch; its own workspace and tests.
     "crates/exposure-web",       # WASM-only (wasm32-unknown-unknown)
     "crates/nucleus-marketplace-dashboard-frontend", # Leptos CSR (wasm32); build with: cd … && trunk build
     "crates/portcullis-python",  # Python bindings (requires maturin)

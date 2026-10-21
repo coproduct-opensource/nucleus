@@ -72,6 +72,8 @@ const DECLARED_SATELLITES: &[&str] = &[
     "crates/nucleus-decision-protocol/fuzz",
     "crates/nucleus-egress-proxy/fuzz",
     "crates/portcullis-zkvm-guest",
+    // Public, licensed maintenance patch; its manifest remains in the visibility sweep.
+    "crates/vendor-i18n-config",
     "examples/a2a-server",
     "examples/marketplace-live",
     "examples/x402-sepolia",

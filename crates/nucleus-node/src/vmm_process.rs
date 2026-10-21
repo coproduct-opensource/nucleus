@@ -449,8 +449,11 @@ mod pidfd {
                 Errno::SRCH => Handoff::VmmGone(pid),
                 errno => Handoff::Unobservable(errno.into()),
             })?;
-            let fd = AsyncFd::with_interest(owned, tokio::io::Interest::READABLE)
-                .map_err(Handoff::Unobservable)?;
+            // SAFETY: OwnedFd keeps this pidfd open and stable until AsyncFd drops;
+            // PidFd never exposes a mutable descriptor or closes it separately.
+            let fd =
+                unsafe { AsyncFd::register_with_interest(owned, tokio::io::Interest::READABLE) }
+                    .map_err(|error| Handoff::Unobservable(error.into()))?;
             Ok(Self { fd, exit: None })
         }
 
