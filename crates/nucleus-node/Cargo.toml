@@ -145,6 +145,8 @@ nix = { version = "0.31.3", features = ["sched", "process", "signal", "poll"] }
 rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
+# `state_lock`'s isolated umask test runs on macOS as well as Linux.
+libc = "0.2"
 # The in-process replay ledger, so the request-proof adapters stay tested.
 nucleus-request-proof = { path = "../nucleus-request-proof", features = ["volatile-test-ledger"] }
 # A CA that signs only plainly, for the eval-cell launch gate's tests (ADR 0016).
