@@ -87,6 +87,8 @@ const DECLARED_SATELLITES: &[&str] = &[
     // The test shards' runner (.gatehouse/test-shards.toml): outside the workspace so it builds
     // before cargo loads a workspace whose excluded members have no sources. std only.
     "tools/test-shard",
+    // Public, licensed maintenance patch; its manifest remains in the visibility sweep.
+    "vendor/i18n-config",
 ];
 
 /// A resolved graph far smaller than the real one has stopped reading. Measured 2026-09-20:
