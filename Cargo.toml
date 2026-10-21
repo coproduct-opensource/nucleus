@@ -1,3 +1,8 @@
+[patch.crates-io]
+# age's localization dependency still uses unmaintained basic-toml (RUSTSEC-2026-0374).
+# Keep its public API while using the maintained TOML parser; see vendor/i18n-config/PATCH.md.
+i18n-config = { path = "vendor/i18n-config" }
+
 [workspace]
 members = [
     "crates/nucleus-request-proof",
