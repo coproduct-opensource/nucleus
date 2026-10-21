@@ -163,7 +163,9 @@ impl Queue {
             })?;
         let socket = receiver.await.map_err(io::Error::other)??;
         let mut queue = Self {
-            socket: AsyncFd::new(socket)?,
+            // SAFETY: Socket owns its descriptor; Queue never replaces or closes it
+            // while registered, and only borrows it for send/receive operations.
+            socket: unsafe { AsyncFd::register(socket) }?,
             sequence: 0,
             pending: VecDeque::new(),
         };
