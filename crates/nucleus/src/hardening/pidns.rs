@@ -269,14 +269,14 @@ pub(super) unsafe fn enter(
                 return Err(io::Error::last_os_error());
             }
             let mut request: libc::ifreq = std::mem::zeroed();
-            request.ifr_name[0] = b'l' as libc::c_char;
-            request.ifr_name[1] = b'o' as libc::c_char;
+            std::ptr::copy_nonoverlapping(c"lo".as_ptr(), request.ifr_name.as_mut_ptr(), 3);
             let result = if libc::syscall(libc::SYS_ioctl, fd, libc::SIOCGIFFLAGS, &raw mut request)
                 != 0
             {
                 Err(io::Error::last_os_error())
             } else {
-                request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+                request.ifr_ifru.ifru_flags |= libc::c_short::try_from(libc::IFF_UP)
+                    .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
                 if libc::syscall(libc::SYS_ioctl, fd, libc::SIOCSIFFLAGS, &raw const request) != 0 {
                     Err(io::Error::last_os_error())
                 } else {
@@ -359,9 +359,12 @@ pub(super) unsafe fn enter(
                         // allocation or locks in the forked init.
                         let mut digits = [0_u8; 10];
                         let mut count = 0;
-                        let mut pid = workload as u32;
+                        let mut pid = u32::try_from(workload)
+                            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
                         while pid > 0 {
-                            digits[count] = b'0' + (pid % 10) as u8;
+                            digits[count] = b'0'
+                                + u8::try_from(pid % 10)
+                                    .map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
                             count += 1;
                             pid /= 10;
                         }
@@ -386,7 +389,7 @@ pub(super) unsafe fn enter(
                             let written = libc::write(fd, bytes.as_ptr().cast(), bytes.len());
                             let error = if written < 0 {
                                 Some(io::Error::last_os_error())
-                            } else if written as usize != bytes.len() {
+                            } else if usize::try_from(written).ok() != Some(bytes.len()) {
                                 Some(io::Error::from_raw_os_error(libc::EIO))
                             } else {
                                 None
