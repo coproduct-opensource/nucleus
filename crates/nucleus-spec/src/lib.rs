@@ -1356,10 +1356,12 @@ pub struct WorkloadSpec {
     /// its hands. "Not in the workload's environment" is not the same as "the
     /// workload cannot get it", and only a uid boundary makes the second true.
     ///
-    /// `None` means the workload runs as the runtime's user, which is fine when
-    /// no credential is being withheld from it. When `credentialed_egress` is
-    /// configured, a distinct uid is REQUIRED and the pod refuses to start
-    /// without one.
+    /// In a MicroVM, `None` selects the unprivileged default UID (65534).
+    /// The workload is separated from the runtime regardless of whether it
+    /// has credentialed egress. An explicit UID equal to the runtime's is
+    /// refused. `user_namespace_uid` changes only how this outer UID appears
+    /// inside the workload's private namespace; it never grants the runtime's
+    /// outer UID or filesystem authority.
     #[serde(default)]
     pub uid: Option<u32>,
     /// Create a private network namespace before dropping privileges. Only
