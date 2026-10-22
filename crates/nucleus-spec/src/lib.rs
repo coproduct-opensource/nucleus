@@ -1362,10 +1362,30 @@ pub struct WorkloadSpec {
     /// without one.
     #[serde(default)]
     pub uid: Option<u32>,
+    /// Create a private network namespace before dropping privileges. Only
+    /// MicroVM workloads support this; an unsupported request is refused.
+    /// No interface or route is inherited, and no workload may reconfigure it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_namespace: Option<WorkloadNetworkNamespace>,
+    /// Present this non-root UID inside a private user namespace while keeping
+    /// the outer `uid` and its filesystem ownership. MicroVM-only; zero and
+    /// the unmapped-ID sentinel are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_namespace_uid: Option<u32>,
     /// A second process the runtime starts beside the workload, under its own
     /// uid. See [`CompanionSpec`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion: Option<CompanionSpec>,
+}
+
+/// An explicit restriction of the workload's network, performed by its launcher.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkloadNetworkNamespace {
+    /// No active interface, including loopback.
+    PrivateOffline,
+    /// Only the private namespace's loopback interface is up.
+    PrivateLoopback,
 }
 
 /// Errors resolving policies.

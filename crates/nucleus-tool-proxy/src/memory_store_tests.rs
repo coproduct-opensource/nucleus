@@ -325,6 +325,8 @@ async fn a_workload_child_cannot_read_or_append_the_journal() {
         ],
         uid: None,
         env: Default::default(),
+        network_namespace: None,
+        user_namespace_uid: None,
         companion: None,
     };
     let spec = probe(&journal);

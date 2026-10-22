@@ -52,6 +52,71 @@
 
 use crate::command::ContainmentMode;
 
+/// Requested namespaces; admission and the installed hook must agree on all coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct NamespaceRequest {
+    /// Whether the workload gets a private process table.
+    pub pids: PidNamespace,
+    /// Which network interfaces the child may reach.
+    pub network: NetworkNamespace,
+    /// Optional single-ID map of the already-dropped outer UID/GID.
+    pub user_namespace_uid: Option<u32>,
+}
+
+/// Parent-compiled single-ID maps. No formatting or allocation after fork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct UidMapping {
+    pub(super) inner: u32,
+    uid: [u8; 32],
+    uid_len: usize,
+    gid: [u8; 32],
+    gid_len: usize,
+}
+
+impl UidMapping {
+    pub(super) fn compile(inner: u32, uid: u32, gid: u32) -> std::io::Result<Self> {
+        if inner == 0 || inner == u32::MAX {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let uid_text = format!("{inner} {uid} 1\n");
+        let gid_text = format!("{inner} {gid} 1\n");
+        let mut mapping = Self {
+            inner,
+            uid: [0; 32],
+            uid_len: uid_text.len(),
+            gid: [0; 32],
+            gid_len: gid_text.len(),
+        };
+        mapping.uid[..mapping.uid_len].copy_from_slice(uid_text.as_bytes());
+        mapping.gid[..mapping.gid_len].copy_from_slice(gid_text.as_bytes());
+        Ok(mapping)
+    }
+}
+
+/// The network a trusted launcher creates before dropping and filtering a child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkNamespace {
+    /// Preserve the pod's network; the existing default.
+    Shared,
+    /// A fresh namespace with every interface down and no routes.
+    PrivateOffline,
+    /// A fresh namespace with only its loopback interface enabled.
+    PrivateLoopback,
+}
+
+impl NetworkNamespace {
+    /// The spelling bound into the launch receipt.
+    #[must_use]
+    pub fn canonical(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::PrivateOffline => "private_offline",
+            Self::PrivateLoopback => "private_loopback",
+        }
+    }
+}
+
 /// Whether a child runs in a PID namespace of its own (#3344): what a spawn
 /// asks [`super::ChildConfinement::apply_with_pids`] for, and what the
 /// [`super::Hardened`] it returns says the hook does.
@@ -126,7 +191,12 @@ const INIT_NAME: &std::ffi::CStr = c"nucleus-init";
     unsafe_code,
     reason = "#3344: the namespace setup is raw syscalls in a pre_exec hook; audited with imp"
 )]
-pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
+pub(super) unsafe fn enter(
+    uid: u32,
+    gid: u32,
+    network: NetworkNamespace,
+    mapping: Option<UidMapping>,
+) -> std::io::Result<()> {
     use std::io;
     // SAFETY: scalar and static-string arguments, and pointers to live
     // locals, to async-signal-safe syscalls in a single-threaded forked
@@ -182,8 +252,37 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
             }
         };
 
-        if libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) != 0 {
+        let net_flags = match network {
+            NetworkNamespace::Shared => 0,
+            NetworkNamespace::PrivateOffline | NetworkNamespace::PrivateLoopback => {
+                libc::CLONE_NEWNET
+            }
+        };
+        if libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS | net_flags) != 0 {
             return Err(io::Error::last_os_error());
+        }
+        if network == NetworkNamespace::PrivateLoopback {
+            // Raw syscalls only in this forked child. The socket belongs to
+            // the new namespace and never crosses the eventual exec.
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut request: libc::ifreq = std::mem::zeroed();
+            request.ifr_name[0] = b'l' as libc::c_char;
+            request.ifr_name[1] = b'o' as libc::c_char;
+            let result = if libc::ioctl(fd, libc::SIOCGIFFLAGS, &raw mut request) != 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+                if libc::ioctl(fd, libc::SIOCSIFFLAGS, &raw const request) != 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            };
+            libc::close(fd);
+            result?;
         }
         let init = fork_raw()?;
         if init > 0 {
@@ -252,6 +351,71 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
             || libc::setresuid(uid, uid, uid) != 0
         {
             return Err(io::Error::last_os_error());
+        }
+        if let Some(mapping) = mapping {
+            // Map only our already-unprivileged outer identity. A one-ID map
+            // is available without privilege in the parent user namespace.
+            // Restore ownership of our own proc map files after setresuid;
+            // the runtime stays sealed in a different PID namespace.
+            if libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) != 0
+                || libc::unshare(libc::CLONE_NEWUSER) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let write_map = |path: &std::ffi::CStr, bytes: &[u8]| -> io::Result<()> {
+                let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                if fd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let written = libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+                let result = if written < 0 {
+                    Err(io::Error::last_os_error())
+                } else if written as usize != bytes.len() {
+                    Err(io::Error::from_raw_os_error(libc::EIO))
+                } else {
+                    Ok(())
+                };
+                libc::close(fd);
+                result
+            };
+            write_map(c"/proc/self/uid_map", &mapping.uid[..mapping.uid_len])?;
+            write_map(c"/proc/self/setgroups", b"deny\n")?;
+            write_map(c"/proc/self/gid_map", &mapping.gid[..mapping.gid_len])?;
+            // Creating a user namespace grants namespace-local capabilities.
+            // Relinquish them explicitly, before Landlock and seccomp, even
+            // though the nonzero UID and no_new_privs would strip them at exec.
+            #[repr(C)]
+            struct Header {
+                version: u32,
+                pid: i32,
+            }
+            #[repr(C)]
+            struct Data {
+                effective: u32,
+                permitted: u32,
+                inheritable: u32,
+            }
+            let header = Header {
+                version: 0x2008_0522,
+                pid: 0,
+            };
+            let data = [
+                Data {
+                    effective: 0,
+                    permitted: 0,
+                    inheritable: 0,
+                },
+                Data {
+                    effective: 0,
+                    permitted: 0,
+                    inheritable: 0,
+                },
+            ];
+            if libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) != 0
+                || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
         }
     }
     Ok(())
