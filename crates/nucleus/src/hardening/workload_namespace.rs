@@ -100,61 +100,30 @@ impl Prepared {
         })
     }
 
-    /// # Safety
-    /// The fresh namespaces and exact uid/gid mappings must already exist.
-    unsafe fn finish(&self) -> io::Result<()> {
-        unsafe {
-            if libc::geteuid() != self.inner || libc::getegid() != self.inner {
-                return Err(io::Error::from_raw_os_error(libc::EACCES));
-            }
-            if self.loopback {
-                loopback_up()?;
-            }
-            // Linux unshare grants capabilities in the NEW user namespace.
-            // Prevent uid 0's exec fixups before clearing all capability sets.
-            const NOROOT_LOCKED: libc::c_ulong = 1 | 2;
-            if libc::prctl(libc::PR_SET_SECUREBITS, NOROOT_LOCKED, 0, 0, 0) != 0
-                || libc::prctl(
-                    libc::PR_CAP_AMBIENT,
-                    libc::PR_CAP_AMBIENT_CLEAR_ALL,
-                    0,
-                    0,
-                    0,
-                ) != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            #[repr(C)]
-            struct Header {
-                version: u32,
-                pid: i32,
-            }
-            #[repr(C)]
-            struct Data {
-                effective: u32,
-                permitted: u32,
-                inheritable: u32,
-            }
-            let header = Header {
-                version: 0x2008_0522,
-                pid: 0,
-            };
-            let data = [
-                Data {
-                    effective: 0,
-                    permitted: 0,
-                    inheritable: 0,
-                },
-                Data {
-                    effective: 0,
-                    permitted: 0,
-                    inheritable: 0,
-                },
-            ];
-            if libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) != 0 {
-                return Err(io::Error::last_os_error());
-            }
+    /// Called only after installing the fresh namespaces and exact mapping.
+    fn finish(&self) -> io::Result<()> {
+        use rustix::thread::{CapabilitiesSecureBits, CapabilitySet, CapabilitySets};
+        if rustix::process::geteuid().as_raw() != self.inner
+            || rustix::process::getegid().as_raw() != self.inner
+        {
+            return Err(io::Error::from_raw_os_error(libc::EACCES));
         }
+        if self.loopback {
+            loopback_up()?;
+        }
+        // Prevent uid 0's exec fixups before clearing every capability set.
+        rustix::thread::set_capabilities_secure_bits(
+            CapabilitiesSecureBits::NO_ROOT | CapabilitiesSecureBits::NO_ROOT_LOCKED,
+        )?;
+        rustix::thread::clear_ambient_capability_set()?;
+        rustix::thread::set_capabilities(
+            None,
+            CapabilitySets {
+                effective: CapabilitySet::empty(),
+                permitted: CapabilitySet::empty(),
+                inheritable: CapabilitySet::empty(),
+            },
+        )?;
         Ok(())
     }
 }
@@ -166,48 +135,52 @@ pub(super) struct ChildMapping {
 }
 
 impl ChildMapping {
-    /// # Safety
     /// Call only in the trusted child hook after std's outer uid/gid drop.
-    pub(super) unsafe fn apply(&self) -> io::Result<()> {
-        use std::os::fd::AsRawFd;
-        // SAFETY: raw checked syscalls over parent-prepared buffers only.
+    /// Uses allocation-free syscall wrappers and parent-prepared buffers.
+    pub(super) fn apply(&self) -> io::Result<()> {
+        use rustix::process::{DumpableBehavior, dumpable_behavior, set_dumpable_behavior};
+        use rustix::thread::UnshareFlags;
+        set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
+        // SAFETY: only NEWUSER/NEWNET, never FILES; no descriptor table is
+        // unshared. This runs in the single-threaded pre-exec child.
         unsafe {
-            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
-                || libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            let mut request = [0u8; 20];
-            request[..4].copy_from_slice(&libc::getpid().to_ne_bytes());
-            // Fresh per-fork correlation prevents a delayed acknowledgement
-            // from an earlier failed spawn authorizing a reused command.
-            if libc::syscall(libc::SYS_getrandom, request[4..].as_mut_ptr(), 16, 0) != 16 {
-                return Err(io::Error::from_raw_os_error(libc::EIO));
-            }
-            if libc::write(
-                self.socket.as_raw_fd(),
-                request.as_ptr().cast(),
-                request.len(),
-            ) != 20
-            {
-                return Err(io::Error::from_raw_os_error(libc::EIO));
-            }
-            let mut ack = [0u8; 17];
-            if libc::read(self.socket.as_raw_fd(), ack.as_mut_ptr().cast(), ack.len()) != 17
-                || ack[16] != 1
-                || ack[..16] != request[4..]
-            {
-                return Err(io::Error::from_raw_os_error(libc::EACCES));
-            }
-            if libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) != 0 {
-                return Err(io::Error::from_raw_os_error(libc::EACCES));
-            }
-            self.prepared.finish()
+            rustix::thread::unshare_unsafe(UnshareFlags::NEWUSER | UnshareFlags::NEWNET)?;
         }
+        let mut request = [0u8; 20];
+        request[..4].copy_from_slice(
+            &rustix::process::getpid()
+                .as_raw_nonzero()
+                .get()
+                .to_ne_bytes(),
+        );
+        // A fresh per-fork nonce refuses acknowledgements from an old spawn.
+        // An uninitialized kernel RNG must refuse, not block the pre-exec hook.
+        if rustix::rand::getrandom(&mut request[4..], rustix::rand::GetRandomFlags::NONBLOCK)? != 16
+        {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        // std resets SIGPIPE before pre_exec. A dead mapper must return an
+        // error through std's status pipe, never kill this child beforehand.
+        if rustix::net::send(&self.socket, &request, rustix::net::SendFlags::NOSIGNAL)?
+            != request.len()
+        {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        let mut ack = [0u8; 17];
+        if rustix::io::read(&self.socket, &mut ack)? != ack.len()
+            || ack[16] != 1
+            || ack[..16] != request[4..]
+        {
+            return Err(io::Error::from_raw_os_error(libc::EACCES));
+        }
+        if dumpable_behavior()? != DumpableBehavior::NotDumpable {
+            return Err(io::Error::from_raw_os_error(libc::EACCES));
+        }
+        self.prepared.finish()
     }
 }
 
-unsafe fn loopback_up() -> io::Result<()> {
+fn loopback_up() -> io::Result<()> {
     // SAFETY: a fresh namespace's fixed "lo" interface, initialized ifreq,
     // and a socket used only for these two ioctls and then closed.
     unsafe {
@@ -311,6 +284,25 @@ mod tests {
         }
         let error = command.spawn().expect_err("mismatched child must not exec");
         assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a root Linux verification container with user namespaces enabled"]
+    fn a_successful_mapping_cannot_be_reused() -> io::Result<()> {
+        use std::os::unix::process::CommandExt;
+        let mapping = Prepared::new(65534, 0, true).prepare()?;
+        let mut command = std::process::Command::new("/usr/bin/true");
+        command.uid(65534).gid(65534).current_dir("/");
+        // SAFETY: only the production allocation-free child hook runs here.
+        unsafe {
+            command.pre_exec(move || mapping.apply());
+        }
+        assert!(command.status()?.success(), "first mapping must execute");
+        if let Ok(mut child) = command.spawn() {
+            let status = child.wait()?;
+            panic!("a second spawn must report setup refusal; observed {status:?}");
+        }
         Ok(())
     }
 

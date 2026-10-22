@@ -1,5 +1,53 @@
 # Trusted workload namespace setup — candidate, 2026-10-22
 
+## Unsafe-boundary review checkpoint
+
+The first required prepush failed the exemplar unsafe-site ratchet (8 to 14).
+The initial helper added three unsafe functions and three unsafe blocks. Rather
+than raise that threshold, the follow-up uses the existing rustix dependency's
+typed identity, dumpability, capability, random-byte and descriptor APIs. This
+removes the local capset ABI structs and raw buffer pointer/length calls. The
+thread/rand features are enabled on the existing pinned dependency.
+
+Two production unsafe blocks remain. Namespace creation uses only NEWUSER/NEWNET,
+never FILES, so it cannot invalidate another thread's descriptor table (the
+explicit rustix unshare safety obligation). The loopback ioctl initializes the
+entire ifreq, writes a terminated fixed interface name, uses the flags union
+member for both matching ioctl requests and closes its locally owned socket on
+every normal return. Kernel rejection fails the spawn; no workload executes on
+a partially installed contract. These are review arguments, not a proof of the
+whole execution boundary. The unchanged ratchet still needs to assess these sites.
+
+The post-fork path uses fixed stack buffers and syscall wrappers; allocating
+formatting, proc parsing and the mapper thread run in the parent. Mapping is
+bounded by socket timeouts and a one-use nonce exchange. A failed or dropped
+prepared command can retain its mapper thread until timeout; per-command setup
+threads and preparation-time deadlines remain resource/lifecycle limitations.
+Review also found that flags-zero getrandom could wait for initial kernel RNG
+seeding outside the socket timeout. Nonblocking kernel randomness now refuses
+instead; there is no deterministic nonce fallback. Normal initialized-kernel
+tests do not exercise an unseeded kernel. Socket timeouts still do not establish
+a hard wall-clock bound on kernel scheduling, proc I/O or all spawn work.
+Parent-side SYS_ADMIN remains required in the tested backend. This review does
+not establish minimal parent capabilities or complete cancellation semantics.
+
+All ten real syscall integration tests passed after the change: UID0/1000 with
+loopback down/up, no retained capabilities, and confinement still enforced.
+All five mapper unit tests passed with ignored backend-specific cases explicitly
+included: real non-dumpable mapping, wrong outer identity and stale nonce refusal.
+The unchanged exemplar measurement is now 10 versus baseline 8; it remains red.
+Complete consumer follow-up suites and public prepush remain required before release.
+
+Command-reuse review added a real first-success/second-spawn regression. It
+failed: the second spawn returned a handle rather than reporting setup refusal.
+Removing MSG_NOSIGNAL in a confirming falsifier observed wait status 13 (SIGPIPE).
+std resets SIGPIPE before the hook, so writing a closed mapper channel could
+terminate the child before its error reached std's status pipe. Nonce validation
+still prevented executing a reused mapping; this was incorrect failure reporting,
+not evidence of a successful second exec. The request now uses rustix send with
+MSG_NOSIGNAL and propagates the error. All six mapper tests pass with the guard
+restored, including actual successful setup followed by command reuse refusal.
+
 Workload seccomp correctly denies user namespace creation. A workload cannot
 perform declared isolation setup after that filter has been installed. Setup
 must run in trusted code before Landlock/seccomp, with the resulting contract
