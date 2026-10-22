@@ -331,8 +331,78 @@ pub(super) unsafe fn enter(
         {
             return Err(io::Error::last_os_error());
         }
+        // The still-privileged init writes only the one precompiled mapping
+        // into its own child. The child cannot exec before the acknowledgement.
+        let pipes = if mapping.is_some() {
+            let mut ready = [0; 2];
+            let mut done = [0; 2];
+            if libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) != 0
+                || libc::pipe2(done.as_mut_ptr(), libc::O_CLOEXEC) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Some((ready, done))
+        } else {
+            None
+        };
         let workload = fork_raw()?;
         if workload > 0 {
+            if let (Some(mapping), Some((ready, done))) = (mapping, pipes) {
+                libc::close(ready[1]);
+                libc::close(done[0]);
+                let mut byte = 0_u8;
+                if libc::read(ready[0], (&raw mut byte).cast(), 1) == 1 && byte == 1 {
+                    let install = || -> io::Result<()> {
+                        // Decimal pid paths in stack buffers: no formatting,
+                        // allocation or locks in the forked init.
+                        let mut digits = [0_u8; 10];
+                        let mut count = 0;
+                        let mut pid = workload as u32;
+                        while pid > 0 {
+                            digits[count] = b'0' + (pid % 10) as u8;
+                            count += 1;
+                            pid /= 10;
+                        }
+                        for (name, bytes) in [
+                            (b"/uid_map".as_slice(), &mapping.uid[..mapping.uid_len]),
+                            (b"/setgroups".as_slice(), b"deny\n".as_slice()),
+                            (b"/gid_map".as_slice(), &mapping.gid[..mapping.gid_len]),
+                        ] {
+                            let mut path = [0_u8; 64];
+                            path[..6].copy_from_slice(b"/proc/");
+                            let mut at = 6;
+                            for digit in digits[..count].iter().rev() {
+                                path[at] = *digit;
+                                at += 1;
+                            }
+                            path[at..at + name.len()].copy_from_slice(name);
+                            let fd =
+                                libc::open(path.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC);
+                            if fd < 0 {
+                                return Err(io::Error::last_os_error());
+                            }
+                            let written = libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+                            let error = if written < 0 {
+                                Some(io::Error::last_os_error())
+                            } else if written as usize != bytes.len() {
+                                Some(io::Error::from_raw_os_error(libc::EIO))
+                            } else {
+                                None
+                            };
+                            libc::close(fd);
+                            if let Some(error) = error {
+                                return Err(error);
+                            }
+                        }
+                        Ok(())
+                    };
+                    let code = install()
+                        .err()
+                        .map_or(0, |error| error.raw_os_error().unwrap_or(libc::EIO));
+                    let bytes = code.to_ne_bytes();
+                    libc::write(done[1], bytes.as_ptr().cast(), bytes.len());
+                }
+            }
             // The init: reap every child (an orphan is reparented here)
             // until the workload exits, then leave with its status; the
             // kernel kills what is left in the namespace.
@@ -344,43 +414,37 @@ pub(super) unsafe fn enter(
             }
             libc::_exit(libc::WEXITSTATUS(status));
         }
-        // The workload: drop here, now the privileged steps are done.
-        // `setresuid` from root clears every capability set.
-        if libc::setgroups(0, std::ptr::null()) != 0
-            || libc::setresgid(gid, gid, gid) != 0
-            || libc::setresuid(uid, uid, uid) != 0
-        {
+        if libc::setgroups(0, std::ptr::null()) != 0 {
             return Err(io::Error::last_os_error());
         }
-        if let Some(mapping) = mapping {
-            // Map only our already-unprivileged outer identity. A one-ID map
-            // is available without privilege in the parent user namespace.
-            // Restore ownership of our own proc map files after setresuid;
-            // the runtime stays sealed in a different PID namespace.
-            if libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) != 0
-                || libc::unshare(libc::CLONE_NEWUSER) != 0
-            {
+        let (uid, gid) = if let (Some(mapping), Some((ready, done))) = (mapping, pipes) {
+            libc::close(ready[0]);
+            libc::close(done[1]);
+            if libc::unshare(libc::CLONE_NEWUSER) != 0 {
                 return Err(io::Error::last_os_error());
             }
-            let write_map = |path: &std::ffi::CStr, bytes: &[u8]| -> io::Result<()> {
-                let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
-                if fd < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                let written = libc::write(fd, bytes.as_ptr().cast(), bytes.len());
-                let result = if written < 0 {
-                    Err(io::Error::last_os_error())
-                } else if written as usize != bytes.len() {
-                    Err(io::Error::from_raw_os_error(libc::EIO))
-                } else {
-                    Ok(())
-                };
-                libc::close(fd);
-                result
-            };
-            write_map(c"/proc/self/uid_map", &mapping.uid[..mapping.uid_len])?;
-            write_map(c"/proc/self/setgroups", b"deny\n")?;
-            write_map(c"/proc/self/gid_map", &mapping.gid[..mapping.gid_len])?;
+            let byte = 1_u8;
+            if libc::write(ready[1], (&raw const byte).cast(), 1) != 1 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut code = [0_u8; 4];
+            if libc::read(done[0], code.as_mut_ptr().cast(), code.len()) != 4 {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            libc::close(ready[1]);
+            libc::close(done[0]);
+            let code = i32::from_ne_bytes(code);
+            if code != 0 {
+                return Err(io::Error::from_raw_os_error(code));
+            }
+            (mapping.inner, mapping.inner)
+        } else {
+            (uid, gid)
+        };
+        if libc::setresgid(gid, gid, gid) != 0 || libc::setresuid(uid, uid, uid) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if mapping.is_some() {
             // Creating a user namespace grants namespace-local capabilities.
             // Relinquish them explicitly, before Landlock and seccomp, even
             // though the nonzero UID and no_new_privs would strip them at exec.
