@@ -90,6 +90,51 @@ fn seccomp_filters() -> String {
 
 fn run_op(op: &str) -> String {
     match op {
+        "network_namespace" => {
+            let listener = TcpListener::bind("127.0.0.1:0");
+            let loopback = listener
+                .and_then(|listener| {
+                    let address = listener.local_addr()?;
+                    let _client =
+                        TcpStream::connect_timeout(&address, std::time::Duration::from_secs(1))?;
+                    listener.accept().map(|_| ())
+                })
+                .is_ok();
+            let external = TcpStream::connect_timeout(
+                &"198.51.100.1:9".parse().unwrap(),
+                std::time::Duration::from_secs(1),
+            )
+            .is_ok();
+            let namespace = std::fs::read_link("/proc/self/ns/net").unwrap();
+            let filter = run_op("unshare_userns");
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let caps_zero = ["CapInh:", "CapPrm:", "CapEff:", "CapAmb:"]
+                .iter()
+                .all(|name| {
+                    status
+                        .lines()
+                        .find_map(|line| line.strip_prefix(name))
+                        .is_some_and(|value| value.trim() == "0000000000000000")
+                });
+            let mapping = std::fs::read_to_string("/proc/self/uid_map")
+                .unwrap()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(":");
+            let control = std::env::var("NUCLEUS_TEST_CONTROL_CANARY").unwrap();
+            let control_readable = std::fs::read(control).is_ok();
+            let owned = std::env::var("NUCLEUS_TEST_OUTER_OWNED_FILE").unwrap();
+            let ownership_kept = std::fs::OpenOptions::new()
+                .write(true)
+                .open(owned)
+                .and_then(|mut file| file.write_all(b"mapped child wrote here"))
+                .is_ok();
+            format!(
+                "uid={} loopback={loopback} external={external} namespace={} unshare={filter} caps_zero={caps_zero} map={mapping} control_readable={control_readable} ownership_kept={ownership_kept}",
+                nucleus::runtime_uid(),
+                namespace.display()
+            )
+        }
         "filters" => format!("filters={}", seccomp_filters()),
         "vsock" => {
             // SAFETY: plain syscall; the fd is closed below.
@@ -339,6 +384,15 @@ fn try_run_under(
     policy: SeccompPolicy,
     op: &str,
 ) -> std::io::Result<String> {
+    try_run_in(confinement, policy, op, nucleus::NetworkNamespace::Shared)
+}
+
+fn try_run_in(
+    confinement: Option<ChildConfinement>,
+    policy: SeccompPolicy,
+    op: &str,
+    network: nucleus::NetworkNamespace,
+) -> std::io::Result<String> {
     let exe = child_exe(confinement.and_then(|c| c.drop_uid()).is_some());
     let mut cmd = Command::new(&exe.path);
     cmd.args([
@@ -350,12 +404,44 @@ fn try_run_under(
     ])
     .env(OP_ENV, op)
     .current_dir(Path::new("/"));
+    let _control = if network != nucleus::NetworkNamespace::Shared {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = PathBuf::from(format!("/run/nucleus-network-test-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let canary = directory.join("control");
+        std::fs::write(&canary, b"disposable runtime control canary").unwrap();
+        std::fs::set_permissions(&canary, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(std::fs::read(&canary).is_ok());
+        let owned = exe.path.parent().unwrap().join("outer-owned-file");
+        std::fs::write(&owned, b"outer-owned").unwrap();
+        std::fs::set_permissions(&owned, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::chown(&owned, Some(65534), Some(65534)).unwrap();
+        cmd.env("NUCLEUS_TEST_CONTROL_CANARY", canary)
+            .env("NUCLEUS_TEST_OUTER_OWNED_FILE", owned);
+        Some(TempDir(directory))
+    } else {
+        None
+    };
     if let Some(c) = confinement {
-        let _ = c.apply(
+        let _ = c.apply_with_namespaces(
             &mut cmd,
             nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
             policy,
             &nucleus::WorkspaceWrites::Writable,
+            nucleus::NamespaceRequest {
+                pids: if network == nucleus::NetworkNamespace::Shared {
+                    nucleus::PidNamespace::Shared
+                } else {
+                    nucleus::PidNamespace::Own
+                },
+                network,
+                user_namespace_uid: if network == nucleus::NetworkNamespace::Shared {
+                    None
+                } else {
+                    Some(1001)
+                },
+            },
         );
     }
     // Under root each test writes its own copy of this binary while other
@@ -384,6 +470,51 @@ fn try_run_under(
                 String::from_utf8_lossy(&out.stderr)
             )
         }))
+}
+
+/// Root Linux runs exercise the actual privileged hook, not just its policy.
+/// The unprivileged run checks admission refuses rather than silently degrading.
+#[test]
+fn trusted_network_setup_precedes_the_uid_drop_and_keeps_the_filter() {
+    use nucleus::NetworkNamespace;
+    let admission = ChildConfinement::workload(
+        ContainmentMode::MicroVM,
+        Some(65534),
+        UnsandboxedOptIn::Absent,
+        LandlockWaiver::Absent,
+    );
+    if nucleus::runtime_uid() != 0 {
+        assert!(admission.is_err());
+        return;
+    }
+    let confinement = admission.expect("root Linux must enforce Landlock and drop the UID");
+    let parent = std::fs::read_link("/proc/self/ns/net").unwrap();
+    for (network, loopback) in [
+        (NetworkNamespace::PrivateLoopback, true),
+        (NetworkNamespace::PrivateOffline, false),
+    ] {
+        let result =
+            try_run_in(Some(confinement), nothing(), "network_namespace", network).unwrap();
+        assert!(result.contains("uid=1001 "), "{result}");
+        assert!(
+            result.contains(
+                "caps_zero=true map=1001:65534:1 control_readable=false ownership_kept=true"
+            ),
+            "{result}"
+        );
+        assert!(
+            result.contains(&format!("loopback={loopback} external=false")),
+            "{result}"
+        );
+        assert!(
+            !result.contains(&format!("namespace={} ", parent.display())),
+            "{result}"
+        );
+        assert!(
+            result.contains(&format!("unshare=errno={}", libc::EPERM)),
+            "{result}"
+        );
+    }
 }
 
 /// Whether this runtime can place an exec pin: a descriptor at or above the

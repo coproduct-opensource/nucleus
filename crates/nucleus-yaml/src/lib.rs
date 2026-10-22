@@ -181,7 +181,7 @@ fn options() -> serde_saphyr::Options {
         ignore_binary_tag_for_string: false,
         no_schema: false,
         reject_unsupported_tags: true,
-        reject_non_finite_typeless_float: true,
+        non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::Reject,
         with_snippet: false,
         crop_radius: 0,
     }

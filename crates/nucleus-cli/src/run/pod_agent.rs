@@ -120,6 +120,8 @@ pub(super) fn workload(
         // The guest's `ChildConfinement` gives an unset uid the unprivileged
         // default, which is never the runtime's.
         uid: None,
+        network_namespace: None,
+        user_namespace_uid: None,
         companion: None,
     })
 }

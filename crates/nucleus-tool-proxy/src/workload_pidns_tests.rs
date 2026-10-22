@@ -27,6 +27,8 @@ fn admitted_with(
         artifacts: Default::default(),
         args: vec!["-c".into(), script.into()],
         uid: None,
+        network_namespace: None,
+        user_namespace_uid: None,
         companion: None,
         // The shell's own error text is matched below.
         env: env
