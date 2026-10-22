@@ -271,11 +271,13 @@ pub(super) unsafe fn enter(
             let mut request: libc::ifreq = std::mem::zeroed();
             request.ifr_name[0] = b'l' as libc::c_char;
             request.ifr_name[1] = b'o' as libc::c_char;
-            let result = if libc::ioctl(fd, libc::SIOCGIFFLAGS, &raw mut request) != 0 {
+            let result = if libc::syscall(libc::SYS_ioctl, fd, libc::SIOCGIFFLAGS, &raw mut request)
+                != 0
+            {
                 Err(io::Error::last_os_error())
             } else {
                 request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
-                if libc::ioctl(fd, libc::SIOCSIFFLAGS, &raw const request) != 0 {
+                if libc::syscall(libc::SYS_ioctl, fd, libc::SIOCSIFFLAGS, &raw const request) != 0 {
                     Err(io::Error::last_os_error())
                 } else {
                     Ok(())
