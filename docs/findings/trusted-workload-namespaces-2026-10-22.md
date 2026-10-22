@@ -1,0 +1,13 @@
+# Trusted workload namespace setup (2026-10-22)
+
+Gatehouse's converted Rust gates previously ran `unshare` inside the workload shell to establish private loopback and an inner UID. Nucleus correctly rejects workload-time namespace creation: a user namespace reacquires namespace-local capabilities. Authentic gate failures therefore stopped before Cargo with `unshare: Operation not permitted`.
+
+The workload can now explicitly request `network_namespace: private_loopback` (or `private_offline`) and `user_namespace_uid: 1001`. These options require MicroVM containment. They are absent from legacy serialized specs. Unsupported containment, inner UID zero and the unmapped-ID sentinel are refused; failure to establish a requested namespace fails the spawn.
+
+The trusted launcher creates the private network namespace and configures loopback before dropping privileges. Its private PID-namespace init installs a single UID/GID map into its waiting child, acknowledges success, and otherwise reports the setup error. For an outer workload UID of 65534, inner UID 1001 maps only to that existing unprivileged identity: scratch ownership and cache ownership do not change. Supplementary groups are cleared before mapping; effective, permitted, inheritable and ambient capabilities are cleared before the existing no-new-privileges, Landlock and syscall restrictions apply. No workload-time namespace syscall is enabled.
+
+The applied namespace coordinates are included in the launch authority hash (schema 6), and the requested fields participate in the workload's program identity. A namespace request is not evidence until the hook and exec succeed.
+
+On the temporary ARM64 Linux host (kernel 7.0.0-1014-gcp), the real child-spawn integration test verifies inner UID 1001, the exact single-ID map to 65534, writable outer-owned files, zero capability sets, a distinct network namespace, private loopback success only when enabled, failed external TCP connection, continued EPERM from unshare, and denial of a world-readable disposable control canary under the runtime's hidden /run tree. The initial unprivileged self-mapping attempt failed at uid_map write; no host policy was relaxed. The trusted init supplies the map instead.
+
+Guest/gate receipt validation is a separate integration obligation. The private Gatehouse executor must request these fields, keep outer UID 65534, and use its existing shared prelude rather than attempting namespace setup in the confined shell. Existing signed failed gate receipts remain failures; rerunning requires the repaired execution environment and genuine new evidence.
