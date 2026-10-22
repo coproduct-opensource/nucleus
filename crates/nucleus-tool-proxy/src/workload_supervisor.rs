@@ -117,6 +117,10 @@ pub(crate) fn start(
     } else {
         WorkloadIsolation::Unconfined
     };
+    let namespace = match launch.hardening {
+        nucleus::SpawnHardening::Hardened(hardening) => hardening.namespace(),
+        nucleus::SpawnHardening::Unhardened(_) => nucleus_spec::NamespaceSetup::Runtime {},
+    };
     writer.0.send_replace(Observation {
         result: WorkloadResult::Running,
         logs: None,
@@ -132,6 +136,7 @@ pub(crate) fn start(
                     environment: launch.environment,
                     program,
                     isolation,
+                    namespace,
                 },
                 logs: Some((stdout, stderr)),
             },

@@ -91,6 +91,9 @@ pub enum WorkloadResult {
         environment: EnvironmentIdentity,
         program: ProgramBinding,
         isolation: WorkloadIsolation,
+        /// Missing legacy evidence is distinct from runtime placement.
+        #[serde(default = "crate::NamespaceSetup::not_recorded")]
+        namespace: crate::NamespaceSetup,
     },
     /// The supervisor could not collect a complete observation.
     Unavailable {

@@ -173,6 +173,13 @@ pub enum NucleusError {
         platform: String,
     },
 
+    /// A requested private workload namespace cannot preserve its base confinement.
+    #[error("workload namespace setup unavailable: {reason}")]
+    WorkloadNamespaceUnavailable {
+        /// The unsupported posture or invalid mapping that prevented setup.
+        reason: String,
+    },
+
     /// Subprocess execution refused because a declared third-party artifact has
     /// no verified provenance attestation (most-paranoid next-bet #3). Fail-closed:
     /// an unsigned / untrusted-key / digest-mismatched / wrong-predicate artifact,

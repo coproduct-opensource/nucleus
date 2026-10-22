@@ -90,6 +90,19 @@ fn seccomp_filters() -> String {
 
 fn run_op(op: &str) -> String {
     match op {
+        "mapped_identity" => {
+            // SAFETY: read-only identity observations in the confined child.
+            let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            for field in ["CapInh:", "CapPrm:", "CapEff:", "CapAmb:"] {
+                let value = status
+                    .lines()
+                    .find_map(|line| line.strip_prefix(field))
+                    .unwrap();
+                assert_eq!(u64::from_str_radix(value.trim(), 16).unwrap(), 0);
+            }
+            format!("uid={uid};gid={gid}")
+        }
         "filters" => format!("filters={}", seccomp_filters()),
         "vsock" => {
             // SAFETY: plain syscall; the fd is closed below.
@@ -261,6 +274,74 @@ fn run_op(op: &str) -> String {
 }
 
 // --------------------------------------------------------------- parent side
+
+#[test]
+#[ignore = "requires root Linux with SYS_ADMIN and user namespaces enabled"]
+fn trusted_mapping_preserves_workload_confinement() {
+    assert_eq!(
+        nucleus::runtime_uid(),
+        0,
+        "privileged verification backend required"
+    );
+    let original = std::fs::read_link("/proc/self/ns/net").unwrap();
+    for (inner, loopback) in [(0, false), (0, true), (1000, false), (1000, true)] {
+        let confinement = ChildConfinement::workload(
+            ContainmentMode::HostHardened,
+            Some(65534),
+            UnsandboxedOptIn::Absent,
+            LandlockWaiver::Absent,
+        )
+        .unwrap()
+        .in_private_user_network_namespace(inner, loopback)
+        .unwrap();
+        assert_eq!(confinement.drop_uid(), Some(65534));
+        let mut launch = Command::new("/usr/bin/true");
+        launch.env_clear().current_dir("/");
+        let evidence = confinement.apply(
+            &mut launch,
+            nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
+            nothing(),
+        );
+        let nucleus::SpawnHardening::Hardened(evidence) = evidence else {
+            panic!("mapped launch must install confinement");
+        };
+        assert!(launch.status().unwrap().success());
+        assert_eq!(
+            evidence.namespace(),
+            nucleus::NamespaceSetup::PrivateUserNetwork {
+                outer_uid: 65534,
+                inner_uid: inner,
+                loopback
+            }
+        );
+        assert_eq!(
+            run(Some(confinement), "mapped_identity"),
+            format!("uid={inner};gid={inner}")
+        );
+        let tcp = run(Some(confinement), "tcp");
+        if loopback {
+            assert_eq!(tcp, "ok");
+        } else {
+            assert_eq!(tcp, format!("errno={}", libc::ENETUNREACH));
+        }
+        assert_eq!(run(Some(confinement), "fork"), "ok");
+        assert_eq!(
+            run(Some(confinement), "unshare_userns"),
+            format!("errno={}", libc::EPERM)
+        );
+        assert_eq!(
+            run(Some(confinement), "clone_newuser"),
+            format!("errno={}", libc::EPERM)
+        );
+        // A derived network prohibition still wins over the available loopback.
+        let denied = derived(CapabilityLevel::Always, CapabilityLevel::Never);
+        assert_eq!(
+            run_under(Some(confinement), denied, "tcp"),
+            format!("errno={}", libc::EPERM)
+        );
+    }
+    assert_eq!(std::fs::read_link("/proc/self/ns/net").unwrap(), original);
+}
 
 /// The child binary, at a path the child's uid can execute: the test binary
 /// itself when the runtime keeps its uid, otherwise a world-executable copy.

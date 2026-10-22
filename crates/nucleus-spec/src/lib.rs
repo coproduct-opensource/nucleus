@@ -1287,6 +1287,9 @@ impl CredentialedEgressSpec {
     }
 }
 
+mod workload_namespace;
+pub use workload_namespace::{NamespaceSetup, WorkloadNamespace};
+
 /// A process the pod runs under its own mediation.
 ///
 /// # Why the runtime starts it, rather than the image
@@ -1336,12 +1339,20 @@ pub struct WorkloadSpec {
     /// its hands. "Not in the workload's environment" is not the same as "the
     /// workload cannot get it", and only a uid boundary makes the second true.
     ///
-    /// `None` means the workload runs as the runtime's user, which is fine when
-    /// no credential is being withheld from it. When `credentialed_egress` is
-    /// configured, a distinct uid is REQUIRED and the pod refuses to start
-    /// without one.
+    /// When unset, a privileged runtime selects its default unprivileged UID.
+    /// A requested distinct identity is enforced or refused. Sharing the
+    /// runtime's UID is permitted only on the explicitly opted-in bare host
+    /// tier under a non-root runtime. Credentialed egress requires separation.
     #[serde(default)]
     pub uid: Option<u32>,
+    /// Additional trusted setup, performed before workload confinement. A
+    /// private network cannot reach the runtime's loopback TCP proxy; consumers
+    /// needing mediated services require a separately admitted binding.
+    #[serde(
+        default = "WorkloadNamespace::runtime",
+        skip_serializing_if = "WorkloadNamespace::is_runtime"
+    )]
+    pub namespace: WorkloadNamespace,
 }
 
 /// Errors resolving policies.

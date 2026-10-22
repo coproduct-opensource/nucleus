@@ -146,7 +146,8 @@ fn receipt_naming(dir: &Path, platform: NodePlatform, issued_secs: u64) -> Recei
     let key = SigningKey::from_bytes(&[7; 32]);
     let digest = "a".repeat(64);
     let claim = ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1".into(),
         source_commit: "commit".into(),
         source_tree: "tree".into(),
@@ -166,6 +167,7 @@ fn receipt_naming(dir: &Path, platform: NodePlatform, issued_secs: u64) -> Recei
     };
     let issued = issued_secs * 1_000_000;
     let expected = RecordedExecution {
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1".into(),
         source_commit: "commit".into(),
         source_tree: "tree".into(),

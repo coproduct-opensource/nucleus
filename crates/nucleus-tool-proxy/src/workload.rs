@@ -303,6 +303,7 @@ pub(crate) struct WorkloadLaunch {
     args: Vec<String>,
     work_dir: std::path::PathBuf,
     uid: Option<u32>,
+    namespace: nucleus_spec::WorkloadNamespace,
     env: BTreeMap<String, String>,
     classified: Vec<ClassifiedEntry>,
 }
@@ -352,6 +353,7 @@ impl WorkloadLaunch {
             args: spec.args.clone(),
             work_dir: work_dir.to_path_buf(),
             uid: spec.uid,
+            namespace: spec.namespace,
             env,
             classified,
         }
@@ -394,6 +396,15 @@ impl WorkloadLaunch {
         let confinement =
             nucleus::ChildConfinement::workload(containment, self.uid, opt_in, landlock)
                 .map_err(|e| Refused(e.to_string()))?;
+        let confinement = match self.namespace {
+            nucleus_spec::WorkloadNamespace::Runtime {} => confinement,
+            nucleus_spec::WorkloadNamespace::PrivateUserNetwork {
+                inner_uid,
+                loopback,
+            } => confinement
+                .in_private_user_network_namespace(inner_uid, loopback)
+                .map_err(|e| Refused(e.to_string()))?,
+        };
 
         // Reserved-namespace fail-safe — closes the `_ => OrdinaryData`
         // fallthrough in `env_classifier`. A `NUCLEUS_*` key the classifier does
@@ -776,7 +787,8 @@ impl LaunchReceipt {
     /// 2: the preimage gained `fs=` (#2696 P3c).
     /// 3: the preimage gained `seccomp=`, the installed filter and the pod's
     /// derived syscall classes (#2907).
-    const SCHEMA_VERSION: u32 = 3;
+    /// 4: the preimage gained `namespace=`, from the installed trusted hook.
+    const SCHEMA_VERSION: u32 = 4;
 
     fn from_admitted(
         plan: &AdmittedWorkloadPlan,
@@ -807,11 +819,15 @@ impl LaunchReceipt {
             nucleus::SpawnHardening::Hardened(h) => h.syscalls().canonical(),
             nucleus::SpawnHardening::Unhardened(_) => "none".to_string(),
         };
+        let namespace = match hardening {
+            nucleus::SpawnHardening::Hardened(h) => h.namespace().canonical(),
+            nucleus::SpawnHardening::Unhardened(_) => "none".to_string(),
+        };
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|namespace={namespace}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
@@ -1057,6 +1073,7 @@ mod tests {
     fn spec_with(env: &[(&str, &str)]) -> WorkloadSpec {
         WorkloadSpec {
             command: "agent".into(),
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             artifacts: Default::default(),
             args: vec!["--flag".into()],
             uid: None,
@@ -1389,6 +1406,71 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires root Linux with SYS_ADMIN and user namespaces enabled"]
+    async fn namespace_setup_changes_launch_commitment() {
+        assert_eq!(nix_getuid(), 0, "privileged verification backend required");
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_with(&[]);
+        spec.command = "/usr/bin/true".into();
+        spec.args.clear();
+        let mut hashes = Vec::new();
+        for (inner_uid, loopback) in [(0, false), (0, true), (1000, true)] {
+            spec.namespace = nucleus_spec::WorkloadNamespace::PrivateUserNetwork {
+                inner_uid,
+                loopback,
+            };
+            let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
+                .admit(nucleus::ContainmentMode::HostHardened, OPTED_IN, NO_WAIVER)
+                .unwrap();
+            let (mut child, receipt) =
+                spawn_admitted(plan, node_rlimits(), nothing_derived()).unwrap();
+            assert!(child.wait().await.unwrap().success());
+            assert_eq!(receipt.schema_version, 4);
+            let nucleus::SpawnHardening::Hardened(hardening) = receipt.hardening else {
+                panic!("mapped launch must be hardened");
+            };
+            assert_eq!(
+                hardening.namespace(),
+                nucleus::NamespaceSetup::PrivateUserNetwork {
+                    outer_uid: nucleus::DEFAULT_CHILD_UID,
+                    inner_uid,
+                    loopback
+                }
+            );
+            hashes.push(receipt.hash);
+        }
+        assert_ne!(
+            hashes[0], hashes[1],
+            "namespace setup must affect launch commitment"
+        );
+        assert_ne!(
+            hashes[1], hashes[2],
+            "mapped uid must affect launch commitment"
+        );
+    }
+
+    #[test]
+    fn namespace_request_refuses_unfiltered_tier_and_reserved_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        for (mode, inner_uid) in [
+            (nucleus::ContainmentMode::Unsandboxed, 0),
+            (nucleus::ContainmentMode::HostHardened, u32::MAX),
+        ] {
+            let mut spec = spec_with(&[]);
+            spec.namespace = nucleus_spec::WorkloadNamespace::PrivateUserNetwork {
+                inner_uid,
+                loopback: true,
+            };
+            assert!(
+                WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
+                    .admit(mode, OPTED_IN, NO_WAIVER)
+                    .is_err()
+            );
+        }
+    }
+
     /// Spawn `/bin/sh -c 'id -u; cat /proc/<this pid>/environ | wc -c'` as a
     /// workload admitted under `mode`; `Err` is the admission's refusal.
     #[cfg(target_os = "linux")]
@@ -1532,6 +1614,7 @@ mod tests {
         );
         let spec = WorkloadSpec {
             command: "/bin/sh".into(),
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             artifacts: Default::default(),
             args: vec!["-c".into(), script],
             uid: None,

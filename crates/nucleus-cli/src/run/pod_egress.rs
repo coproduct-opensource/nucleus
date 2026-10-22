@@ -383,6 +383,7 @@ var = "SEARCH_API_TOKEN"
     fn agent() -> WorkloadSpec {
         WorkloadSpec {
             command: "/opt/agent".into(),
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             args: strings(&["--lead", "task"]),
             env: BTreeMap::new(),
             artifacts: BTreeMap::new(),

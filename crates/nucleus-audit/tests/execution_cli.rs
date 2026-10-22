@@ -19,7 +19,8 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
     let stderr = b"";
     let paths = BTreeMap::from([("tests".into(), "test-results.bin".into())]);
     let claim = ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1".into(),
         source_commit: "commit".into(),
         source_tree: "tree".into(),
@@ -54,6 +55,7 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
     )
     .unwrap();
     let expected = RecordedExecution {
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1".into(),
         source_commit: "commit".into(),
         source_tree: "tree".into(),

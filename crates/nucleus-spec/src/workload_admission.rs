@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkloadAdmission {
+    #[serde(default = "crate::NamespaceSetup::not_recorded")]
+    pub namespace: crate::NamespaceSetup,
     pub pod_id: String,
     pub created_at_unix: u64,
     pub source_commit: String,

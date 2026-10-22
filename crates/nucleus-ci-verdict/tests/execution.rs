@@ -110,7 +110,8 @@ fn artifact_bytes_names_paths_and_consumption_deadline_are_checked() {
 
 fn claim() -> ExecutionClaim {
     ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1".into(),
         source_commit: "commit-1".into(),
         source_tree: "tree-1".into(),
@@ -196,6 +197,7 @@ fn sign(claim: &ExecutionClaim, key: &SigningKey) -> Receipt {
 
 fn expected(key: &[u8; 32]) -> ExpectedExecution<'_> {
     ExpectedExecution {
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1",
         source_commit: "commit-1",
         source_tree: "tree-1",
@@ -210,6 +212,75 @@ fn expected(key: &[u8; 32]) -> ExpectedExecution<'_> {
         issued_not_before_micros: 100,
         issued_not_after_micros: 200,
     }
+}
+
+#[test]
+fn signed_namespace_setup_must_match_independent_expectation() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut expected = expected(&public);
+    expected.namespace = NamespaceSetup::PrivateUserNetwork {
+        outer_uid: 65534,
+        inner_uid: 1000,
+        loopback: true,
+    };
+    let mut c = claim();
+    c.namespace = expected.namespace;
+    assert!(verify_execution(&sign(&c, &key), &expected).is_ok());
+    for namespace in [
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 1000,
+            loopback: false,
+        },
+        NamespaceSetup::Runtime {},
+        NamespaceSetup::PrivateNetwork {},
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65533,
+            inner_uid: 1000,
+            loopback: true,
+        },
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 0,
+            loopback: true,
+        },
+        NamespaceSetup::Unrecorded {},
+    ] {
+        c.namespace = namespace;
+        assert_eq!(
+            verify_execution(&sign(&c, &key), &expected).unwrap_err(),
+            ExecutionError::Binding("namespace")
+        );
+    }
+    expected.namespace = NamespaceSetup::Unrecorded {};
+    c.namespace = NamespaceSetup::Unrecorded {};
+    assert_eq!(
+        verify_execution(&sign(&c, &key), &expected).unwrap_err(),
+        ExecutionError::Binding("namespace")
+    );
+}
+
+#[test]
+fn legacy_or_missing_namespace_evidence_cannot_satisfy_current_acceptance() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut legacy = claim();
+    legacy.schema = ExecutionSchema::V1;
+    assert_eq!(
+        verify_execution(&sign(&legacy, &key), &expected(&public)).unwrap_err(),
+        ExecutionError::Binding("schema")
+    );
+    let mut body = serde_json::to_value(claim()).unwrap();
+    body.as_object_mut().unwrap().remove("namespace");
+    let parsed: ExecutionClaim = serde_json::from_value(body.clone()).unwrap();
+    assert_eq!(parsed.namespace, NamespaceSetup::Unrecorded {});
+    assert_eq!(
+        verify_execution(&sign_body(body, &key, 150), &expected(&public)).unwrap_err(),
+        ExecutionError::Binding("namespace")
+    );
 }
 
 #[test]

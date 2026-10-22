@@ -13,6 +13,7 @@ fn complete(out: Capture, err: Capture) -> Observation {
                 reason: "fixture".into(),
             },
             isolation: WorkloadIsolation::Unconfined,
+            namespace: nucleus_spec::NamespaceSetup::Runtime {},
         },
         logs: Some((out, err)),
     }

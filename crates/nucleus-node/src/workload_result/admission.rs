@@ -23,6 +23,9 @@ pub(super) async fn get(
         .ok_or_else(|| ApiError::InvalidSpec("pod has no configured workload".into()))?;
     let label = |name: &str| spec.metadata.labels.get(name).cloned().unwrap_or_default();
     Ok(Json(WorkloadAdmission {
+        namespace: workload
+            .namespace
+            .expected(workload.uid.unwrap_or(nucleus::DEFAULT_CHILD_UID)),
         pod_id: id.to_string(),
         created_at_unix: pod.created_at,
         source_commit: label("build.source.commit"),

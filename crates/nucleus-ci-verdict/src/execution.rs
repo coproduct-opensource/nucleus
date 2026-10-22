@@ -8,6 +8,9 @@ use nucleus_receipt::{Projection, RECEIPT_VERSION, Receipt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod namespace;
+pub use namespace::NamespaceSetup;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIdentity {
@@ -20,6 +23,8 @@ pub struct ArtifactIdentity {
 pub enum ExecutionSchema {
     #[serde(rename = "nucleus.execution.v1")]
     V1,
+    #[serde(rename = "nucleus.execution.v2")]
+    V2,
 }
 
 /// Taken from the host's spawned driver, never from pod labels.
@@ -46,6 +51,8 @@ pub struct ExecutionClaim {
     pub architecture: String,
     pub backend: Backend,
     pub uid_isolated: bool,
+    #[serde(default = "NamespaceSetup::not_recorded")]
+    pub namespace: NamespaceSetup,
     pub exit_code: Option<i32>,
     pub stdout_sha256: String,
     pub stderr_sha256: String,
@@ -104,6 +111,8 @@ impl ExecutionClaim {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionExpectation<S, A, K> {
+    #[serde(default = "NamespaceSetup::not_recorded")]
+    pub namespace: NamespaceSetup,
     pub pod_id: S,
     pub source_commit: S,
     pub source_tree: S,
@@ -127,6 +136,7 @@ pub type RecordedExecution = ExecutionExpectation<String, BTreeMap<String, Strin
 impl RecordedExecution {
     pub fn as_expected(&self) -> ExpectedExecution<'_> {
         let Self {
+            namespace,
             pod_id,
             source_commit,
             source_tree,
@@ -142,6 +152,7 @@ impl RecordedExecution {
             issued_not_after_micros,
         } = self;
         ExpectedExecution {
+            namespace: *namespace,
             pod_id,
             source_commit,
             source_tree,
@@ -266,6 +277,7 @@ pub fn verify_execution(
     expected: &ExpectedExecution<'_>,
 ) -> Result<VerifiedExecution, ExecutionError> {
     let ExpectedExecution {
+        namespace: expected_namespace,
         pod_id,
         source_commit,
         source_tree,
@@ -325,7 +337,7 @@ pub fn verify_execution(
     // Every field must be considered here when the wire body grows. Exit is
     // observed data, deliberately not a condition for authenticating a failure.
     let ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema,
         pod_id: actual_pod,
         source_commit: actual_source_commit,
         source_tree: actual_source_tree,
@@ -334,6 +346,7 @@ pub fn verify_execution(
         architecture: actual_arch,
         backend,
         uid_isolated,
+        namespace,
         exit_code: _,
         stdout_sha256,
         stderr_sha256,
@@ -343,6 +356,14 @@ pub fn verify_execution(
         artifacts,
         node_platform,
     } = &claim;
+    if *schema != ExecutionSchema::V2 {
+        return Err(ExecutionError::Binding("schema"));
+    }
+    if matches!(expected_namespace, NamespaceSetup::Unrecorded {})
+        || namespace != expected_namespace
+    {
+        return Err(ExecutionError::Binding("namespace"));
+    }
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),
         ("program_digest", actual_program.as_str(), *program_digest),

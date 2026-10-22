@@ -130,7 +130,12 @@ fn expectations(
         admission.architecture == architecture,
         "setup admission architecture differs from host inputs"
     );
+    ensure!(
+        admission.namespace == nucleus_spec::NamespaceSetup::Runtime {},
+        "setup admission changed the requested runtime namespace placement"
+    );
     Ok(RecordedExecution {
+        namespace: nucleus_spec::NamespaceSetup::Runtime {},
         pod_id: pod.to_string(),
         session_id: pod.to_string(),
         source_commit: String::new(),

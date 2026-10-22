@@ -66,6 +66,7 @@ mod tests {
                 reason: "fixture".into(),
             },
             isolation: WorkloadIsolation::Unconfined,
+            namespace: nucleus_spec::NamespaceSetup::Runtime {},
         }
     }
 

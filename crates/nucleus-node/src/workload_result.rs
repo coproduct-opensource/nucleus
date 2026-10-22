@@ -125,6 +125,7 @@ fn completed_claim(
         environment,
         program,
         isolation,
+        namespace,
     } = observed
     else {
         return Err(ApiError::Driver(
@@ -136,6 +137,17 @@ fn completed_claim(
             "workload has no declared program identity".into(),
         ));
     };
+    let workload = spec.spec.workload.as_ref().ok_or_else(|| {
+        ApiError::Driver("execution observation has no configured workload".into())
+    })?;
+    let expected_namespace = workload
+        .namespace
+        .expected(workload.uid.unwrap_or(nucleus::DEFAULT_CHILD_UID));
+    if namespace != expected_namespace {
+        return Err(ApiError::Driver(
+            "supervisor namespace setup differs from admitted spec".into(),
+        ));
+    }
     let expected = nucleus_spec::identity::program_digest(spec)
         .map_err(|e| ApiError::Driver(format!("host program identity: {e}")))?;
     if digest != expected {
@@ -162,7 +174,7 @@ fn completed_claim(
         .cloned()
         .unwrap_or_default();
     Ok(ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
         pod_id: id.to_string(),
         source_commit,
         source_tree,
@@ -171,6 +183,7 @@ fn completed_claim(
         architecture: std::env::consts::ARCH.into(),
         backend,
         uid_isolated: isolation == WorkloadIsolation::UidIsolated,
+        namespace,
         exit_code,
         stdout_sha256,
         stderr_sha256,
@@ -273,12 +286,19 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "apiVersion": "nucleus/v1", "kind": "Pod",
             "metadata": {"name": "observation-test"},
-            "spec": {"work_dir": "/work"}
+            "spec": {"work_dir": "/work", "workload": {"command":"/usr/bin/true"}}
         }))
         .unwrap()
     }
 
     fn observed(spec: &nucleus_spec::PodSpec) -> WorkloadResult {
+        observed_namespace(spec, nucleus_spec::NamespaceSetup::Runtime {})
+    }
+
+    fn observed_namespace(
+        spec: &nucleus_spec::PodSpec,
+        namespace: nucleus_spec::NamespaceSetup,
+    ) -> WorkloadResult {
         WorkloadResult::Exited {
             exit_code: Some(23),
             stdout_sha256: "a".repeat(64),
@@ -289,12 +309,62 @@ mod tests {
                 digest: nucleus_spec::identity::program_digest(spec).unwrap(),
             },
             isolation: WorkloadIsolation::Unconfined,
+            namespace,
         }
     }
 
     fn unattested() -> nucleus_ci_verdict::execution::NodePlatform {
         nucleus_ci_verdict::execution::NodePlatform::Unattested {
             reason: "test node".into(),
+        }
+    }
+
+    #[test]
+    fn namespace_mismatch_cannot_be_signed_even_with_matching_program() {
+        use nucleus_spec::{NamespaceSetup, WorkloadNamespace};
+        let mut spec = spec();
+        spec.spec.workload.as_mut().unwrap().namespace = WorkloadNamespace::PrivateUserNetwork {
+            inner_uid: 1000,
+            loopback: true,
+        };
+        let required = NamespaceSetup::PrivateUserNetwork {
+            outer_uid: nucleus::DEFAULT_CHILD_UID,
+            inner_uid: 1000,
+            loopback: true,
+        };
+        let claim = completed_claim(
+            &spec,
+            Uuid::nil(),
+            Backend::Local,
+            observed_namespace(&spec, required),
+            unattested(),
+        )
+        .unwrap();
+        assert_eq!(claim.namespace, required);
+        for wrong in [
+            NamespaceSetup::PrivateUserNetwork {
+                outer_uid: nucleus::DEFAULT_CHILD_UID,
+                inner_uid: 1000,
+                loopback: false,
+            },
+            NamespaceSetup::Runtime {},
+            NamespaceSetup::Unrecorded {},
+            NamespaceSetup::PrivateUserNetwork {
+                outer_uid: 65533,
+                inner_uid: 1000,
+                loopback: true,
+            },
+        ] {
+            assert!(
+                completed_claim(
+                    &spec,
+                    Uuid::nil(),
+                    Backend::Local,
+                    observed_namespace(&spec, wrong),
+                    unattested()
+                )
+                .is_err()
+            );
         }
     }
 

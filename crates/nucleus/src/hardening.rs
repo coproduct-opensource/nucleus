@@ -168,6 +168,9 @@ mod landlock;
 mod rlimit;
 #[cfg(target_os = "linux")]
 mod seccomp;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod workload_namespace;
 
 pub use landlock::{LandlockSupport, MIN_LANDLOCK_ABI};
 pub use rlimit::{AppliedRlimits, RlimitPolicy, RlimitVector};
@@ -203,6 +206,13 @@ enum Posture {
     Restricted(SyscallFilter),
     /// Drop to this uid (and gid), then self-restrict.
     DropTo(u32, SyscallFilter, FilesystemConfinement),
+    #[cfg(target_os = "linux")]
+    MappedUserNetwork {
+        outer_uid: u32,
+        inner_uid: u32,
+        loopback: bool,
+        filesystem: FilesystemConfinement,
+    },
     /// A host service the runtime starts for one pod (the egress proxy, ADR
     /// 0015 §7): enter a fresh, empty network namespace, THEN drop to `uid`
     /// and `gid`, then self-restrict under the workload denylist. The drop is
@@ -221,6 +231,8 @@ enum Isolation {
     None,
     /// `unshare(CLONE_NEWNET)`, then `setgroups(0)`, `setresgid`, `setresuid`.
     NetnsThenDrop { uid: u32, gid: u32 },
+    #[cfg(target_os = "linux")]
+    UserNetwork(workload_namespace::Prepared),
 }
 
 /// How a confined child's filesystem is held (#2696 P3c). Decided per
@@ -602,11 +614,79 @@ impl ChildConfinement {
         }
     }
 
+    /// Add an empty private network namespace with the requested loopback state and a
+    /// one-id user/group mapping to this already separated child's outer uid.
+    /// Setup runs in the trusted hook before Landlock/seccomp. All namespace
+    /// capabilities are cleared and uid-zero exec fixups locked before exec;
+    /// the workload denylist, derived classes and filesystem rules stay intact.
+    /// An inner uid of zero is NOT the runtime's outer root identity.
+    ///
+    /// # Errors
+    /// Returns `HardeningUnavailable` off Linux. Returns
+    /// `WorkloadNamespaceUnavailable` for an unseparated/unfiltered base,
+    /// repeated setup or the kernel's reserved unmapped uid value.
+    pub fn in_private_user_network_namespace(self, inner_uid: u32, loopback: bool) -> Result<Self> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (self, inner_uid, loopback);
+            Err(NucleusError::HardeningUnavailable {
+                platform: std::env::consts::OS.into(),
+            })
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if inner_uid == u32::MAX {
+                return Err(NucleusError::WorkloadNamespaceUnavailable {
+                    reason: "reserved inner uid".into(),
+                });
+            }
+            match self.posture {
+                Posture::DropTo(outer_uid, SyscallFilter::WorkloadDenylist, filesystem)
+                    if outer_uid != u32::MAX =>
+                {
+                    Ok(Self {
+                        posture: Posture::MappedUserNetwork {
+                            outer_uid,
+                            inner_uid,
+                            loopback,
+                            filesystem,
+                        },
+                    })
+                }
+                Posture::DropTo(_, SyscallFilter::WorkloadDenylist, _)
+                | Posture::DropTo(_, SyscallFilter::Unfiltered, _)
+                | Posture::Unsandboxed
+                | Posture::Restricted(_)
+                | Posture::MappedUserNetwork {
+                    outer_uid: _,
+                    inner_uid: _,
+                    loopback: _,
+                    filesystem: _,
+                }
+                | Posture::Isolated { uid: _, gid: _ } => {
+                    Err(NucleusError::WorkloadNamespaceUnavailable {
+                        reason: "a separated workload-denylist base is required exactly once"
+                            .into(),
+                    })
+                }
+            }
+        }
+    }
+
     /// Who the child runs as, relative to the runtime.
     #[must_use]
     pub fn child_uid(&self) -> ChildUid {
         match self.posture {
-            Posture::DropTo(uid, ..) | Posture::Isolated { uid, gid: _ } => ChildUid::Distinct(uid),
+            #[cfg(target_os = "linux")]
+            Posture::MappedUserNetwork {
+                outer_uid,
+                inner_uid: _,
+                loopback: _,
+                filesystem: _,
+            } => ChildUid::Distinct(outer_uid),
+            Posture::DropTo(uid, _, _) | Posture::Isolated { uid, gid: _ } => {
+                ChildUid::Distinct(uid)
+            }
             Posture::Unsandboxed | Posture::Restricted(_) => ChildUid::SharedWithRuntime,
         }
     }
@@ -615,6 +695,13 @@ impl ChildConfinement {
     #[must_use]
     pub fn syscall_filter(&self) -> SyscallFilter {
         match self.posture {
+            #[cfg(target_os = "linux")]
+            Posture::MappedUserNetwork {
+                outer_uid: _,
+                inner_uid: _,
+                loopback: _,
+                filesystem: _,
+            } => SyscallFilter::WorkloadDenylist,
             Posture::Unsandboxed => SyscallFilter::Unfiltered,
             Posture::Restricted(filter) | Posture::DropTo(_, filter, _) => filter,
             Posture::Isolated { uid: _, gid: _ } => SyscallFilter::WorkloadDenylist,
@@ -625,6 +712,13 @@ impl ChildConfinement {
     #[must_use]
     pub fn filesystem(&self) -> FilesystemConfinement {
         match self.posture {
+            #[cfg(target_os = "linux")]
+            Posture::MappedUserNetwork {
+                outer_uid: _,
+                inner_uid: _,
+                loopback: _,
+                filesystem,
+            } => filesystem,
             Posture::DropTo(_, _, fs) => fs,
             Posture::Unsandboxed
             | Posture::Restricted(_)
@@ -650,7 +744,9 @@ impl ChildConfinement {
                     path: e.path.display().to_string(),
                     error: e.error,
                 }),
-            FilesystemConfinement::Waived { .. } | FilesystemConfinement::NotApplied => Ok(()),
+            FilesystemConfinement::Waived { kernel: _ } | FilesystemConfinement::NotApplied => {
+                Ok(())
+            }
         }
     }
 
@@ -669,10 +765,17 @@ impl ChildConfinement {
     #[must_use]
     pub fn is_unsandboxed(&self) -> bool {
         match self.posture {
+            #[cfg(target_os = "linux")]
+            Posture::MappedUserNetwork {
+                outer_uid: _,
+                inner_uid: _,
+                loopback: _,
+                filesystem: _,
+            } => false,
             Posture::Unsandboxed => true,
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                false
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(_, _, _)
+            | Posture::Isolated { uid: _, gid: _ } => false,
         }
     }
 
@@ -680,9 +783,16 @@ impl ChildConfinement {
     #[must_use]
     pub fn restricts(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            #[cfg(target_os = "linux")]
+            Posture::MappedUserNetwork {
+                outer_uid: _,
+                inner_uid: _,
+                loopback: _,
+                filesystem: _,
+            } => true,
+            Posture::Restricted(_)
+            | Posture::DropTo(_, _, _)
+            | Posture::Isolated { uid: _, gid: _ } => true,
             Posture::Unsandboxed => false,
         }
     }
@@ -691,9 +801,16 @@ impl ChildConfinement {
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            #[cfg(target_os = "linux")]
+            Posture::MappedUserNetwork {
+                outer_uid: _,
+                inner_uid: _,
+                loopback: _,
+                filesystem: _,
+            } => true,
+            Posture::Restricted(_)
+            | Posture::DropTo(_, _, _)
+            | Posture::Isolated { uid: _, gid: _ } => true,
             Posture::Unsandboxed => false,
         }
     }
@@ -747,6 +864,25 @@ impl ChildConfinement {
         syscalls: SeccompPolicy,
     ) -> SpawnHardening {
         match self.posture {
+            #[cfg(target_os = "linux")]
+            Posture::MappedUserNetwork {
+                outer_uid,
+                inner_uid,
+                loopback,
+                filesystem,
+            } => {
+                imp::drop_to(cmd, outer_uid);
+                Self::restrict(
+                    cmd,
+                    Isolation::UserNetwork(workload_namespace::Prepared::new(
+                        outer_uid, inner_uid, loopback,
+                    )),
+                    SyscallFilter::WorkloadDenylist,
+                    filesystem,
+                    rlimits,
+                    syscalls,
+                )
+            }
             Posture::Unsandboxed => SpawnHardening::Unhardened(Unhardened::DeclaredBareTier),
             Posture::Restricted(filter) => Self::restrict(
                 cmd,
@@ -789,10 +925,24 @@ impl ChildConfinement {
             }
             SyscallFilter::Unfiltered => InstalledFilter::Unfiltered,
         };
+        let namespace = match isolation {
+            Isolation::None => NamespaceSetup::Runtime {},
+            Isolation::NetnsThenDrop { uid: _, gid: _ } => NamespaceSetup::PrivateNetwork {},
+            #[cfg(target_os = "linux")]
+            Isolation::UserNetwork(prepared) => {
+                let (outer_uid, inner_uid, loopback) = prepared.parameters();
+                NamespaceSetup::PrivateUserNetwork {
+                    outer_uid,
+                    inner_uid,
+                    loopback,
+                }
+            }
+        };
         match imp::install(cmd, isolation, filter, filesystem, rlimits, syscalls) {
             Hook::Installed => SpawnHardening::Hardened(Hardened {
                 rlimits,
                 syscalls: installed,
+                namespace,
             }),
             Hook::NoneOnThisPlatform => {
                 SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
@@ -853,9 +1003,18 @@ impl SpawnHardening {
 pub struct Hardened {
     rlimits: AppliedRlimits,
     syscalls: InstalledFilter,
+    namespace: NamespaceSetup,
 }
 
+pub use nucleus_spec::NamespaceSetup;
+
 impl Hardened {
+    /// Setup performed before the rest of this hook's confinement.
+    #[must_use]
+    pub fn namespace(&self) -> NamespaceSetup {
+        self.namespace
+    }
+
     /// The limits the hook sets.
     #[must_use]
     pub fn rlimits(&self) -> AppliedRlimits {
@@ -961,9 +1120,9 @@ mod uid {
     }
 }
 
-// The crate denies `unsafe_code` globally. This module and `imp` (Linux) are
-// the audited exceptions, with one `unsafe` block each: the hook install here,
-// and the child-side syscall sequence there.
+// The crate denies `unsafe_code` globally. This module, Linux `imp`, and
+// `workload_namespace` explicitly allow the FFI needed for pre-exec setup.
+// Namespace mapping is candidate code; its security review is still required.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 mod hook {
@@ -1095,8 +1254,15 @@ mod imp {
     /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
+    enum PreparedIsolation {
+        None,
+        NetnsThenDrop { uid: u32, gid: u32 },
+        Mapped(super::workload_namespace::ChildMapping),
+        Refuse,
+    }
+
     fn harden_child(
-        isolation: Isolation,
+        isolation: &PreparedIsolation,
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
         limits: &HookLimits,
@@ -1114,12 +1280,16 @@ mod imp {
             // root to a non-root uid clears every capability set, ambient
             // included, because the hook never sets `SECBIT_KEEP_CAPS`.
             match isolation {
-                Isolation::None => {}
-                Isolation::NetnsThenDrop { uid, gid } => {
+                PreparedIsolation::None => {}
+                PreparedIsolation::Mapped(prepared) => prepared.apply()?,
+                PreparedIsolation::Refuse => {
+                    return Err(io::Error::from_raw_os_error(libc::EACCES));
+                }
+                PreparedIsolation::NetnsThenDrop { uid, gid } => {
                     if libc::unshare(libc::CLONE_NEWNET) != 0
                         || libc::setgroups(0, std::ptr::null()) != 0
-                        || libc::setresgid(gid, gid, gid) != 0
-                        || libc::setresuid(uid, uid, uid) != 0
+                        || libc::setresgid(*gid, *gid, *gid) != 0
+                        || libc::setresuid(*uid, *uid, *uid) != 0
                     {
                         return Err(io::Error::last_os_error());
                     }
@@ -1248,7 +1418,7 @@ mod imp {
     ) -> Hook {
         let limits = hook_limits(rlimits);
         let mut landlock = match filesystem {
-            FilesystemConfinement::NotApplied | FilesystemConfinement::Waived { .. } => {
+            FilesystemConfinement::NotApplied | FilesystemConfinement::Waived { kernel: _ } => {
                 Landlock::NotRequested
             }
             FilesystemConfinement::Landlock { abi } => match Ruleset::compile(abi) {
@@ -1280,8 +1450,19 @@ mod imp {
                 }
             }
         };
+        let isolation = match isolation {
+            Isolation::None => PreparedIsolation::None,
+            Isolation::NetnsThenDrop { uid, gid } => PreparedIsolation::NetnsThenDrop { uid, gid },
+            Isolation::UserNetwork(prepared) => match prepared.prepare() {
+                Ok(mapping) => PreparedIsolation::Mapped(mapping),
+                Err(error) => {
+                    tracing::error!(%error, "could not prepare trusted workload mapping; refusing spawn");
+                    PreparedIsolation::Refuse
+                }
+            },
+        };
         super::hook::pre_exec(cmd, move || {
-            harden_child(isolation, &mut seccomp, &mut landlock, &limits, &start)
+            harden_child(&isolation, &mut seccomp, &mut landlock, &limits, &start)
         });
         Hook::Installed
     }
@@ -1336,8 +1517,10 @@ mod imp {
         _syscalls: SeccompPolicy,
     ) -> Hook {
         let landlock_required = match filesystem {
-            FilesystemConfinement::Landlock { .. } => true,
-            FilesystemConfinement::Waived { .. } | FilesystemConfinement::NotApplied => false,
+            FilesystemConfinement::Landlock { abi: _ } => true,
+            FilesystemConfinement::Waived { kernel: _ } | FilesystemConfinement::NotApplied => {
+                false
+            }
         };
         // A network namespace exists only on Linux: an isolated service is
         // refused here like a filter is.
