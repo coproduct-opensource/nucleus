@@ -9,7 +9,7 @@
 //! The ioctls go through `kvm-ioctls`' safe wrappers — the crate the VMM itself
 //! is built on — so this adds no `unsafe` to the workspace.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The only KVM API version there has ever been since 2.6.22. Anything else is
 /// not a KVM this VMM can use.
@@ -17,7 +17,7 @@ pub const STABLE_API: i32 = 12;
 
 /// The outcome of probing KVM. Three cases, never a bool: "there is no KVM" and
 /// "there is one and it does not work" have different remedies.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Kvm {
     /// Opened, reported the stable API, and created a VM.
