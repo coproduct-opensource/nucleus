@@ -10,8 +10,9 @@ use sha2::{Digest, Sha256};
 
 use crate::improve::{Judgement, judge};
 use crate::record::{
-    Build, DecodeError, Direction, GENERATION_DOMAIN, Generation, Role, SEED_DOMAIN, Seed,
-    SignedGeneration, Tier, decode, id_of, ledger_bytes, waiver_capability,
+    Build, DecodeError, Direction, Entry, GENERATION_DOMAIN, Generation, ROLLBACK_DOMAIN, Role,
+    Rollback, SEED_DOMAIN, Seed, SignedGeneration, SignedRollback, Tier, decode, id_of,
+    ledger_bytes, rollback_capability, waiver_capability,
 };
 
 /// What the relying party pins. Nothing here is read out of a certificate.
@@ -193,6 +194,19 @@ pub enum Refusal {
     /// The generation number overflowed.
     #[error("generation number overflow")]
     Overflow,
+    /// A rollback signed by a key other than the one its role requires: the current judge for
+    /// a runtime rollback, the restored judge for a judge rollback.
+    #[error("rollback signed by a judge key its role does not allow")]
+    RollbackSigner,
+    /// A rollback whose `from` is not the generation currently promoted for its role.
+    #[error("rollback from {0}, which is not the promoted generation of its role")]
+    RollbackFrom(String),
+    /// A rollback whose target is not an earlier verified generation of the same role.
+    #[error("rollback target {0} is not an earlier verified generation of its role")]
+    RollbackTarget(String),
+    /// A judge rollback without the owner's decision, or a runtime rollback carrying one.
+    #[error("rollback decision: {0}")]
+    RollbackDecision(String),
 }
 
 /// A chain refusal: the seed, or the generation at a position and why.
@@ -206,6 +220,14 @@ pub enum ChainError {
     Generation {
         /// Position.
         at: u64,
+        /// Why.
+        refusal: Refusal,
+    },
+    /// A rollback, after this many verified generations.
+    #[error("rollback after generation {after}: {refusal}")]
+    Rollback {
+        /// How many generations preceded it.
+        after: u64,
         /// Why.
         refusal: Refusal,
     },
@@ -254,6 +276,39 @@ impl VerifiedGeneration {
     }
 }
 
+/// One verified rollback, as a relying party reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedRollback {
+    id: String,
+    role: Role,
+    from: String,
+    to: String,
+    reason: String,
+}
+
+impl VerifiedRollback {
+    /// Its id.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    /// Which role's pointer moved.
+    pub const fn role(&self) -> Role {
+        self.role
+    }
+    /// The generation it moved away from.
+    pub fn from(&self) -> &str {
+        &self.from
+    }
+    /// The generation (or seed) it restored.
+    pub fn to(&self) -> &str {
+        &self.to
+    }
+    /// Why.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 /// A chain whose every generation verified from the pinned seed.
 ///
 /// Fields private; the only constructor is [`verify_chain`] (ADR 0007 C-1).
@@ -267,9 +322,12 @@ pub struct VerifiedChain {
     /// a chain that has since grown.
     generation: String,
     generations: Vec<VerifiedGeneration>,
+    rollbacks: Vec<VerifiedRollback>,
     ledger: BTreeMap<String, i64>,
     runtime_release: String,
     judge_release: String,
+    runtime_promoted: String,
+    judge_promoted: String,
 }
 
 impl VerifiedChain {
@@ -286,7 +344,19 @@ impl VerifiedChain {
     pub fn generations(&self) -> &[VerifiedGeneration] {
         &self.generations
     }
-    /// The ledger after the last generation, both namespaces.
+    /// Every rollback, in order.
+    pub fn rollbacks(&self) -> &[VerifiedRollback] {
+        &self.rollbacks
+    }
+    /// The id of the generation now promoted for `role` (the seed id if none is), after every
+    /// rollback.
+    pub fn promoted(&self, role: Role) -> &str {
+        match role {
+            Role::Runtime => &self.runtime_promoted,
+            Role::Judge => &self.judge_promoted,
+        }
+    }
+    /// The ledger after the last entry, both namespaces.
     pub fn ledger(&self) -> &BTreeMap<String, i64> {
         &self.ledger
     }
@@ -312,7 +382,30 @@ fn key_of(hex64: &str) -> Option<ed25519_dalek::VerifyingKey> {
     ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok()
 }
 
-/// What the walk carries from one generation to the next.
+/// A judge as the walk knows it: the generation that named it, and its key.
+#[derive(Clone)]
+struct JudgeState {
+    id: String,
+    kid: String,
+    key: ed25519_dalek::VerifyingKey,
+}
+
+/// What a role looked like right after a generation (or the seed) promoted it: what a rollback
+/// to that generation restores.
+#[derive(Clone)]
+struct Snapshot {
+    id: String,
+    role: Role,
+    /// The generation number; 0 for the seed.
+    position: u64,
+    release: String,
+    /// The role's own namespace only.
+    ledger: BTreeMap<String, i64>,
+    /// For the judge role: the judge it left in office.
+    judge: Option<JudgeState>,
+}
+
+/// What the walk carries from one entry to the next.
 struct State {
     seed_id: String,
     seed: Seed,
@@ -326,6 +419,51 @@ struct State {
     ledger: BTreeMap<String, i64>,
     runtime_release: String,
     judge_release: String,
+    /// Every promotion so far, oldest first.
+    snapshots: Vec<Snapshot>,
+    /// The promoted generation of each role: its id and number.
+    runtime_at: (String, u64),
+    judge_at: (String, u64),
+}
+
+impl State {
+    fn current_judge(&self) -> JudgeState {
+        JudgeState {
+            id: self.judge_id.clone(),
+            kid: self.judge_kid.clone(),
+            key: self.judge_key,
+        }
+    }
+
+    fn promoted_at(&self, role: Role) -> &(String, u64) {
+        match role {
+            Role::Runtime => &self.runtime_at,
+            Role::Judge => &self.judge_at,
+        }
+    }
+
+    fn snapshot(&self, id: &str, role: Role, position: u64) -> Snapshot {
+        let ns = role.namespace();
+        Snapshot {
+            id: id.to_string(),
+            role,
+            position,
+            release: match role {
+                Role::Runtime => self.runtime_release.clone(),
+                Role::Judge => self.judge_release.clone(),
+            },
+            ledger: self
+                .ledger
+                .iter()
+                .filter(|(k, _)| k.starts_with(ns))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            judge: match role {
+                Role::Runtime => None,
+                Role::Judge => Some(self.current_judge()),
+            },
+        }
+    }
 }
 
 fn open_seed(bytes: &[u8], pinned: &str) -> Result<State, SeedError> {
@@ -378,20 +516,28 @@ fn open_seed(bytes: &[u8], pinned: &str) -> Result<State, SeedError> {
             return Err(SeedError::Namespace(name.clone()));
         }
     }
-    Ok(State {
+    let mut state = State {
         seed_id: id.clone(),
         previous_id: id.clone(),
         previous_issued_at: *issued_at,
         next_number: 1,
-        judge_id: id,
+        judge_id: id.clone(),
         judge_kid: judge_kid.clone(),
         judge_key: key,
         directions: directions.clone(),
         ledger: ledger.clone(),
         runtime_release: runtime_release_sha256.clone(),
         judge_release: judge_release_sha256.clone(),
+        snapshots: Vec::new(),
+        runtime_at: (id.clone(), 0),
+        judge_at: (id.clone(), 0),
         seed,
-    })
+    };
+    state.snapshots = vec![
+        state.snapshot(&id, Role::Runtime, 0),
+        state.snapshot(&id, Role::Judge, 0),
+    ];
+    Ok(state)
 }
 
 /// Verify a chain: the seed's bytes, then every generation in order.
@@ -414,13 +560,43 @@ pub fn verify_chain(
     generations: &[SignedGeneration],
     pins: &Pins<'_>,
 ) -> Result<VerifiedChain, ChainError> {
+    let entries: Vec<Entry> = generations.iter().cloned().map(Entry::Generation).collect();
+    verify_log(seed_bytes, &entries, pins)
+}
+
+/// Verify a log: the seed's bytes, then every generation and rollback in order.
+///
+/// A generation is checked as [`verify_chain`] describes. A rollback is checked for: a signature
+/// over the received bytes by a judge key this chain has verified, before anything in it is
+/// read; the canonical encoding; the seed, parent and issue time; a non-empty reason; `from`
+/// being the role's promoted generation and `to` an earlier verified generation of the same role
+/// (or the seed); the signer its role requires (the current judge for the runtime, the restored
+/// judge for the judge); and, for the judge only, an owner decision naming
+/// [`rollback_capability`]. It then restores the target's release, its role's ledger and, for
+/// the judge, its key.
+pub fn verify_log(
+    seed_bytes: &[u8],
+    entries: &[Entry],
+    pins: &Pins<'_>,
+) -> Result<VerifiedChain, ChainError> {
     let mut state = open_seed(seed_bytes, pins.seed_id).map_err(ChainError::Seed)?;
-    let mut verified = Vec::with_capacity(generations.len());
-    for signed in generations {
-        let at = state.next_number;
-        let one = step(&mut state, signed, pins)
-            .map_err(|refusal| ChainError::Generation { at, refusal })?;
-        verified.push(one);
+    let mut verified = Vec::with_capacity(entries.len());
+    let mut rollbacks = Vec::new();
+    for entry in entries {
+        match entry {
+            Entry::Generation(signed) => {
+                let at = state.next_number;
+                let one = step(&mut state, signed, pins)
+                    .map_err(|refusal| ChainError::Generation { at, refusal })?;
+                verified.push(one);
+            }
+            Entry::Rollback(signed) => {
+                let after = state.next_number.saturating_sub(1);
+                let one = step_rollback(&mut state, signed, pins)
+                    .map_err(|refusal| ChainError::Rollback { after, refusal })?;
+                rollbacks.push(one);
+            }
+        }
     }
     let State {
         seed_id,
@@ -435,14 +611,20 @@ pub fn verify_chain(
         ledger,
         runtime_release,
         judge_release,
+        snapshots: _,
+        runtime_at,
+        judge_at,
     } = state;
     Ok(VerifiedChain {
         seed_id,
         generation: previous_id,
         generations: verified,
+        rollbacks,
         ledger,
         runtime_release,
         judge_release,
+        runtime_promoted: runtime_at.0,
+        judge_promoted: judge_at.0,
     })
 }
 
@@ -673,6 +855,12 @@ fn step(
         state.judge_kid = kid;
         state.judge_key = key;
     }
+    let snapshot = state.snapshot(&id, role, number);
+    state.snapshots.push(snapshot);
+    match role {
+        Role::Runtime => state.runtime_at = (id.clone(), number),
+        Role::Judge => state.judge_at = (id.clone(), number),
+    }
     state.previous_id = id.clone();
     state.previous_issued_at = issued_at;
     state.next_number = number.checked_add(1).ok_or(Refusal::Overflow)?;
@@ -685,6 +873,142 @@ fn step(
         tier,
         improved,
         waived,
+    })
+}
+
+fn step_rollback(
+    state: &mut State,
+    signed: &SignedRollback,
+    pins: &Pins<'_>,
+) -> Result<VerifiedRollback, Refusal> {
+    // Authenticate first, against every judge key this chain has verified: nothing in the body is
+    // read before one of them signed these exact bytes. Which of them was allowed to is decided
+    // below, once the role and target are known.
+    let body = decode_b64("body_b64", &signed.body_b64)?;
+    let sig = decode_b64("signature_b64", &signed.signature_b64)?;
+    let sig: [u8; 64] = sig
+        .try_into()
+        .map_err(|_| Refusal::Envelope("signature_b64"))?;
+    let signature = ed25519_dalek::Signature::from_bytes(&sig);
+    let mut message = ROLLBACK_DOMAIN.to_vec();
+    message.extend_from_slice(&body);
+    let known = std::iter::once(state.current_judge())
+        .chain(state.snapshots.iter().filter_map(|s| s.judge.clone()));
+    let signer = known
+        .into_iter()
+        .find(|j| j.key.verify_strict(&message, &signature).is_ok())
+        .ok_or(Refusal::BadSignature)?;
+    let id = id_of(ROLLBACK_DOMAIN, &body);
+    let rollback: Rollback = decode(&body).map_err(Refusal::Decode)?;
+
+    let Rollback {
+        seed,
+        parent,
+        role,
+        from,
+        to,
+        reason,
+        decision,
+        signer_kid,
+        issued_at,
+    } = rollback;
+
+    if seed != state.seed_id {
+        return Err(Refusal::WrongSeed(seed));
+    }
+    if parent != state.previous_id {
+        return Err(Refusal::Parent(parent));
+    }
+    if issued_at < state.previous_issued_at {
+        return Err(Refusal::IssuedBackwards {
+            previous: state.previous_issued_at,
+            got: issued_at,
+        });
+    }
+    if reason.trim().is_empty() {
+        return Err(Refusal::Malformed("reason"));
+    }
+
+    // Backwards only, within the role, to something this chain verified.
+    let (current_id, current_position) = state.promoted_at(role).clone();
+    if from != current_id {
+        return Err(Refusal::RollbackFrom(from));
+    }
+    let target = state
+        .snapshots
+        .iter()
+        .rev()
+        .find(|s| s.id == to && s.role == role && s.position < current_position)
+        .cloned()
+        .ok_or_else(|| Refusal::RollbackTarget(to.clone()))?;
+
+    // Who may sign, and with what authority.
+    let required = match role {
+        Role::Runtime => state.current_judge(),
+        Role::Judge => target
+            .judge
+            .clone()
+            .ok_or(Refusal::Malformed("judge snapshot"))?,
+    };
+    if signer.key != required.key || signer_kid != required.kid {
+        return Err(Refusal::RollbackSigner);
+    }
+    match (role, decision) {
+        (Role::Runtime, None) => {}
+        (Role::Runtime, Some(_)) => {
+            return Err(Refusal::RollbackDecision(
+                "a runtime rollback is the judge's; an owner decision on one is unused".into(),
+            ));
+        }
+        (Role::Judge, None) => {
+            return Err(Refusal::RollbackDecision(
+                "rolling the judge back needs the owner's decision".into(),
+            ));
+        }
+        (Role::Judge, Some(bundle)) => {
+            let decision = nucleus_signed_decision::verify(
+                &bundle,
+                pins.owner_roots,
+                issued_at,
+                &state.seed.owner_tenant,
+            )
+            .map_err(|e| Refusal::RollbackDecision(e.to_string()))?;
+            let cap = rollback_capability(&state.seed_id, &from, &to);
+            match decision.covers(ScopeRef::Capability(&cap)) {
+                Coverage::Covered => {}
+                Coverage::OutOfScope | Coverage::CannotTell => {
+                    return Err(Refusal::RollbackDecision(format!("does not cover {cap}")));
+                }
+            }
+        }
+    }
+
+    // Restore the target's release, its role's ledger and, for the judge, its key.
+    let ns = role.namespace();
+    state.ledger.retain(|k, _| !k.starts_with(ns));
+    state.ledger.extend(target.ledger.clone());
+    match role {
+        Role::Runtime => {
+            state.runtime_release = target.release.clone();
+            state.runtime_at = (target.id.clone(), target.position);
+        }
+        Role::Judge => {
+            state.judge_release = target.release.clone();
+            state.judge_at = (target.id.clone(), target.position);
+            state.judge_id = required.id;
+            state.judge_kid = required.kid;
+            state.judge_key = required.key;
+        }
+    }
+    state.previous_id = id.clone();
+    state.previous_issued_at = issued_at;
+
+    Ok(VerifiedRollback {
+        id,
+        role,
+        from,
+        to,
+        reason,
     })
 }
 

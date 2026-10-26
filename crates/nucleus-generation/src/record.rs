@@ -21,6 +21,11 @@ use sha2::{Digest, Sha256};
 pub const SEED_DOMAIN: &[u8] = b"nucleus/generation-seed/v1\n";
 /// Domain of a generation's id and of the bytes its judge signs.
 pub const GENERATION_DOMAIN: &[u8] = b"nucleus/generation/v1\n";
+/// Domain of a rollback record's id and of the bytes its signer signs.
+pub const ROLLBACK_DOMAIN: &[u8] = b"nucleus/generation-rollback/v1\n";
+/// The capability an owner decision must name, exactly, to roll the judge back:
+/// `generation.rollback:<seed id>:<from id>:<to id>`.
+pub const ROLLBACK_CAPABILITY: &str = "generation.rollback";
 /// The capability an owner waiver must name, exactly, for each metric it lets regress:
 /// `generation.regress:<seed id>:<generation number>:<metric>`.
 pub const WAIVER_CAPABILITY: &str = "generation.regress";
@@ -197,6 +202,73 @@ pub struct SignedGeneration {
     pub body_b64: String,
     /// Standard base64 of the 64-byte Ed25519 signature.
     pub signature_b64: String,
+}
+
+/// Moving one role's promotion pointer back to an earlier verified generation.
+///
+/// Owner decision, 2026-10-26: **a rollback is not a generation.** Under strict improvement a
+/// revert can never be one, since it can only hold or regress what the generation it undoes
+/// improved (gatehouse F-231). So a rollback carries no number and is judged for no
+/// improvement: it restores the target's release and its role's ledger, and, for the judge, the
+/// target's judge key. It is still linked into the log (the next entry's `parent` is its id), so
+/// it cannot be dropped from a chain without breaking the chain.
+///
+/// Who may sign it follows from who might be broken:
+///
+/// * **Runtime:** the current judge, alone. Rolling back a runtime that failed its health check
+///   is the judge's call and must not wait for a person.
+/// * **Judge:** the judge key being restored, *and* an owner decision naming the capability
+///   [`rollback_capability`]. The current judge's signature is not required, because the judge
+///   being rolled back is the one that may be broken, and requiring it would let a broken judge
+///   lock out its own repair (gatehouse F-211).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rollback {
+    /// The seed id this chain started from.
+    pub seed: String,
+    /// The previous log entry's id: a generation, a rollback, or the seed.
+    pub parent: String,
+    /// Which role's pointer moves.
+    pub role: Role,
+    /// The generation currently promoted for that role (the seed id if none has been).
+    pub from: String,
+    /// An earlier verified generation of the same role, or the seed id.
+    pub to: String,
+    /// Why, in words. Never empty.
+    pub reason: String,
+    /// The owner's decision: required exactly for a judge rollback.
+    pub decision: Option<DecisionBundle>,
+    /// The key id of the signer.
+    pub signer_kid: String,
+    /// Unix seconds. Never before the previous entry's.
+    pub issued_at: u64,
+}
+
+/// A rollback as it travels: the exact body bytes and the signature over [`ROLLBACK_DOMAIN`]
+/// followed by those bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedRollback {
+    /// Standard base64 of the body's canonical JSON bytes.
+    pub body_b64: String,
+    /// Standard base64 of the 64-byte Ed25519 signature.
+    pub signature_b64: String,
+}
+
+/// One entry of the log a relying party verifies, in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case")]
+pub enum Entry {
+    /// A generation.
+    Generation(SignedGeneration),
+    /// A rollback.
+    Rollback(SignedRollback),
+}
+
+/// The capability an owner decision must carry to roll the judge back from `from` to `to` in
+/// the chain seeded by `seed_id`.
+pub fn rollback_capability(seed_id: &str, from: &str, to: &str) -> String {
+    format!("{ROLLBACK_CAPABILITY}:{seed_id}:{from}:{to}")
 }
 
 /// Canonical bytes of any record: `serde_json` in declared field order.

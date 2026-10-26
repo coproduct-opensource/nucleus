@@ -872,3 +872,361 @@ fn movement_follows_direction() {
         );
     }
 }
+
+// ── Rollback ────────────────────────────────────────────────────────────────
+
+fn check_log(seed: &Seed, log: &[Entry]) -> Result<VerifiedChain, ChainError> {
+    let (bytes, id) = seed_bytes(seed);
+    let roots = owner_roots();
+    let keys = [executor().verifying_key().to_bytes()];
+    verify_log(
+        &bytes,
+        log,
+        &Pins {
+            seed_id: &id,
+            executor_keys: &keys,
+            owner_roots: &roots,
+        },
+    )
+}
+
+fn entry(g: &Generation, key: &SigningKey) -> (Entry, String) {
+    let (signed, id) = sign(g, key);
+    (Entry::Generation(signed), id)
+}
+
+fn rollback(
+    seed_id: &str,
+    parent: &str,
+    role: Role,
+    from: &str,
+    to: &str,
+    signer_kid: &str,
+    issued_at: u64,
+) -> Rollback {
+    Rollback {
+        seed: seed_id.into(),
+        parent: parent.into(),
+        role,
+        from: from.into(),
+        to: to.into(),
+        reason: "the promoted release failed its health check".into(),
+        decision: None,
+        signer_kid: signer_kid.into(),
+        issued_at,
+    }
+}
+
+fn sign_rollback(r: &Rollback, key: &SigningKey) -> (Entry, String) {
+    let body = encode(r).unwrap();
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut message = ROLLBACK_DOMAIN.to_vec();
+    message.extend_from_slice(&body);
+    (
+        Entry::Rollback(SignedRollback {
+            body_b64: b64.encode(&body),
+            signature_b64: b64.encode(key.sign(&message).to_bytes()),
+        }),
+        id_of(ROLLBACK_DOMAIN, &body),
+    )
+}
+
+fn rollback_refusal(r: Result<VerifiedChain, ChainError>) -> Refusal {
+    match r {
+        Err(ChainError::Rollback { refusal, .. }) => refusal,
+        other => panic!("expected a rollback refusal, got {other:?}"),
+    }
+}
+
+/// A runtime generation, then the judge rolling it back to the seed.
+fn runtime_then_rollback(
+    edit: impl FnOnce(&mut Rollback),
+    key: &SigningKey,
+) -> (Seed, String, Vec<Entry>, String) {
+    let seed = seed_with(Tier::Disagreed);
+    let (_, seed_id) = seed_bytes(&seed);
+    let g1 = generation(
+        &seed_id,
+        1,
+        &seed_id,
+        Role::Runtime,
+        runtime_ledger(101, 9, 430),
+        &seed_id,
+        "judge-0",
+    );
+    let (e1, id1) = entry(&g1, &judge0());
+    let mut r = rollback(
+        &seed_id,
+        &id1,
+        Role::Runtime,
+        &id1,
+        &seed_id,
+        "judge-0",
+        NOW + 1,
+    );
+    edit(&mut r);
+    let (er, rid) = sign_rollback(&r, key);
+    (seed, seed_id, vec![e1, er], rid)
+}
+
+/// The judge rolls a runtime back on its own: the release, the pointer and the runtime's ledger
+/// return to the target's, and the next runtime generation is judged against that baseline. The
+/// same ledger that improved nothing over generation 1 improves on the restored seed.
+#[test]
+fn a_runtime_rollback_restores_release_ledger_and_baseline() {
+    let (seed, seed_id, mut log, rid) = runtime_then_rollback(|_| {}, &judge0());
+    let chain = check_log(&seed, &log).expect("rollback verifies");
+    assert_eq!(chain.runtime_release(), R0);
+    assert_eq!(chain.promoted(Role::Runtime), seed_id);
+    assert_eq!(chain.ledger()["runtime.passing_tests"], 100);
+    assert_eq!(chain.generation(), rid, "the rollback is the head");
+    assert_eq!(chain.rollbacks().len(), 1);
+    assert_eq!(
+        chain.generations().len(),
+        1,
+        "a rollback is not a generation"
+    );
+
+    let g2 = generation(
+        &seed_id,
+        2,
+        &rid,
+        Role::Runtime,
+        runtime_ledger(101, 9, 430),
+        &seed_id,
+        "judge-0",
+    );
+    log.push(entry(&g2, &judge0()).0);
+    let chain = check_log(&seed, &log).expect("judged against the restored baseline");
+    assert_eq!(chain.generations().len(), 2);
+    assert_eq!(chain.runtime_release(), R1);
+}
+
+/// A rollback is linked into the log: a reader not shown it cannot believe the rolled-back
+/// release is promoted, because the next entry's parent names the rollback.
+#[test]
+fn dropping_a_rollback_breaks_the_next_entry() {
+    let (seed, seed_id, log, rid) = runtime_then_rollback(|_| {}, &judge0());
+    let g2 = generation(
+        &seed_id,
+        2,
+        &rid,
+        Role::Runtime,
+        runtime_ledger(101, 9, 430),
+        &seed_id,
+        "judge-0",
+    );
+    let without = vec![log[0].clone(), entry(&g2, &judge0()).0];
+    assert_eq!(
+        refusal(check_log(&seed, &without)),
+        Refusal::Parent(rid),
+        "the generation after a dropped rollback must not verify"
+    );
+}
+
+#[test]
+fn a_rollback_moves_back_within_its_role_from_the_promoted_generation() {
+    // Not earlier: rolling back to the generation that is promoted.
+    let (seed, _, log, _) = runtime_then_rollback(|r| r.to = r.from.clone(), &judge0());
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackTarget(_)
+    ));
+    // Unknown target.
+    let (seed, _, log, _) = runtime_then_rollback(|r| r.to = DIGEST.into(), &judge0());
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackTarget(_)
+    ));
+    // From something that is not promoted.
+    let (seed, _, log, _) = runtime_then_rollback(|r| r.from = r.to.clone(), &judge0());
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackFrom(_)
+    ));
+    // Across roles: rolling the judge back to a runtime generation.
+    let (seed, _, log, _) = runtime_then_rollback(
+        |r| {
+            r.role = Role::Judge;
+            std::mem::swap(&mut r.from, &mut r.to);
+        },
+        &judge0(),
+    );
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackTarget(_)
+    ));
+}
+
+#[test]
+fn a_rollback_needs_a_reason_and_the_right_seed() {
+    let (seed, _, log, _) = runtime_then_rollback(|r| r.reason = " ".into(), &judge0());
+    assert_eq!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::Malformed("reason")
+    );
+    let (seed, _, log, _) = runtime_then_rollback(|r| r.seed = DIGEST.into(), &judge0());
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::WrongSeed(_)
+    ));
+}
+
+#[test]
+fn a_runtime_rollback_is_the_current_judges_alone() {
+    // A key this chain never verified.
+    let (seed, _, log, _) = runtime_then_rollback(|_| {}, &owner());
+    assert_eq!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::BadSignature
+    );
+    // An owner decision on a runtime rollback is unused authority.
+    let (seed, _, log, _) = runtime_then_rollback(
+        |r| r.decision = Some(waiver(vec!["anything".into()])),
+        &judge0(),
+    );
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackDecision(_)
+    ));
+
+    // A retired judge: judge 2 handed over to judge-1, so judge-0 may no longer roll back.
+    let seed = seed_with(Tier::Disagreed);
+    let (_, seed_id) = seed_bytes(&seed);
+    let g1 = generation(
+        &seed_id,
+        1,
+        &seed_id,
+        Role::Runtime,
+        runtime_ledger(101, 9, 430),
+        &seed_id,
+        "judge-0",
+    );
+    let (e1, id1) = entry(&g1, &judge0());
+    let g2 = generation(
+        &seed_id,
+        2,
+        &id1,
+        Role::Judge,
+        BTreeMap::from([("judge.gates_on_runtime".into(), 2)]),
+        &seed_id,
+        "judge-0",
+    );
+    let (e2, id2) = entry(&g2, &judge0());
+    let r = rollback(
+        &seed_id,
+        &id2,
+        Role::Runtime,
+        &id1,
+        &seed_id,
+        "judge-0",
+        NOW + 2,
+    );
+    let log = vec![e1.clone(), e2.clone(), sign_rollback(&r, &judge0()).0];
+    assert_eq!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackSigner
+    );
+    let r = rollback(
+        &seed_id,
+        &id2,
+        Role::Runtime,
+        &id1,
+        &seed_id,
+        "judge-1",
+        NOW + 2,
+    );
+    let log = vec![e1, e2, sign_rollback(&r, &judge1()).0];
+    let chain = check_log(&seed, &log).expect("the current judge may");
+    assert_eq!(chain.promoted(Role::Runtime), seed_id);
+}
+
+/// A judge generation, so judge-1 is in office, and a rollback of the judge to the seed.
+fn judge_then_rollback(
+    edit: impl FnOnce(&mut Rollback),
+    key: &SigningKey,
+) -> (Seed, String, Vec<Entry>, String) {
+    let seed = seed_with(Tier::Disagreed);
+    let (_, seed_id) = seed_bytes(&seed);
+    let g1 = generation(
+        &seed_id,
+        1,
+        &seed_id,
+        Role::Judge,
+        BTreeMap::from([("judge.gates_on_runtime".into(), 2)]),
+        &seed_id,
+        "judge-0",
+    );
+    let (e1, id1) = entry(&g1, &judge0());
+    let cap = rollback_capability(&seed_id, &id1, &seed_id);
+    let mut r = rollback(
+        &seed_id,
+        &id1,
+        Role::Judge,
+        &id1,
+        &seed_id,
+        "judge-0",
+        NOW + 1,
+    );
+    r.decision = Some(waiver(vec![cap]));
+    edit(&mut r);
+    let (er, rid) = sign_rollback(&r, key);
+    (seed, seed_id, vec![e1, er], rid)
+}
+
+/// The owner rolls the judge back, signed by the judge being restored. The rolled-back judge's
+/// signature is not needed, so a broken judge cannot lock out its own repair, and once it is
+/// rolled back it can no longer admit anything.
+#[test]
+fn the_owner_and_the_restored_judge_roll_the_judge_back() {
+    let (seed, seed_id, mut log, rid) = judge_then_rollback(|_| {}, &judge0());
+    let chain = check_log(&seed, &log).expect("judge rollback verifies");
+    assert_eq!(chain.judge_release(), J1);
+    assert_eq!(chain.promoted(Role::Judge), seed_id);
+    assert_eq!(chain.ledger()["judge.gates_on_runtime"], 1);
+
+    let g2 = |key_kid: &str| {
+        generation(
+            &seed_id,
+            2,
+            &rid,
+            Role::Runtime,
+            runtime_ledger(101, 9, 430),
+            &seed_id,
+            key_kid,
+        )
+    };
+    let mut by_retired = log.clone();
+    by_retired.push(entry(&g2("judge-1"), &judge1()).0);
+    assert_eq!(
+        refusal(check_log(&seed, &by_retired)),
+        Refusal::BadSignature,
+        "the rolled-back judge no longer admits"
+    );
+    log.push(entry(&g2("judge-0"), &judge0()).0);
+    let chain = check_log(&seed, &log).expect("the restored judge admits");
+    assert_eq!(chain.runtime_release(), R1);
+}
+
+#[test]
+fn a_judge_rollback_needs_the_owner_and_the_restored_key() {
+    let (seed, _, log, _) = judge_then_rollback(|r| r.decision = None, &judge0());
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackDecision(_)
+    ));
+    let (seed, _, log, _) = judge_then_rollback(
+        |r| r.decision = Some(waiver(vec!["generation.rollback:other".into()])),
+        &judge0(),
+    );
+    assert!(matches!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackDecision(_)
+    ));
+    // The judge in office cannot sign a rollback of itself in place of the restored judge.
+    let (seed, _, log, _) = judge_then_rollback(|r| r.signer_kid = "judge-1".into(), &judge1());
+    assert_eq!(
+        rollback_refusal(check_log(&seed, &log)),
+        Refusal::RollbackSigner
+    );
+}
