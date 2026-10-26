@@ -31,6 +31,11 @@
 //!   right gates.
 //! * **Not the seed.** Everything is relative to a seed the relying party chose to pin, and to
 //!   the executor keys and owner roots it pinned beside it.
+//! * **Not rollback.** Under strict improvement a revert can never be a generation: it can only
+//!   hold or regress what the generation it undoes improved. Owner decision, 2026-10-26:
+//!   rollback moves the promotion pointer back to an earlier verified generation and does not
+//!   extend the chain. That record is not in this format yet, so a chain verified here names
+//!   its head as promoted even when an operator has rolled back.
 
 #![forbid(unsafe_code)]
 // Panic-free in the shipped build: a verifier that can panic on hostile bytes is a verifier an
