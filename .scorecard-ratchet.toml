@@ -273,9 +273,12 @@ population_floor = 278
 # 2026-10-13 (Program B M1, merged with the above): new crate nucleus-memory-context, the
 # pure kernel that decides what a run may see of shared memory and whether a publish is
 # valid, declares all seven from its first commit. Combined 43 of 100 = 43.00%.
-floor_bp = 4300
+# 2026-10-26 (generation certificates): nucleus-generation verifies a chain of releases
+# from bytes any relying party is handed and declares all seven from its first commit; a
+# verifier that panics on a crafted certificate is one an attacker can stop. 44 of 101 = 43.56%.
+floor_bp = 4356
 floor_set = "measurement"
-population_floor = 100
+population_floor = 101
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -425,9 +428,14 @@ population_floor = 100
 # launcher writes to a file, enters as an affine right taken by value to deliver. Unbounded
 # it reddened this family at 20/28 (71.42%). It carries not_after (its certificate's expiry)
 # from the commit that adds it, and into_pipe refuses a stale key by name. 21 of 28 = 75.00%.
-floor_bp = 7500
+# 2026-10-26 (generation certificates): nucleus_generation::VerifiedChain enters as an
+# affine right (must_use, not Clone). Unbounded it reddened this family at 21/29 (72.41%).
+# It carries the generation it was decided against, the chain head it verified, from the
+# commit that adds it: a verdict about a chain that has since grown is not current, so a
+# relying party compares that head before acting. 22 of 29 = 75.86%.
+floor_bp = 7586
 floor_set = "measurement"
-population_floor = 28
+population_floor = 29
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

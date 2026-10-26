@@ -6149,6 +6149,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-generation"
+version = "1.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "nucleus-ci-verdict",
+ "nucleus-receipt",
+ "nucleus-signed-decision",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "nucleus-github-oidc"
 version = "1.0.0"
 dependencies = [
@@ -6361,6 +6377,7 @@ dependencies = [
 name = "nucleus-microvm-host"
 version = "1.0.0"
 dependencies = [
+ "base64 0.23.1",
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
@@ -6372,6 +6389,7 @@ dependencies = [
  "sha2 0.11.0",
  "tar",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "zeroize",
 ]

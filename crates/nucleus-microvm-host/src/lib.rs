@@ -1,6 +1,9 @@
 //! What a host must provide to run nucleus microVMs, and how a workspace gets
 //! into and out of one.
 //!
+//! - [`contract`]: the host contract every envelope (an Apple `container` VM on a
+//!   Mac, or bare metal) must meet, decided by one pure function, and the signed
+//!   probe a relying party verifies by re-deciding it.
 //! - [`probe`]: the host requirements table the node's launch preflight uses,
 //!   plus [`probe::kvm`], which opens `/dev/kvm` and creates a VM rather than
 //!   trusting that the device node exists.
@@ -18,7 +21,7 @@
 //! - [`input_manifest`]: measure a host image's installed inputs into the
 //!   manifest `setup` and `verify` read.
 //!
-//! The `nucleus-hostctl` binary exposes them as `probe`, `seed`, `harvest` and
+//! The `nucleus-hostctl` binary exposes them as `conform`, `probe`, `seed`, `harvest` and
 //! `relay`, `run-node`, for the process that hosts the node, and
 //! `input-manifest`, for the image build.
 
@@ -35,6 +38,7 @@
     )
 )]
 
+pub mod contract;
 pub mod ext4;
 pub mod input_manifest;
 pub mod jail_user;
