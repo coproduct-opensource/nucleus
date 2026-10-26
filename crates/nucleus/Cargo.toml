@@ -40,7 +40,7 @@ nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }
 nucleus-spec = { path = "../nucleus-spec" }
 
 # Atomic budget tracking
-parking_lot = "0.12"
+parking_lot = "0.13"
 
 # Approval token signing and nonces
 hmac = { workspace = true }
