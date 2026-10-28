@@ -30,9 +30,11 @@
 //! waits for upload completion; response streaming, including SSE, is preserved.
 //!
 //! The decision includes actual WebFetch authority and the guest's declared
-//! operation. Trusted mappings of remote API semantics, revocation, and runtime
-//! cost settlement remain separate work. Download bytes are not charged by the
-//! upload-only egress ledger; [`StreamLimits`] bounds each response.
+//! operation. Trusted mappings of remote API semantics and revocation remain
+//! separate work. A metered upstream (`crate::metering`) is priced from its
+//! reported usage after the response; any excess over the tariff is debited then.
+//! Download bytes are not charged by the upload-only egress ledger;
+//! [`StreamLimits`] bounds each response.
 
 mod staged;
 pub(crate) mod staging_budget;
@@ -813,6 +815,9 @@ where
     let (tx, rx) = mpsc::channel(4);
     use nucleus_spec::host_effect::outcome::Termination;
     let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time());
+    if let Some(metering) = resolved.entry().metering() {
+        observation.meter(metering, call_charge.micro_usd());
+    }
     // The body owns the charge through HTTP handoff and cancellation.
     let call = (ctx.streams.caller)(StreamCall {
         _permit: permit,

@@ -140,6 +140,7 @@ mod memory_flow;
 mod memory_provisioning;
 mod memory_space;
 mod memory_space_api;
+mod metering;
 mod net;
 #[cfg(test)]
 mod node_state_census;

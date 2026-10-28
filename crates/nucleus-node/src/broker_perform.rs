@@ -24,9 +24,10 @@
 //!
 //! The per-pod frame secret authenticates the channel; it is not evidence that
 //! a compromised guest performed its own policy checks. Host observations raise
-//! taint independently of guest reports. Trusted mapping of remote API semantics,
-//! revocation and cost settlement remain open. Host-signed records distinguish
-//! authorization from transport observations; neither proves remote action success.
+//! taint independently of guest reports. Trusted mapping of remote API semantics
+//! and revocation remain open; a metered upstream is settled after its response.
+//! Host-signed records distinguish authorization from transport
+//! observations; neither proves remote action success.
 
 pub(crate) mod effect;
 
@@ -905,6 +906,9 @@ where
             // Charged as sent whatever the outcome: a transport failure is
             // ambiguous about whether the upstream saw the body.
             let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time);
+            if let Some(metering) = resolved.entry().metering() {
+                observation.meter(metering, call_charge.micro_usd());
+            }
             let outcome = tokio::time::timeout_at(
                 deadline,
                 call(UpstreamCall {
