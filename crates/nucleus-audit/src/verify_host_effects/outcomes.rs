@@ -1,7 +1,7 @@
 use super::invalid;
 use crate::AuditError;
 use ed25519_dalek::{Signature, VerifyingKey};
-use nucleus_spec::host_effect::outcome::{SignedOutcome, VERSION, record_hash, signing_bytes};
+use nucleus_spec::host_effect::outcome::{SignedOutcome, record_hash, signing_bytes};
 use std::{collections::BTreeSet, path::Path};
 
 pub(super) fn verify(
@@ -17,7 +17,7 @@ pub(super) fn verify(
         let (number, text) = line?;
         let record: SignedOutcome = crate::record_lines::parse(number, &text)?;
         let claim = &record.outcome;
-        if claim.version != VERSION
+        if !claim.schema_valid()
             || claim.pod_id != pod
             || claim.sequence != seen.len() as u64 + 1
             || claim.previous_record_sha256 != previous
@@ -47,7 +47,7 @@ pub(super) fn verify(
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-    use nucleus_spec::host_effect::outcome::{Outcome, Termination};
+    use nucleus_spec::host_effect::outcome::{Outcome, Termination, VERSION};
 
     fn signed(
         key: &SigningKey,
@@ -64,6 +64,7 @@ mod tests {
             termination: Termination::Interrupted,
             response: None,
             previous_record_sha256: previous,
+            settlement: None,
         };
         let signature = hex::encode(key.sign(&signing_bytes(&outcome).unwrap()).to_bytes());
         SignedOutcome { outcome, signature }
@@ -110,5 +111,42 @@ mod tests {
             verify(&path, "pod-a", &key.verifying_key(), &auth),
             Err(AuditError::TornTail { .. })
         ));
+    }
+
+    /// Version 2 records (a settlement or provider error) verify; a version-1
+    /// record carrying either is refused even when correctly signed.
+    #[test]
+    fn accepts_version_two_and_refuses_smuggled_version_two_fields() {
+        use nucleus_spec::host_effect::outcome::Settlement;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("outcomes.jsonl");
+        let key = SigningKey::from_bytes(&[38; 32]);
+        let auth = BTreeSet::from(["auth-a".into()]);
+        let resign = |mut record: SignedOutcome, version: u32| {
+            record.outcome.version = version;
+            record.outcome.settlement = Some(Settlement::UsageUnreadable {
+                tariff_micro_usd: 1,
+                reason: "r".into(),
+            });
+            record.signature = hex::encode(
+                key.sign(&signing_bytes(&record.outcome).unwrap())
+                    .to_bytes(),
+            );
+            record
+        };
+        let check = |record: &SignedOutcome| {
+            std::fs::write(
+                &path,
+                format!("{}\n", serde_json::to_string(record).unwrap()),
+            )
+            .unwrap();
+            verify(&path, "pod-a", &key.verifying_key(), &auth)
+        };
+        let base = signed(&key, 1, "auth-a", String::new());
+        assert_eq!(check(&resign(base.clone(), 2)).unwrap(), 1);
+        assert!(
+            check(&resign(base, 1)).is_err(),
+            "a v1 record may not carry v2 fields"
+        );
     }
 }

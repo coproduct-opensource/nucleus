@@ -239,6 +239,10 @@ struct EntryFile {
     /// model's method and not every API that shares the base.
     #[serde(default)]
     paths: Vec<String>,
+    /// Operator per-token prices and where the upstream reports usage and
+    /// refusal reasons. Absent: only the flat `call_charge_micro_usd` is debited.
+    #[serde(default)]
+    metering: Option<crate::metering::MeteringFile>,
 }
 
 /// `value_encoding = "raw"` or `value_encoding = { basic = { username = "…" } }`.
@@ -408,6 +412,8 @@ pub(crate) struct RegistryEntry {
     header_policy: HeaderPolicy,
     /// Exact paths the guest may call; empty is any path under the base. Validated at load.
     paths: BTreeSet<String>,
+    /// Post-call pricing from reported usage; `None` keeps the flat tariff only.
+    metering: Option<crate::metering::Metering>,
 }
 
 /// What the operator fixed about an upstream's request headers beyond the
@@ -465,6 +471,9 @@ impl RegistryEntry {
     pub(crate) fn with_call_charge(mut self, micro_usd: u64) -> Self {
         self.call_charge = Some(CallCharge(micro_usd));
         self
+    }
+    pub(crate) fn metering(&self) -> Option<&crate::metering::Metering> {
+        self.metering.as_ref()
     }
     pub(crate) fn call_charge(&self) -> Result<CallCharge, &'static str> {
         self.call_charge
@@ -568,6 +577,7 @@ impl RegistryEntry {
             request_headers: BTreeSet::new(),
             header_policy: HeaderPolicy::none(),
             paths: BTreeSet::new(),
+            metering: None,
         }
     }
 }
@@ -644,9 +654,14 @@ impl UpstreamRegistry {
             let effects = nucleus_spec::EffectTable::from_parts(up.kind, up.effects)
                 .map_err(|e| format!("upstream {:?}: {e}", up.name))?;
             let paths = paths(&up.name, up.paths)?;
+            let metering = up
+                .metering
+                .map(|m| crate::metering::Metering::from_file(&up.name, m))
+                .transpose()?;
             entries.push(RegistryEntry {
                 value_encoding,
                 paths,
+                metering,
                 request_headers,
                 header_policy,
                 call_charge: up.call_charge_micro_usd.map(CallCharge),

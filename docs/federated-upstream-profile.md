@@ -361,8 +361,39 @@ an authorized attempt retains its charge on timeout, cancellation, or upstream
 failure. Cached PERFORM retries do not debit again. Approval details and signed
 authorization records include the charge, and a price change invalidates the
 effect binding. This is accounting for an operator tariff, not a guarantee about
-variable provider bills. Variable usage pricing and terminal settlement require
-additional trusted evidence.
+variable provider bills.
+
+An entry may add a `metering` table, priced by the operator and read from the
+upstream's own response:
+
+```toml
+[upstream.metering]
+input_micro_usd_per_million_tokens  = 300000   # operator inputs, not provider prices
+output_micro_usd_per_million_tokens = 2500000
+input_tokens  = ["/usage/input"]                 # JSON pointers; at least one must resolve
+output_tokens = ["/usage/output", "/usage/reasoning"]  # summed; absent ones count zero
+error_code    = "/error/code"                    # optional: kept from refused responses
+error_status  = "/error/status"
+error_message = "/error/message"
+```
+
+After a 2xx response observed in full, the host reads usage from the whole JSON body,
+or from the last server-sent-event `data:` document that carries it, prices the call
+(rounded up) and debits any excess over `call_charge_micro_usd` under the same lock
+that signs the outcome. The ledger only grows: the tariff stays a floor and an
+overestimate is not refunded. A top-up cannot be refused, because the spend already
+happened; it saturates the pod budget at its ceiling, so the next authorization
+refuses. The outcome record (version 2) carries the settlement. A response larger
+than 4 MiB, cut short, or without the named fields is recorded as `usage_unreadable`
+with its reason, never priced at zero.
+
+A non-2xx response keeps only the named error fields, bounded to 64 bytes of status
+and 512 of message with control characters replaced, so a refusal's stated reason
+survives in the signed record. No other response text is kept. Without a `metering`
+table an entry's outcome records are version 1, byte for byte as before.
+
+This prices what the upstream reports, with the operator's rates. It does not see
+the provider's bill, credits, or calls made by principals outside this node.
 
 Without `--upstreams` the node has no registry, and every request for a credentialed
 upstream is refused, the root minter's included: a pod spec never chooses which node

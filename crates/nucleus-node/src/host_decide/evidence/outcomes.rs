@@ -2,7 +2,9 @@
 //! records an interrupted observation; abrupt host death leaves a missing outcome.
 use crate::host_decide::SharedPodPolicy;
 use ed25519_dalek::Signer;
-use nucleus_spec::host_effect::outcome::{self, Outcome, Response, SignedOutcome, Termination};
+use nucleus_spec::host_effect::outcome::{
+    self, Outcome, Response, Settlement, SignedOutcome, Termination,
+};
 use sha2::{Digest, Sha256};
 use std::{
     path::{Path, PathBuf},
@@ -53,6 +55,7 @@ impl super::Evidence {
         authorization: String,
         response: Option<Response>,
         termination: Termination,
+        settlement: Option<Settlement>,
         now: u64,
     ) -> Result<(), String> {
         if self.faulted {
@@ -60,8 +63,14 @@ impl super::Evidence {
         }
         let result = (|| {
             let journal = &mut self.outcomes;
+            // A record with no version-2 field stays version 1, byte for byte, so an
+            // auditor that predates version 2 still verifies unmetered history.
+            let v2 = settlement.is_some()
+                || response
+                    .as_ref()
+                    .is_some_and(|r| r.provider_error.is_some());
             let outcome = Outcome {
-                version: outcome::VERSION,
+                version: if v2 { outcome::VERSION } else { 1 },
                 pod_id: self.pod.to_string(),
                 sequence: journal.sequence + 1,
                 authorization_record_sha256: authorization,
@@ -69,6 +78,7 @@ impl super::Evidence {
                 termination,
                 response,
                 previous_record_sha256: journal.previous.clone(),
+                settlement,
             };
             let bytes = outcome::signing_bytes(&outcome).map_err(|e| e.to_string())?;
             let record = SignedOutcome {
@@ -109,6 +119,11 @@ pub(crate) struct Pending {
     complete: bool,
     start_unix: u64,
     started: Instant,
+    /// Set only for a metered upstream: its metering and the tariff already debited.
+    metering: Option<(crate::metering::Metering, u64)>,
+    /// The body, kept only when metered, up to `metering::CAPTURE_MAX`.
+    captured: Vec<u8>,
+    overflow: bool,
 }
 
 impl super::Recorded {
@@ -122,6 +137,9 @@ impl super::Recorded {
             complete: false,
             start_unix: now,
             started: Instant::now(),
+            metering: None,
+            captured: Vec::new(),
+            overflow: false,
         }
     }
 }
@@ -130,9 +148,22 @@ impl Pending {
     pub(crate) fn response(&mut self, status: u16) {
         self.status = Some(status);
     }
+    /// Meter this call: keep a bounded copy of the body to read usage and any
+    /// refusal reason from. `tariff` is the flat charge already debited.
+    pub(crate) fn meter(&mut self, metering: &crate::metering::Metering, tariff: u64) {
+        self.metering = Some((metering.clone(), tariff));
+    }
     pub(crate) fn bytes(&mut self, bytes: &[u8]) {
         self.body.update(bytes);
         self.bytes = self.bytes.saturating_add(bytes.len() as u64);
+        if self.metering.is_some() && !self.overflow {
+            if self.captured.len().saturating_add(bytes.len()) <= crate::metering::CAPTURE_MAX {
+                self.captured.extend_from_slice(bytes);
+            } else {
+                self.overflow = true;
+                self.captured = Vec::new();
+            }
+        }
     }
     pub(crate) fn body_complete(&mut self) {
         self.complete = true;
@@ -144,19 +175,46 @@ impl Pending {
         let Some(authorization) = self.authorization.take() else {
             return Ok(());
         };
+        let refused = self.status.is_some_and(|s| s >= 400);
+        let provider_error = match &self.metering {
+            Some((m, _)) if refused && m.reads_errors() && !self.overflow => {
+                m.provider_error(&self.captured)
+            }
+            _ => None,
+        };
         let response = self.status.map(|status| Response {
             status,
             body_sha256: hex::encode(self.body.clone().finalize()),
             body_bytes: self.bytes,
             body_complete: self.complete,
+            provider_error,
         });
+        // Only a successful metered response is priced; a refusal is not billed
+        // beyond the tariff.
+        let settlement = match (&self.metering, self.status) {
+            (Some((m, tariff)), Some(s)) if (200..300).contains(&s) => {
+                Some(m.settle(&self.captured, self.overflow, self.complete, *tariff))
+            }
+            _ => None,
+        };
         let now = self
             .start_unix
             .saturating_add(self.started.elapsed().as_secs());
         let mut policy = self.policy.lock().map_err(|_| "host policy unavailable")?;
+        // Debit the top-up and sign the outcome under one lock, so the ledger and
+        // the record cannot disagree. The ledger saturates at its ceiling, which
+        // refuses the pod's next call: a runaway stops at the next authorization.
+        if let Some(Settlement::Priced {
+            top_up_micro_usd, ..
+        }) = &settlement
+        {
+            if *top_up_micro_usd > 0 {
+                policy.budget.settle(*top_up_micro_usd)?;
+            }
+        }
         policy
             .evidence
-            .finish(authorization, response, termination, now)
+            .finish(authorization, response, termination, settlement, now)
     }
 }
 
@@ -265,6 +323,120 @@ mod tests {
             key.verifying_key()
                 .verify_strict(&outcome::signing_bytes(&changed).unwrap(), &signature)
                 .is_err()
+        );
+    }
+
+    fn metering() -> crate::metering::Metering {
+        crate::metering::Metering::from_file(
+            "model",
+            toml::from_str(
+                r#"
+                input_micro_usd_per_million_tokens = 300000
+                output_micro_usd_per_million_tokens = 2500000
+                input_tokens = ["/meta/in"]
+                output_tokens = ["/meta/out"]
+                error_status = "/error/status"
+                error_message = "/error/message"
+                "#,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// 2026-10-27: a flat 0.10 USD tariff per call stood in for real spend, and
+    /// the provider's own refusal reason was kept only as a hash for five days.
+    #[test]
+    fn a_metered_call_is_priced_topped_up_and_signed_under_one_lock() {
+        let (dir, policy, key) = fixture();
+        let before = policy.lock().unwrap().budget.available().unwrap();
+        let mut observation = pending(&policy);
+        observation.meter(&metering(), 0);
+        observation.response(200);
+        observation.bytes(br#"{"text":"ok","meta":{"in":1000000,"out":200000}}"#);
+        observation.body_complete();
+        observation.finish(Termination::ResponseRead).unwrap();
+        let record = &records(dir.path())[0];
+        assert_eq!(record.outcome.version, outcome::VERSION);
+        assert!(record.outcome.schema_valid());
+        // 1,000,000 x 0.3 + 200,000 x 2.5 = 800,000 micro-USD over a zero tariff.
+        assert_eq!(
+            record.outcome.settlement,
+            Some(Settlement::Priced {
+                usage: outcome::Usage {
+                    input_tokens: 1_000_000,
+                    output_tokens: 200_000
+                },
+                priced_micro_usd: 800_000,
+                tariff_micro_usd: 0,
+                top_up_micro_usd: 800_000,
+            })
+        );
+        let after = policy.lock().unwrap().budget.available().unwrap();
+        assert_eq!(
+            before - after,
+            rust_decimal::Decimal::new(800_000, 6),
+            "the ledger carries the top-up"
+        );
+        let signature =
+            ed25519_dalek::Signature::from_slice(&hex::decode(&record.signature).unwrap()).unwrap();
+        key.verifying_key()
+            .verify_strict(
+                &outcome::signing_bytes(&record.outcome).unwrap(),
+                &signature,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_bounded_reason_and_is_not_priced() {
+        let (dir, policy, _) = fixture();
+        let before = policy.lock().unwrap().budget.available().unwrap();
+        let mut observation = pending(&policy);
+        observation.meter(&metering(), 0);
+        observation.response(403);
+        observation.bytes(br#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Spend cap breached for project","debug":"hidden"}}"#);
+        observation.body_complete();
+        observation.finish(Termination::ResponseRead).unwrap();
+        let record = &records(dir.path())[0];
+        let error = record
+            .outcome
+            .response
+            .as_ref()
+            .unwrap()
+            .provider_error
+            .clone()
+            .unwrap();
+        assert_eq!(
+            (error.status.as_str(), error.message.as_str()),
+            ("PERMISSION_DENIED", "Spend cap breached for project")
+        );
+        assert_eq!(error.code, None, "only operator-named fields are kept");
+        assert!(!serde_json::to_string(record).unwrap().contains("hidden"));
+        assert!(
+            record.outcome.settlement.is_none(),
+            "a refusal is not priced"
+        );
+        assert_eq!(policy.lock().unwrap().budget.available().unwrap(), before);
+    }
+
+    #[test]
+    fn unmetered_calls_record_exactly_what_they_did_before() {
+        let (dir, policy, _) = fixture();
+        let mut observation = pending(&policy);
+        observation.response(403);
+        observation.bytes(br#"{"error":{"status":"PERMISSION_DENIED"}}"#);
+        observation.body_complete();
+        observation.finish(Termination::ResponseRead).unwrap();
+        let line = std::fs::read_to_string(dir.path().join(outcome::LOG_FILE)).unwrap();
+        assert!(
+            !line.contains("provider_error") && !line.contains("settlement"),
+            "{line}"
+        );
+        let record: SignedOutcome = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(
+            record.outcome.version, 1,
+            "unmetered records stay version 1"
         );
     }
 

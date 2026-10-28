@@ -125,6 +125,7 @@ use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
 mod guest_proof_provision;
 mod memory_provisioning;
+mod metering;
 mod net;
 mod posture;
 mod session_mint;
