@@ -178,6 +178,7 @@ mod tests {
         smuggled.settlement = Some(Settlement::UsageUnreadable {
             tariff_micro_usd: 1,
             reason: "x".into(),
+            ceiling_micro_usd: 0,
         });
         assert!(
             !smuggled.schema_valid(),
