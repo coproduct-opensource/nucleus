@@ -33,10 +33,11 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
-/// A metered upstream's successful call, settled against the flat tariff
-/// already debited at authorization. The ledger only grows, so the tariff is a
-/// floor: a top-up is debited after the call and an overestimate is not
-/// refunded. Unreadable usage is recorded as such, never as a zero cost.
+/// A metered upstream's call, settled against the flat tariff already debited
+/// at authorization. The ledger only grows, so the tariff is a floor: a top-up
+/// is debited after the call and an overestimate is not refunded. An operator
+/// who wants calls charged at their price sets the tariff to zero. Unreadable
+/// usage is recorded as such, never as a zero cost: it is charged its ceiling.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Settlement {
@@ -46,9 +47,17 @@ pub enum Settlement {
         tariff_micro_usd: u64,
         top_up_micro_usd: u64,
     },
+    /// The usage could not be read (a cut-off, oversized or missing response).
     UsageUnreadable {
         tariff_micro_usd: u64,
         reason: String,
+        /// The most the call could have cost: the request's size in bytes (a
+        /// bound on its input tokens) and the operator's output ceiling, at the
+        /// upstream's rates. What is charged in all, the tariff included.
+        /// Absent (zero) in records written before ceilings existed, which
+        /// charged the tariff alone.
+        #[serde(default)]
+        ceiling_micro_usd: u64,
     },
 }
 

@@ -119,8 +119,9 @@ pub(crate) struct Pending {
     complete: bool,
     start_unix: u64,
     started: Instant,
-    /// Set only for a metered upstream: its metering and the tariff already debited.
-    metering: Option<(crate::metering::Metering, u64)>,
+    /// Set only for a metered upstream: its metering, the tariff already debited,
+    /// and the request's size in bytes (which bounds its input tokens).
+    metering: Option<(crate::metering::Metering, u64, u64)>,
     /// The body, kept only when metered, up to `metering::CAPTURE_MAX`.
     captured: Vec<u8>,
     overflow: bool,
@@ -149,9 +150,10 @@ impl Pending {
         self.status = Some(status);
     }
     /// Meter this call: keep a bounded copy of the body to read usage and any
-    /// refusal reason from. `tariff` is the flat charge already debited.
-    pub(crate) fn meter(&mut self, metering: &crate::metering::Metering, tariff: u64) {
-        self.metering = Some((metering.clone(), tariff));
+    /// refusal reason from. `tariff` is the flat charge already debited;
+    /// `request_bytes` is the size of what was sent.
+    pub(crate) fn meter(&mut self, metering: &crate::metering::Metering, tariff: u64, request_bytes: u64) {
+        self.metering = Some((metering.clone(), tariff, request_bytes));
     }
     pub(crate) fn bytes(&mut self, bytes: &[u8]) {
         self.body.update(bytes);
@@ -177,7 +179,7 @@ impl Pending {
         };
         let refused = self.status.is_some_and(|s| s >= 400);
         let provider_error = match &self.metering {
-            Some((m, _)) if refused && m.reads_errors() && !self.overflow => {
+            Some((m, ..)) if refused && m.reads_errors() && !self.overflow => {
                 m.provider_error(&self.captured)
             }
             _ => None,
@@ -189,11 +191,17 @@ impl Pending {
             body_complete: self.complete,
             provider_error,
         });
-        // Only a successful metered response is priced; a refusal is not billed
-        // beyond the tariff.
+        // A successful metered response is priced. A refusal (a status the upstream
+        // answered with, 300 and up) is not billed beyond the tariff. A call sent
+        // with no status read back (transport failure, interruption) may still
+        // have been billed upstream, so it is charged its ceiling: with a zero
+        // tariff it would otherwise be free.
         let settlement = match (&self.metering, self.status) {
-            (Some((m, tariff)), Some(s)) if (200..300).contains(&s) => {
-                Some(m.settle(&self.captured, self.overflow, self.complete, *tariff))
+            (Some((m, tariff, sent)), Some(s)) if (200..300).contains(&s) => {
+                Some(m.settle(&self.captured, self.overflow, self.complete, *tariff, *sent))
+            }
+            (Some((m, tariff, sent)), None) => {
+                Some(m.unreadable("no response status was read", *sent, *tariff))
             }
             _ => None,
         };
@@ -204,13 +212,16 @@ impl Pending {
         // Debit the top-up and sign the outcome under one lock, so the ledger and
         // the record cannot disagree. The ledger saturates at its ceiling, which
         // refuses the pod's next call: a runaway stops at the next authorization.
-        if let Some(Settlement::Priced {
-            top_up_micro_usd, ..
-        }) = &settlement
-        {
-            if *top_up_micro_usd > 0 {
-                policy.budget.settle(*top_up_micro_usd)?;
+        let debit = match &settlement {
+            Some(Settlement::Priced { top_up_micro_usd, .. }) => *top_up_micro_usd,
+            // The ceiling is the whole charge; the tariff was debited already.
+            Some(Settlement::UsageUnreadable { ceiling_micro_usd, tariff_micro_usd, .. }) => {
+                ceiling_micro_usd.saturating_sub(*tariff_micro_usd)
             }
+            None => 0,
+        };
+        if debit > 0 {
+            policy.budget.settle(debit)?;
         }
         policy
             .evidence
@@ -335,6 +346,7 @@ mod tests {
                 output_micro_usd_per_million_tokens = 2500000
                 input_tokens = ["/meta/in"]
                 output_tokens = ["/meta/out"]
+                ceiling_output_tokens = 1000
                 error_status = "/error/status"
                 error_message = "/error/message"
                 "#,
@@ -351,7 +363,7 @@ mod tests {
         let (dir, policy, key) = fixture();
         let before = policy.lock().unwrap().budget.available().unwrap();
         let mut observation = pending(&policy);
-        observation.meter(&metering(), 0);
+        observation.meter(&metering(), 0, 0);
         observation.response(200);
         observation.bytes(br#"{"text":"ok","meta":{"in":1000000,"out":200000}}"#);
         observation.body_complete();
@@ -393,7 +405,7 @@ mod tests {
         let (dir, policy, _) = fixture();
         let before = policy.lock().unwrap().budget.available().unwrap();
         let mut observation = pending(&policy);
-        observation.meter(&metering(), 0);
+        observation.meter(&metering(), 0, 0);
         observation.response(403);
         observation.bytes(br#"{"error":{"code":403,"status":"PERMISSION_DENIED","message":"Spend cap breached for project","debug":"hidden"}}"#);
         observation.body_complete();
@@ -418,6 +430,26 @@ mod tests {
             "a refusal is not priced"
         );
         assert_eq!(policy.lock().unwrap().budget.available().unwrap(), before);
+    }
+
+    /// A metered call sent with no response read may have been billed upstream: it
+    /// is charged its ceiling, never nothing (2026-10-29, the zero tariff that makes
+    /// every read call cost its price would otherwise make this one free).
+    #[test]
+    fn a_call_with_no_response_is_charged_its_ceiling() {
+        let (dir, policy, _) = fixture();
+        let before = policy.lock().unwrap().budget.available().unwrap();
+        let mut observation = pending(&policy);
+        observation.meter(&metering(), 0, 4000);
+        observation.finish(Termination::TransportFailure).unwrap();
+        let record = &records(dir.path())[0];
+        // 4,000 request bytes x 0.3 + 1,000 output x 2.5 = 1,200 + 2,500.
+        assert!(matches!(
+            &record.outcome.settlement,
+            Some(Settlement::UsageUnreadable { ceiling_micro_usd: 3700, tariff_micro_usd: 0, .. })
+        ), "{:?}", record.outcome.settlement);
+        let after = policy.lock().unwrap().budget.available().unwrap();
+        assert_eq!(before - after, rust_decimal::Decimal::new(3700, 6), "the ledger carries the ceiling");
     }
 
     #[test]

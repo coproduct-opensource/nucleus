@@ -816,7 +816,7 @@ where
     use nucleus_spec::host_effect::outcome::Termination;
     let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time());
     if let Some(metering) = resolved.entry().metering() {
-        observation.meter(metering, call_charge.micro_usd());
+        observation.meter(metering, call_charge.micro_usd(), u64::try_from(staged.len()).unwrap_or(u64::MAX));
     }
     // The body owns the charge through HTTP handoff and cancellation.
     let call = (ctx.streams.caller)(StreamCall {

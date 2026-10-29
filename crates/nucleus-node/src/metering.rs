@@ -5,7 +5,14 @@
 //! The flat call tariff is debited before the call (`CallCharge`). After a
 //! successful response this prices the call from its reported usage, and the
 //! caller debits any excess over the tariff. The ledger only grows, so the
-//! tariff is a floor and an overestimate is not refunded.
+//! tariff is a floor and an overestimate is not refunded: an operator who wants
+//! each call charged at its price sets `call_charge_micro_usd = 0`.
+//!
+//! A call whose usage cannot be read is charged its ceiling, never zero: its
+//! request's bytes (each input token is at least one byte, so this bounds the
+//! input) and `ceiling_output_tokens`, at the upstream's rates. Until
+//! 2026-10-29 it was charged the tariff alone, which with a zero tariff would
+//! have made an unread call free.
 use nucleus_spec::host_effect::outcome::{
     MAX_PROVIDER_MESSAGE, MAX_PROVIDER_STATUS, ProviderError, Settlement, Usage,
 };
@@ -25,6 +32,9 @@ pub(crate) struct MeteringFile {
     input_tokens: Vec<String>,
     /// JSON pointers summed as billed output tokens; absent ones count zero.
     output_tokens: Vec<String>,
+    /// The most output (thinking included) one call can bill. Required: an
+    /// unread call is charged up to it, so a missing ceiling would be a guess.
+    ceiling_output_tokens: u64,
     #[serde(default)]
     error_code: Option<String>,
     #[serde(default)]
@@ -39,6 +49,7 @@ pub(crate) struct Metering {
     output_rate: u64,
     input_tokens: Vec<String>,
     output_tokens: Vec<String>,
+    ceiling_output: u64,
     error_code: Option<String>,
     error_status: Option<String>,
     error_message: Option<String>,
@@ -75,6 +86,7 @@ impl Metering {
             output_rate: file.output_micro_usd_per_million_tokens,
             input_tokens: all(file.input_tokens)?,
             output_tokens: all(file.output_tokens)?,
+            ceiling_output: file.ceiling_output_tokens,
             error_code: one(file.error_code)?,
             error_status: one(file.error_status)?,
             error_message: one(file.error_message)?,
@@ -114,6 +126,29 @@ impl Metering {
         (total, found)
     }
 
+    fn price(&self, input: u64, output: u64) -> u64 {
+        let micro = (u128::from(input) * u128::from(self.input_rate)
+            + u128::from(output) * u128::from(self.output_rate))
+        .div_ceil(1_000_000);
+        u64::try_from(micro).unwrap_or(u64::MAX)
+    }
+
+    /// The most a call with a `request_bytes` body can cost: every input token
+    /// is at least one byte, and output is at most `ceiling_output_tokens`.
+    /// Never below the tariff, which was debited already.
+    pub(crate) fn ceiling(&self, request_bytes: u64, tariff: u64) -> u64 {
+        self.price(request_bytes, self.ceiling_output).max(tariff)
+    }
+
+    /// A call whose usage cannot be read, charged its ceiling.
+    pub(crate) fn unreadable(&self, reason: &str, request_bytes: u64, tariff: u64) -> Settlement {
+        Settlement::UsageUnreadable {
+            tariff_micro_usd: tariff,
+            reason: reason.into(),
+            ceiling_micro_usd: self.ceiling(request_bytes, tariff),
+        }
+    }
+
     /// Settle a successful response observed in full (`complete`) within the
     /// capture (`!overflow`). Ceil-rounded so pricing never undercharges.
     pub(crate) fn settle(
@@ -122,11 +157,9 @@ impl Metering {
         overflow: bool,
         complete: bool,
         tariff: u64,
+        request_bytes: u64,
     ) -> Settlement {
-        let unreadable = |reason: &str| Settlement::UsageUnreadable {
-            tariff_micro_usd: tariff,
-            reason: reason.into(),
-        };
+        let unreadable = |reason: &str| self.unreadable(reason, request_bytes, tariff);
         if overflow {
             return unreadable("the response exceeded the host's metering capture");
         }
@@ -139,10 +172,7 @@ impl Metering {
                 continue;
             }
             let (output, _) = Self::count(&doc, &self.output_tokens);
-            let micro = (u128::from(input) * u128::from(self.input_rate)
-                + u128::from(output) * u128::from(self.output_rate))
-            .div_ceil(1_000_000);
-            let priced = u64::try_from(micro).unwrap_or(u64::MAX);
+            let priced = self.price(input, output);
             return Settlement::Priced {
                 usage: Usage {
                     input_tokens: input,
@@ -212,6 +242,7 @@ mod tests {
                 output_micro_usd_per_million_tokens = 2500000
                 input_tokens = ["/meta/in"]
                 output_tokens = ["/meta/out", "/meta/thinking"]
+                ceiling_output_tokens = 1000
                 error_code = "/error/code"
                 error_status = "/error/status"
                 error_message = "/error/message"
@@ -227,7 +258,7 @@ mod tests {
         let body = br#"{"text":"...","meta":{"in":200000,"out":30000,"thinking":10000}}"#;
         // 200,000 x 0.3 + 40,000 x 2.5 = 60,000 + 100,000 micro-USD.
         assert_eq!(
-            metering().settle(body, false, true, 100_000),
+            metering().settle(body, false, true, 100_000, 0),
             Settlement::Priced {
                 usage: Usage {
                     input_tokens: 200_000,
@@ -240,7 +271,7 @@ mod tests {
         );
         let tiny = br#"{"meta":{"in":1,"out":0}}"#;
         assert!(matches!(
-            metering().settle(tiny, false, true, 0),
+            metering().settle(tiny, false, true, 0, 0),
             Settlement::Priced {
                 priced_micro_usd: 1,
                 ..
@@ -251,7 +282,7 @@ mod tests {
     #[test]
     fn reads_the_last_event_of_a_stream_and_never_refunds_below_the_tariff() {
         let body = b"data: {\"text\":\"a\"}\n\ndata: {\"text\":\"b\",\"meta\":{\"in\":1000,\"out\":100}}\n\n";
-        match metering().settle(body, false, true, 100_000) {
+        match metering().settle(body, false, true, 100_000, 0) {
             Settlement::Priced {
                 usage,
                 priced_micro_usd,
@@ -274,13 +305,30 @@ mod tests {
             (&br#"{"meta":{"in":5}}"#[..], false, false),
             (&b"not json"[..], false, true),
         ] {
+            // Charged its ceiling: 400 request bytes x 0.3 + 1,000 output x 2.5.
             assert!(matches!(
-                metering().settle(body, overflow, complete, 7),
+                metering().settle(body, overflow, complete, 7, 400),
                 Settlement::UsageUnreadable {
                     tariff_micro_usd: 7,
+                    ceiling_micro_usd: 2620,
                     ..
                 }
             ));
+        }
+        // Never below the tariff already debited.
+        assert_eq!(metering().ceiling(0, 5000), 5000);
+    }
+
+    /// With no tariff, a call is charged exactly its price: the whole price is the
+    /// top-up (2026-10-29: the $0.10 floor charged 15-30x the priced cost).
+    #[test]
+    fn a_zero_tariff_charges_each_call_its_price() {
+        let body = br#"{"meta":{"in":2670,"out":2}}"#;
+        match metering().settle(body, false, true, 0, 9000) {
+            Settlement::Priced { priced_micro_usd, top_up_micro_usd, tariff_micro_usd, .. } => {
+                assert_eq!((priced_micro_usd, tariff_micro_usd, top_up_micro_usd), (806, 0, 806));
+            }
+            other => panic!("{other:?}"),
         }
     }
 
@@ -308,10 +356,14 @@ mod tests {
     fn malformed_metering_is_refused_at_load() {
         let bad = |s: &str| Metering::from_file("m", toml::from_str(s).unwrap()).is_err();
         assert!(bad(
-            "input_micro_usd_per_million_tokens = 1\noutput_micro_usd_per_million_tokens = 1\ninput_tokens = []\noutput_tokens = []"
+            "input_micro_usd_per_million_tokens = 1\noutput_micro_usd_per_million_tokens = 1\ninput_tokens = []\noutput_tokens = []\nceiling_output_tokens = 1"
         ));
         assert!(bad(
-            "input_micro_usd_per_million_tokens = 1\noutput_micro_usd_per_million_tokens = 1\ninput_tokens = [\"meta.in\"]\noutput_tokens = []"
+            "input_micro_usd_per_million_tokens = 1\noutput_micro_usd_per_million_tokens = 1\ninput_tokens = [\"meta.in\"]\noutput_tokens = []\nceiling_output_tokens = 1"
         ));
+        // No output ceiling: an unread call's charge would be a guess, so it does not load.
+        assert!(toml::from_str::<MeteringFile>(
+            "input_micro_usd_per_million_tokens = 1\noutput_micro_usd_per_million_tokens = 1\ninput_tokens = [\"/meta/in\"]\noutput_tokens = []"
+        ).is_err());
     }
 }

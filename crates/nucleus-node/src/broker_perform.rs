@@ -907,7 +907,7 @@ where
             // ambiguous about whether the upstream saw the body.
             let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time);
             if let Some(metering) = resolved.entry().metering() {
-                observation.meter(metering, call_charge.micro_usd());
+                observation.meter(metering, call_charge.micro_usd(), u64::try_from(req.body.len()).unwrap_or(u64::MAX));
             }
             let outcome = tokio::time::timeout_at(
                 deadline,
