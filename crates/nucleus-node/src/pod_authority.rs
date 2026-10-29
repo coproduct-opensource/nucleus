@@ -518,8 +518,9 @@ struct PodCert {
     /// from here (ADR 0014, host DLC admission). `None` ⇔ neither asks for one.
     dlc: Option<DlcProvisioning>,
     /// The host's label for the pod before its guest says anything, decided at
-    /// admission from what the host put into the cell (ADR 0014 §3).
-    starting: crate::host_decide::StartingLabel,
+    /// admission from what the host put into the cell (ADR 0014 §3), and what
+    /// its operator declared about its workspace (§10).
+    starting: crate::host_decide::HostStart,
     /// Release consumes this pod's METERED spend (what the host charged its own
     /// ledger: brokered call charges, and its live children's allocations), at
     /// most its allocation, instead of the whole allocation. Set at admission
@@ -532,12 +533,14 @@ struct PodCert {
 /// The starting label a Firecracker node decides for `spec`, for tests that
 /// admit through the authority directly rather than through `create_pod_internal`.
 #[cfg(test)]
-fn test_starting_label(spec: &PodSpec) -> crate::host_decide::StartingLabel {
-    crate::host_decide::StartingLabel::of(
+fn test_starting_label(spec: &PodSpec) -> crate::host_decide::HostStart {
+    crate::host_decide::HostStart::of(
         nucleus_spec::isolation_profile::IsolationProfile::of(spec)
             .unwrap_or(nucleus_spec::isolation_profile::IsolationProfile::EvalCell),
-        &crate::workspace_scan::sources(spec, &crate::driver::DriverKind::Firecracker),
+        spec,
+        &crate::driver::DriverKind::Firecracker,
     )
+    .expect("a test spec declares its workspace in a form the node reads")
 }
 
 /// One verifier for both fresh guest-equivalent kernels and shared host state.
@@ -547,8 +550,13 @@ fn verified_host_kernel(
 ) -> Result<portcullis::kernel::Kernel, HostKernelError> {
     let verified = verify_certificate(&entry.cert, root, Utc::now(), DEFAULT_MAX_CHAIN_DEPTH)
         .map_err(|e| HostKernelError::DoesNotVerify(e.to_string()))?;
-    let mut kernel =
-        portcullis::kernel::Kernel::from_certificate(verified, entry.cert.fingerprint());
+    // The workspace declaration is the one the spec's label made at admission,
+    // the label the guest reads from the same spec (ADR 0014 §10).
+    let mut kernel = portcullis::kernel::Kernel::from_certificate_in_workspace(
+        verified,
+        entry.cert.fingerprint(),
+        entry.starting.workspace,
+    );
     // The guest provisions its kernels from the same fields, through the same
     // reading (`DlcAdmission::provision`, G-1). Without this the host allowed
     // what the guest's DLC gate refused: guest-stricter, which ADR 0014 §10
@@ -1295,14 +1303,15 @@ impl PodAuthority {
     }
 
     /// Admit `spec` as `child_id`. `starting` is the host's label for the pod
-    /// before its guest says anything ([`crate::host_decide::StartingLabel::of`]),
-    /// decided by the caller, which knows the node's driver.
+    /// before its guest says anything, and its workspace declaration
+    /// ([`crate::host_decide::HostStart::of`]), decided by the caller, which
+    /// knows the node's driver.
     async fn admit_as(
         &self,
         admission: &Admission,
         spec: &PodSpec,
         child_id: Uuid,
-        starting: crate::host_decide::StartingLabel,
+        starting: crate::host_decide::HostStart,
     ) -> Result<IssuedAuthority, ApiError> {
         let mut requested = spec
             .spec
@@ -1720,8 +1729,9 @@ impl PodAuthority {
     /// decision service (#2702, P8).
     ///
     /// Built the way the guest builds its own: the certificate is verified
-    /// against this node's root and handed to `Kernel::from_certificate` with
-    /// its fingerprint. The host verifies a certificate it issued itself
+    /// against this node's root and handed, with its fingerprint, to
+    /// `Kernel::from_certificate_in_workspace` under the workspace declaration
+    /// admission read (`Unreviewed` is exactly `from_certificate`). The host verifies a certificate it issued itself
     /// because `VerifiedPermissions` is minted only by verification — there is
     /// no other way to hold one, and a kernel built from an unverified lattice
     /// is the shortcut that type exists to refuse.
@@ -1780,6 +1790,7 @@ impl PodAuthority {
                     self.approval_timing,
                     entry
                         .starting
+                        .label
                         .taint(u64::try_from(Utc::now().timestamp()).unwrap_or(0)),
                 );
                 entry.host_policy = PolicyHistory::Live(std::sync::Arc::clone(&policy));
@@ -1798,7 +1809,7 @@ impl PodAuthority {
         admission: &Admission,
         mut spec: PodSpec,
         id: Uuid,
-        starting: crate::host_decide::StartingLabel,
+        starting: crate::host_decide::HostStart,
         delivery: crate::delivered_spec::Delivery<'_>,
     ) -> Result<(AdmittedPodPlan, Reservation), ApiError> {
         let issued = self.admit_as(admission, &spec, id, starting).await?;
@@ -1844,7 +1855,7 @@ impl PodAuthority {
         admission: &Admission,
         spec: &PodSpec,
         child_id: Uuid,
-        starting: crate::host_decide::StartingLabel,
+        starting: crate::host_decide::HostStart,
     ) -> Result<IssuedAuthority, ApiError> {
         let mut issued = self.admit_as(admission, spec, child_id, starting).await?;
         let reservation = std::mem::replace(&mut issued.reservation, Reservation { release: None });
@@ -2131,8 +2142,10 @@ fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static
             }
         },
         dlc: persisted.dlc,
-        starting: crate::host_decide::StartingLabel::Untrusted(
-            crate::host_decide::Untrusted::Restored,
+        // Neither the label nor the declaration was persisted; "could not
+        // look" is the reading that grants nothing (A-2).
+        starting: crate::host_decide::HostStart::unreviewed(
+            crate::host_decide::StartingLabel::Untrusted(crate::host_decide::Untrusted::Restored),
         ),
         // As admitted; a record that predates it settles the whole allocation.
         settle_metered: persisted.settle_metered,

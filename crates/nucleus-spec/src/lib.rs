@@ -35,6 +35,7 @@ pub mod vmm_version;
 pub mod workload_admission;
 pub mod workload_egress;
 pub mod workload_result;
+pub mod workspace_review;
 
 use std::{collections::BTreeMap, path::PathBuf};
 

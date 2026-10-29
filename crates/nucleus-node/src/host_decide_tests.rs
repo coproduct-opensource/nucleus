@@ -1393,3 +1393,83 @@ async fn a_local_pod_under_the_nodes_own_dlc_is_decided_alike_on_both_sides() {
     assert_eq!(report.tally.disagree, 0);
     assert_eq!(report.tally.agree, 3);
 }
+
+// ── review-gated workspace (ADR 0014 §10, amended 2026-10-29) ───────────────
+
+/// The live finding: 181 `write_files`/`edit_files` disagreements over 67 pods,
+/// guest `approval_required`, host `denied:flow_refused`, because the host's
+/// pod-wide taint made every write an outbound sink. A pod whose spec declares
+/// a review-gated workspace is decided by a host kernel that keeps its writes
+/// in the cell: past the flow gate, so the write's own obligation is what holds
+/// it. Nothing else the host decides moves: a tainted shell is still refused.
+#[tokio::test]
+async fn a_review_gated_pods_tainted_write_is_not_a_flow_refusal() {
+    async fn tainted_channel(declared: Option<&str>) -> (Channel, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth = authority(dir.path());
+        let mut policy = PermissionLattice::permissive();
+        policy.obligations.insert(Operation::WriteFiles);
+        let mut spec = spec_with(policy);
+        if let Some(v) = declared {
+            spec.metadata.labels.insert(
+                nucleus_spec::workspace_review::REVIEW_GATED_LABEL.into(),
+                v.into(),
+            );
+        }
+        let pod = Uuid::new_v4();
+        let root = Admission {
+            caller_spiffe_id: MINTER.to_string(),
+            caller_pod: None,
+            header_cert: None,
+        };
+        auth.admit_kept(&root, &spec, pod).await.expect("admitted");
+        let mut c = Channel::open(pod, auth.host_kernel(pod).await.unwrap(), 9);
+        let mut web = FlowGraph::new();
+        web.insert_observation(NodeKind::WebContent, &[], 1)
+            .unwrap();
+        c.step(GuestFrame::Observe {
+            seq: Seq::new(0),
+            label_raise: taint_report(&web),
+        })
+        .unwrap();
+        (c, dir)
+    }
+    fn verdict(c: &mut Channel, seq: u64, op: Operation) -> Verdict {
+        match HostFrame::decode(&decide_step(c, seq, op, "src/main.rs")).unwrap() {
+            HostFrame::Verdict { verdict, .. } => verdict,
+            other => panic!("not a verdict: {other:?}"),
+        }
+    }
+    let flow_refused = Verdict::Denied {
+        reason: DenyReason::FlowRefused,
+    };
+
+    // Pinned: undeclared, the host refuses the tainted write for the flow.
+    for declared in [None, Some("false")] {
+        let (mut c, _dir) = tainted_channel(declared).await;
+        assert_eq!(verdict(&mut c, 1, Operation::WriteFiles), flow_refused);
+    }
+
+    let (mut c, _dir) = tainted_channel(Some("true")).await;
+    for (seq, op) in [(1, Operation::WriteFiles), (3, Operation::EditFiles)] {
+        let v = verdict(&mut c, seq, op);
+        assert_ne!(v, flow_refused, "{op:?}");
+        if op == Operation::WriteFiles {
+            assert!(
+                matches!(v, Verdict::ApprovalRequired { .. }),
+                "the write's obligation still holds it: {v:?}"
+            );
+        } else {
+            assert!(matches!(v, Verdict::Allowed { .. }), "{op:?}: {v:?}");
+        }
+        c.step(GuestFrame::Shadow {
+            seq: Seq::new(seq + 1),
+            decided: Seq::new(seq),
+            local: Outcome::Denied {
+                reason: DenyReason::FlowRefused,
+            },
+        })
+        .expect("compared");
+    }
+    assert_eq!(verdict(&mut c, 5, Operation::RunBash), flow_refused);
+}
