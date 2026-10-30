@@ -192,6 +192,7 @@ use crate::error::{NucleusError, Result};
 
 // The parent half of a pinned exec (#2907). No `unsafe`: the descriptor is
 // placed through `rustix`, and the child's `execveat` is in `imp`'s block.
+mod bind;
 #[cfg(target_os = "linux")]
 mod exec_pin;
 mod landlock;
@@ -201,6 +202,7 @@ mod rlimit;
 mod seccomp;
 mod workspace;
 
+pub use bind::{BindRefused, WorkspaceBind};
 pub use landlock::{LandlockSupport, MIN_LANDLOCK_ABI};
 pub use pidns::{NamespaceRequest, NetworkNamespace, PidNamespace};
 pub use rlimit::{AppliedRlimits, RlimitPolicy, RlimitVector};
@@ -255,6 +257,10 @@ enum Posture {
 /// namespace and drop to a uid/gid. Two named cases, not an `Option` (ADR
 /// 0007 B-2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the workspace bind's two path buffers live in the value the forked hook reads, so it allocates nothing; copied a few times per spawn"
+)]
 enum Isolation {
     /// The uid, if it changes, was dropped by std before the hook.
     None,
@@ -266,6 +272,8 @@ enum Isolation {
         gid: u32,
         network: NetworkNamespace,
         mapping: Option<pidns::UidMapping>,
+        /// The read-only bind the init performs before it forks the workload.
+        bind: Option<WorkspaceBind>,
     },
 }
 
@@ -876,6 +884,7 @@ impl ChildConfinement {
                 pids,
                 network: NetworkNamespace::Shared,
                 user_namespace_uid: None,
+                workspace_bind: None,
             },
         )
     }
@@ -894,8 +903,11 @@ impl ChildConfinement {
             pids,
             network,
             user_namespace_uid,
+            workspace_bind,
         } = namespaces;
-        if (network != NetworkNamespace::Shared || user_namespace_uid.is_some())
+        if (network != NetworkNamespace::Shared
+            || user_namespace_uid.is_some()
+            || workspace_bind.is_some())
             && !(matches!(self.posture, Posture::DropTo(_, _, _)) && pids == PidNamespace::Own)
         {
             refuse(cmd);
@@ -952,6 +964,7 @@ impl ChildConfinement {
                                 return SpawnHardening::Unhardened(Unhardened::Refused);
                             }
                         },
+                        bind: workspace_bind,
                     },
                     PidNamespace::Shared => {
                         imp::drop_to(cmd, uid);
@@ -998,6 +1011,7 @@ impl ChildConfinement {
                 gid: _,
                 network: _,
                 mapping: _,
+                bind: _,
             } => PidNamespace::Own,
             Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ } => PidNamespace::Shared,
         };
@@ -1007,6 +1021,7 @@ impl ChildConfinement {
                 gid: _,
                 network,
                 mapping: _,
+                bind: _,
             } => network,
             Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ } => {
                 NetworkNamespace::Shared
@@ -1018,7 +1033,18 @@ impl ChildConfinement {
                 gid: _,
                 network: _,
                 mapping,
+                bind: _,
             } => mapping.map(|m| m.inner),
+            Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ } => None,
+        };
+        let workspace_bind = match isolation {
+            Isolation::PidnsThenDrop {
+                uid: _,
+                gid: _,
+                network: _,
+                mapping: _,
+                bind,
+            } => bind,
             Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ } => None,
         };
         match imp::install(cmd, isolation, filter, filesystem, layer, rlimits, syscalls) {
@@ -1029,6 +1055,7 @@ impl ChildConfinement {
                 pids,
                 network,
                 user_namespace_uid,
+                workspace_bind,
             }),
             Hook::NoneOnThisPlatform => {
                 SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
@@ -1063,6 +1090,10 @@ impl ChildConfinement {
 /// the receipt carried a `bool` the caller computed beside the spawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a Hardened carries the workspace bind it performed; one value per spawn"
+)]
 pub enum SpawnHardening {
     /// Inherited fds above 2 close-on-exec, `no_new_privs`, the rlimits,
     /// and the syscall filter when the posture has one.
@@ -1113,9 +1144,16 @@ pub struct Hardened {
     pids: PidNamespace,
     network: NetworkNamespace,
     user_namespace_uid: Option<u32>,
+    /// The read-only bind the init performed, if the spawn asked for one.
+    workspace_bind: Option<WorkspaceBind>,
 }
 
 impl Hardened {
+    /// The read-only workspace bind the init performed before the workload.
+    #[must_use]
+    pub fn workspace_bind(&self) -> Option<WorkspaceBind> {
+        self.workspace_bind
+    }
     /// The single UID mapping established before the workload is filtered.
     #[must_use]
     pub fn user_namespace_uid(&self) -> Option<u32> {
@@ -1504,7 +1542,8 @@ mod imp {
                     gid,
                     network,
                     mapping,
-                } => super::pidns::enter(uid, gid, network, mapping)?,
+                    bind,
+                } => super::pidns::enter(uid, gid, network, mapping, bind)?,
             }
             // Mark every fd from 3 up close-on-exec rather than closing it
             // HERE: std still owns a CLOEXEC status pipe in this window, used
@@ -1594,6 +1633,7 @@ mod imp {
                         gid: _,
                         network: _,
                         mapping: _,
+                        bind: _,
                     },
                 ) => {
                     ruleset.grant_own_proc()?;
@@ -1864,6 +1904,7 @@ mod imp {
                 gid: _,
                 network: _,
                 mapping: _,
+                bind: _,
             } => true,
         };
         match (filter, landlock_required || isolated) {

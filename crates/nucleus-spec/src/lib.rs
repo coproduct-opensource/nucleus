@@ -1374,10 +1374,41 @@ pub struct WorkloadSpec {
     /// the unmapped-ID sentinel are refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_namespace_uid: Option<u32>,
+    /// Show a directory of the work dir, read-only, at an existing empty
+    /// directory of the image, in the workload's private mount namespace.
+    /// MicroVM-only; see [`WorkspaceBind`] for what is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_bind: Option<WorkspaceBind>,
     /// A second process the runtime starts beside the workload, under its own
     /// uid. See [`CompanionSpec`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion: Option<CompanionSpec>,
+}
+
+/// A read-only bind the trusted launcher performs for the workload
+/// ([`WorkloadSpec::workspace_bind`]).
+///
+/// Some builds embed the absolute path of their sources, so their bytes match
+/// a pinned digest only when the sources sit at the canonical builder's path.
+/// That path is a directory of the read-only image, and a confined workload
+/// may not mount. The launcher, still root inside the workload's own mount
+/// namespace, binds `source` over `target` before it forks the workload. Only
+/// the workload's namespace sees the bind.
+///
+/// Refused at admission: off MicroVM; a `source` that is not a relative path
+/// to a directory inside the work dir (no `..`, no symlink on the way); a
+/// `target` that is not an existing, empty, non-symlink directory strictly
+/// under [`guest_layout::WORKSPACE_BIND_ROOT`], on a read-only filesystem, and
+/// not reserved by the guest layer. The bind is always read-only, `nosuid`,
+/// `nodev` and `noexec`: it adds a second name for bytes the workload can
+/// already read, and no new write or exec path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceBind {
+    /// Directory to show, relative to the work dir.
+    pub source: String,
+    /// Absolute path of the empty image directory to show it at.
+    pub target: String,
 }
 
 /// An explicit restriction of the workload's network, performed by its launcher.

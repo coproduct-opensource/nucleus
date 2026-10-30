@@ -122,6 +122,7 @@ pub(super) fn workload(
         uid: None,
         network_namespace: None,
         user_namespace_uid: None,
+        workspace_bind: None,
         companion: None,
     })
 }

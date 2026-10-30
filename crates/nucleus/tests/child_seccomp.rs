@@ -441,6 +441,7 @@ fn try_run_in(
                 } else {
                     Some(1001)
                 },
+                workspace_bind: None,
             },
         );
     }

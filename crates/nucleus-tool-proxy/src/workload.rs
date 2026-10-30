@@ -206,6 +206,7 @@ pub(crate) struct AdmittedWorkloadPlan {
     pids: nucleus::PidNamespace,
     network: nucleus::NetworkNamespace,
     user_namespace_uid: Option<u32>,
+    workspace_bind: Option<nucleus::WorkspaceBind>,
     /// The exact env that will cross, already admitted. Paired with `classified`
     /// so the receipt reports the same set the admission checked.
     env: BTreeMap<String, String>,
@@ -312,6 +313,7 @@ pub(crate) struct WorkloadLaunch {
     uid: Option<u32>,
     network: Option<nucleus_spec::WorkloadNetworkNamespace>,
     user_namespace_uid: Option<u32>,
+    workspace_bind: Option<nucleus_spec::WorkspaceBind>,
     env: BTreeMap<String, String>,
     classified: Vec<ClassifiedEntry>,
     /// The child's default `HOME`, created and handed to its uid at spawn.
@@ -367,6 +369,7 @@ impl WorkloadLaunch {
             uid: spec.uid,
             network: spec.network_namespace,
             user_namespace_uid: spec.user_namespace_uid,
+            workspace_bind: spec.workspace_bind.clone(),
             env,
             classified,
             home: workload_home(work_dir),
@@ -409,6 +412,7 @@ impl WorkloadLaunch {
             uid: Some(spec.uid),
             network: None,
             user_namespace_uid: None,
+            workspace_bind: None,
             env,
             classified,
             home,
@@ -459,11 +463,14 @@ impl WorkloadLaunch {
                 nucleus::NetworkNamespace::PrivateLoopback
             }
         };
-        if (self.network.is_some() || self.user_namespace_uid.is_some())
+        if (self.network.is_some()
+            || self.user_namespace_uid.is_some()
+            || self.workspace_bind.is_some())
             && containment != nucleus::ContainmentMode::MicroVM
         {
             return Err(Refused(
-                "private workload network namespaces require MicroVM containment".into(),
+                "private workload namespaces and workspace binds require MicroVM containment"
+                    .into(),
             ));
         }
         if matches!(self.user_namespace_uid, Some(0 | u32::MAX)) {
@@ -471,6 +478,14 @@ impl WorkloadLaunch {
                 "user namespace UID must be nonzero and not the unmapped-ID sentinel".into(),
             ));
         }
+        // Checked here, in the runtime, so the forked init only mounts (`bind.rs`).
+        let workspace_bind = match &self.workspace_bind {
+            None => None,
+            Some(b) => Some(
+                nucleus::WorkspaceBind::compile(&self.work_dir, &b.source, &b.target)
+                    .map_err(|e| Refused(e.to_string()))?,
+            ),
+        };
         let confinement =
             nucleus::ChildConfinement::workload(containment, self.uid, opt_in, landlock)
                 .map_err(|e| Refused(e.to_string()))?;
@@ -546,6 +561,7 @@ impl WorkloadLaunch {
             pids: nucleus::PidNamespace::for_workload(containment),
             network,
             user_namespace_uid: self.user_namespace_uid,
+            workspace_bind,
             env: self.env,
             classified: self.classified,
             home: self.home,
@@ -694,6 +710,7 @@ pub(crate) fn spawn_admitted(
             pids: plan.pids,
             network: plan.network,
             user_namespace_uid: plan.user_namespace_uid,
+            workspace_bind: plan.workspace_bind,
         },
     );
 
@@ -882,7 +899,8 @@ impl LaunchReceipt {
     /// Landlock write layer under `write_files: never` (#2907).
     /// 5: the preimage gained `pids=`, the child's own PID namespace (#3344).
     /// 6: the preimage gained `netns=`, the trusted network namespace setup.
-    const SCHEMA_VERSION: u32 = 6;
+    /// 7: the preimage gained `bind=`, the launcher's read-only workspace bind.
+    const SCHEMA_VERSION: u32 = 7;
 
     fn from_admitted(
         plan: &AdmittedWorkloadPlan,
@@ -932,11 +950,16 @@ impl LaunchReceipt {
             nucleus::SpawnHardening::Unhardened(_) => nucleus::NetworkNamespace::Shared,
         }
         .canonical();
+        let bind = match hardening {
+            nucleus::SpawnHardening::Hardened(h) => h.workspace_bind(),
+            nucleus::SpawnHardening::Unhardened(_) => None,
+        }
+        .map_or_else(|| "none".to_owned(), |b| b.canonical());
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|ws={workspace}|pids={pids}|netns={network}|userns={user_uid}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|ws={workspace}|pids={pids}|netns={network}|userns={user_uid}|bind={bind}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
@@ -1384,6 +1407,7 @@ mod tests {
             uid: None,
             network_namespace: None,
             user_namespace_uid: None,
+            workspace_bind: None,
             companion: None,
             env: env
                 .iter()
@@ -1875,6 +1899,7 @@ mod tests {
             env: std::collections::BTreeMap::new(),
             network_namespace: None,
             user_namespace_uid: None,
+            workspace_bind: None,
             companion: None,
         };
         // Through the real path: build → admit → spawn_admitted. A plan that did
@@ -2318,6 +2343,7 @@ mod companion_tests {
             uid: Some(WORKLOAD_UID),
             network_namespace: None,
             user_namespace_uid: None,
+            workspace_bind: None,
             companion: Some(companion(COMPANION_UID)),
         }
     }

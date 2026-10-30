@@ -273,6 +273,7 @@ fn a_workload_companion_is_one_of_the_children() {
         env: Default::default(),
         network_namespace: None,
         user_namespace_uid: None,
+        workspace_bind: None,
         companion: Some(nucleus_spec::CompanionSpec {
             command: "/bin/true".into(),
             args: vec![],
@@ -419,6 +420,7 @@ async fn run_probe(script: String, work_dir: &Path) -> String {
         env: Default::default(),
         network_namespace: None,
         user_namespace_uid: None,
+        workspace_bind: None,
         companion: None,
     };
     let plan =
@@ -458,6 +460,7 @@ fn harness_reach() -> ChildReach {
             env: Default::default(),
             network_namespace: None,
             user_namespace_uid: None,
+            workspace_bind: None,
             companion: None,
         }),
         HARNESS,

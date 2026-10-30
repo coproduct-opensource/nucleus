@@ -388,6 +388,7 @@ var = "SEARCH_API_TOKEN"
             uid: None,
             network_namespace: None,
             user_namespace_uid: None,
+            workspace_bind: None,
             companion: None,
         }
     }

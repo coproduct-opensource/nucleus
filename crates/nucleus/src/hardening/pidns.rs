@@ -25,7 +25,7 @@
 //! 2. **The init**, pid 1 of the new namespace, still root. It sets
 //!    `PR_SET_PDEATHSIG(SIGKILL)` so it dies with the waiter, makes the mount
 //!    tree private, mounts a fresh `/proc` for its namespace (`hidepid=invisible`,
-//!    like the guest's), forks the
+//!    like the guest's), binds a requested workspace read-only (`bind.rs`), forks the
 //!    workload, closes every descriptor, and reaps every child until the
 //!    workload exits. It then exits with the workload's status (a signal `n`
 //!    as `128 + n`), and its exit kills whatever is left in the namespace.
@@ -61,6 +61,10 @@ pub struct NamespaceRequest {
     pub network: NetworkNamespace,
     /// Optional single-ID map of the already-dropped outer UID/GID.
     pub user_namespace_uid: Option<u32>,
+    /// A read-only bind the init performs in the private mount namespace,
+    /// checked by [`super::WorkspaceBind::compile`]. Needs [`PidNamespace::Own`]:
+    /// without it there is no mount namespace of the workload's own.
+    pub workspace_bind: Option<super::WorkspaceBind>,
 }
 
 /// Parent-compiled single-ID maps. No formatting or allocation after fork.
@@ -196,6 +200,7 @@ pub(super) unsafe fn enter(
     gid: u32,
     network: NetworkNamespace,
     mapping: Option<UidMapping>,
+    bind: Option<super::WorkspaceBind>,
 ) -> std::io::Result<()> {
     use std::io;
     // SAFETY: scalar and static-string arguments, and pointers to live
@@ -330,6 +335,33 @@ pub(super) unsafe fn enter(
                 libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
                 PROC_OPTIONS.as_ptr().cast(),
             ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // The workspace bind (`bind.rs`), in this private namespace only and
+        // before the workload exists. A bind cannot be made read-only in the
+        // same call, so it is remounted at once; a failure of either fails
+        // the spawn, and nothing has run under a writable or exec alias.
+        if let Some(bind) = bind
+            && (libc::mount(
+                bind.source_ptr(),
+                bind.target_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            ) != 0
+                || libc::mount(
+                    std::ptr::null(),
+                    bind.target_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND
+                        | libc::MS_REMOUNT
+                        | libc::MS_RDONLY
+                        | libc::MS_NOSUID
+                        | libc::MS_NODEV
+                        | libc::MS_NOEXEC,
+                    std::ptr::null(),
+                ) != 0)
         {
             return Err(io::Error::last_os_error());
         }

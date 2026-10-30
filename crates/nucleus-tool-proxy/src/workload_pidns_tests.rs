@@ -29,6 +29,7 @@ fn admitted_with(
         uid: None,
         network_namespace: None,
         user_namespace_uid: None,
+        workspace_bind: None,
         companion: None,
         // The shell's own error text is matched below.
         env: env
