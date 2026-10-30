@@ -51,6 +51,13 @@ test-group = 'crypto-tests'
 # arm64 lane 2026-10-30), errno cannot say which filter denied the confined child, and the test
 # reports `UNATTRIBUTED <op>` on stderr and attributes by filter count instead. `success-output =
 # "never"` above would drop that line from the gate's log, so this binary's output is shown.
+#
+# Spelled `package(nucleus) and kind(test)`, not by binary: nextest refuses a `binary_id()` or
+# `binary()` that names no test binary it knows of, and `test-libs` runs in a materialized pod whose
+# scope excludes `crates/nucleus/*/*/**`, so `nucleus` has no test targets there and the whole config
+# is refused ("no binary IDs matched this", exit 96, #3512 at 8134a7c50 on the arm64 lane
+# 2026-10-30, reproduced in that pod's file set). `package()` and `kind()` parse there. The price is
+# that `child_landlock` and `child_workspace` show their passing output too.
 [[profile.default.overrides]]
-filter = 'binary_id(nucleus::child_seccomp)'
+filter = 'package(nucleus) and kind(test)'
 success-output = "immediate"
