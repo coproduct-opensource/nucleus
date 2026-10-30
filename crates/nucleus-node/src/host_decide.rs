@@ -448,10 +448,18 @@ impl PodPolicy {
     }
 
     pub(crate) fn revoke(policy: &SharedPodPolicy) {
-        let state = policy
+        policy
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.revoked.send_replace(true);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revoke_held();
+    }
+
+    /// The one write to `revoked`, made under the policy lock so no check under
+    /// that lock sees a stale "live". The lock order is therefore the policy
+    /// lock, then the watch's own lock: a holder of a watch `Ref` must never
+    /// wait for the policy lock (`broker_transport::until_revoked`).
+    pub(crate) fn revoke_held(&self) {
+        self.revoked.send_replace(true);
     }
 
     pub(crate) fn revocation(
