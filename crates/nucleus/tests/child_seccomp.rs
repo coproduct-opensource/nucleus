@@ -598,17 +598,67 @@ fn denied() -> String {
 #[test]
 fn a_confined_child_cannot_open_a_vsock_socket() {
     let control = run(None, "vsock");
-    assert_ne!(
-        control,
-        denied(),
-        "attribution: unconfined, this host does not already answer EPERM"
-    );
+    let attributed = attributable("vsock", &control);
     for (mode, c) in confining() {
         assert_eq!(
             run(Some(c), "vsock"),
             denied(),
             "{mode:?} (control: {control})"
         );
+        attributed.or_counted(c, mode);
+    }
+}
+
+/// Whether the confined child's `EPERM` for `op` can be attributed to the
+/// filter `ChildConfinement` installs, by an unconfined control that is NOT
+/// denied.
+///
+/// A process that already runs under a seccomp filter which denies `op` (a
+/// gate step under the trusted launcher's filter, measured on the arm64 lane
+/// 2026-10-30) passes that filter to the control too, and then no errno can
+/// say which filter answered. That case is reported on stderr and the test
+/// falls back to the attribution it still has: the confined child carries
+/// exactly one filter more than this process. The denial itself is asserted
+/// either way. A control denied with NO inherited filter is still a failure:
+/// then something other than seccomp answers, and this test proves nothing
+/// about the filter.
+fn attributable(op: &str, control: &str) -> Attribution {
+    if control != denied() {
+        return Attribution::ByErrno;
+    }
+    let inherited: u32 = seccomp_filters()
+        .parse()
+        .expect("Seccomp_filters is readable (Linux 5.9+)");
+    assert!(
+        inherited > 0,
+        "attribution: unconfined, this host already answers EPERM to {op} without a \
+         seccomp filter of its own"
+    );
+    eprintln!(
+        "UNATTRIBUTED {op}: this process already runs under {inherited} seccomp filter(s) \
+         that deny it (control: {control}); asserting the confined child's EPERM and that it \
+         carries {} filters, not which filter denied it",
+        inherited + 1
+    );
+    Attribution::ByFilterCount(inherited)
+}
+
+/// How a test attributes a confined child's denial; see [`attributable`].
+#[derive(Clone, Copy)]
+enum Attribution {
+    ByErrno,
+    ByFilterCount(u32),
+}
+
+impl Attribution {
+    fn or_counted(self, c: ChildConfinement, mode: ContainmentMode) {
+        if let Self::ByFilterCount(inherited) = self {
+            assert_eq!(
+                run(Some(c), "filters"),
+                format!("filters={}", inherited + 1),
+                "{mode:?}: the confined child adds exactly one filter"
+            );
+        }
     }
 }
 
@@ -636,17 +686,14 @@ fn a_confined_child_cannot_create_a_user_namespace() {
 #[test]
 fn a_confined_child_cannot_ptrace() {
     let control = run(None, "ptrace");
-    assert_ne!(
-        control,
-        denied(),
-        "attribution: unconfined ptrace is not EPERM here"
-    );
+    let attributed = attributable("ptrace", &control);
     for (mode, c) in confining() {
         assert_eq!(
             run(Some(c), "ptrace"),
             denied(),
             "{mode:?} (control: {control})"
         );
+        attributed.or_counted(c, mode);
     }
 }
 
