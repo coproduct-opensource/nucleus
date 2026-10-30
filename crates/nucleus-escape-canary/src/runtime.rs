@@ -89,8 +89,9 @@ impl Probe {
             Self::Svid => "svid_key_later_fetch",
         }
     }
-    fn observe(self) -> Verdict {
-        match self {
+    /// The verdict, and for `exec_noexec_run` the paths that decided it.
+    fn observe(self) -> (Verdict, Option<String>) {
+        let verdict = match self {
             Self::TcpPublic => tcp(SocketAddr::from(([1, 1, 1, 1], 443))),
             Self::TcpDns => tcp(SocketAddr::from(([8, 8, 8, 8], 53))),
             Self::Metadata => tcp(SocketAddr::from(([169, 254, 169, 254], 80))),
@@ -103,14 +104,15 @@ impl Probe {
             Self::Cmdline => secret_markers(SecretSurface::KernelCommandLine),
             Self::InitEnviron => secret_markers(SecretSurface::InitEnvironment),
             Self::ExecTmp => noexec("/tmp"),
-            Self::ExecRun => runtime_exec("/run"),
+            Self::ExecRun => return runtime_exec("/run"),
             Self::Mount => mount_probe(),
             Self::RawSocket => raw_socket(),
             Self::Device => device(),
             Self::ForeignProcesses => processes(),
             Self::PtraceInit => ptrace(),
             Self::Svid => identity(),
-        }
+        };
+        (verdict, None)
     }
 }
 
@@ -276,31 +278,28 @@ fn noexec(directory: &str) -> Verdict {
     noexec_denied(attempt(&std::process::Command::new(&path).status()))
 }
 /// `/run` is root-owned 0755 since #3184, so the probe searches it for any directory the
-/// workload can write and stages there; finding none, it reads the kernel's mount flags
-/// (`nucleus_escape_canary::staging`).
-fn runtime_exec(root: &str) -> Verdict {
-    use nucleus_escape_canary::staging::{
-        Search, Staging, mounts_noexec, runtime_exec_denied, stage_under,
-    };
+/// workload can write and stages there, and reads the kernel's mount flags, which decide
+/// first (`nucleus_escape_canary::staging`). The detail names the paths that decided it.
+fn runtime_exec(root: &str) -> (Verdict, Option<String>) {
     let Ok(nonce) = tempfile::tempdir_in("/tmp") else {
-        return Verdict::CouldNotLook("cannot reserve a unique stage name");
+        return (
+            Verdict::CouldNotLook("cannot reserve a unique stage name"),
+            None,
+        );
     };
     let Some(name) = nonce.path().file_name() else {
-        return Verdict::CouldNotLook("stage name is missing");
+        return (Verdict::CouldNotLook("stage name is missing"), None);
     };
-    let staging = match stage_under(Path::new(root), name, 4096) {
-        Search::Staged(path) => {
-            let ran = attempt(&std::process::Command::new(&path).status());
-            let _ = fs::remove_file(&path);
-            Staging::Ran(ran)
-        }
-        Search::NowhereWritable => Staging::NowhereWritable,
-        Search::Incomplete(why) => Staging::Incomplete(why),
-    };
-    let mounts = fs::read_to_string("/proc/self/mountinfo")
-        .ok()
-        .and_then(|text| mounts_noexec(&text, root));
-    runtime_exec_denied(staging, mounts)
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo").ok();
+    let decision = nucleus_escape_canary::staging::runtime_exec(
+        Path::new(root),
+        name,
+        4096,
+        mountinfo.as_deref(),
+        root,
+        |path| attempt(&std::process::Command::new(path).status()),
+    );
+    (decision.verdict, decision.detail)
 }
 fn mount_probe() -> Verdict {
     let Ok(dir) = tempfile::tempdir_in("/tmp") else {
@@ -453,6 +452,9 @@ struct Record {
     probe: &'static str,
     #[serde(flatten)]
     verdict: Verdict,
+    /// The paths that decided it, where the probe can name them (gatehouse F-331).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 pub(super) fn run() -> u8 {
@@ -465,10 +467,11 @@ pub(super) fn run() -> u8 {
     }
     let mut verdicts = Vec::new();
     for probe in Probe::ALL {
-        let verdict = probe.observe();
+        let (verdict, detail) = probe.observe();
         let record = Record {
             probe: probe.name(),
             verdict: verdict.clone(),
+            detail,
         };
         if serde_json::to_writer(io::stdout().lock(), &record).is_err()
             || writeln!(io::stdout()).is_err()
