@@ -45,3 +45,12 @@ slow-timeout = { period = "180s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = 'package(nucleus-identity) and test(crypto)'
 test-group = 'crypto-tests'
+
+# A passing child_seccomp run can carry a weaker attribution: when this process already runs under a
+# seccomp filter that denies the operation (a gate step under the trusted launcher, measured on the
+# arm64 lane 2026-10-30), errno cannot say which filter denied the confined child, and the test
+# reports `UNATTRIBUTED <op>` on stderr and attributes by filter count instead. `success-output =
+# "never"` above would drop that line from the gate's log, so this binary's output is shown.
+[[profile.default.overrides]]
+filter = 'binary_id(nucleus::child_seccomp)'
+success-output = "immediate"
