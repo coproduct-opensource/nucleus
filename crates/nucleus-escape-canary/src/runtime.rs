@@ -103,7 +103,7 @@ impl Probe {
             Self::Cmdline => secret_markers(SecretSurface::KernelCommandLine),
             Self::InitEnviron => secret_markers(SecretSurface::InitEnvironment),
             Self::ExecTmp => noexec("/tmp"),
-            Self::ExecRun => noexec("/run"),
+            Self::ExecRun => runtime_exec("/run"),
             Self::Mount => mount_probe(),
             Self::RawSocket => raw_socket(),
             Self::Device => device(),
@@ -274,6 +274,33 @@ fn noexec(directory: &str) -> Verdict {
         return Verdict::CouldNotLook("cannot stage executable");
     }
     noexec_denied(attempt(&std::process::Command::new(&path).status()))
+}
+/// `/run` is root-owned 0755 since #3184, so the probe searches it for any directory the
+/// workload can write and stages there; finding none, it reads the kernel's mount flags
+/// (`nucleus_escape_canary::staging`).
+fn runtime_exec(root: &str) -> Verdict {
+    use nucleus_escape_canary::staging::{
+        Search, Staging, mounts_noexec, runtime_exec_denied, stage_under,
+    };
+    let Ok(nonce) = tempfile::tempdir_in("/tmp") else {
+        return Verdict::CouldNotLook("cannot reserve a unique stage name");
+    };
+    let Some(name) = nonce.path().file_name() else {
+        return Verdict::CouldNotLook("stage name is missing");
+    };
+    let staging = match stage_under(Path::new(root), name, 4096) {
+        Search::Staged(path) => {
+            let ran = attempt(&std::process::Command::new(&path).status());
+            let _ = fs::remove_file(&path);
+            Staging::Ran(ran)
+        }
+        Search::NowhereWritable => Staging::NowhereWritable,
+        Search::Incomplete(why) => Staging::Incomplete(why),
+    };
+    let mounts = fs::read_to_string("/proc/self/mountinfo")
+        .ok()
+        .and_then(|text| mounts_noexec(&text, root));
+    runtime_exec_denied(staging, mounts)
 }
 fn mount_probe() -> Verdict {
     let Ok(dir) = tempfile::tempdir_in("/tmp") else {
