@@ -94,3 +94,72 @@ to mint from a lane run. That choice is open.
 **Wrong belief corrected.** That "pointing cargo somewhere else" would move the bytes (this
 script's `SDK_TARGET` comment). F shows the target dir location does not. Only the source path
 does.
+
+## 2026-10-30, later: the launcher binds the workspace (owner decision "Launcher bind")
+
+The owner chose the first way above. `WorkloadSpec::workspace_bind {source, target}` asks the
+trusted launcher to show a directory of the work dir, read-only, at an existing empty directory of
+the image. The init (pid 1 of the workload's PID namespace, still root, in the private mount
+namespace it already makes for `/proc`) binds `source` over `target` and remounts the bind
+`ro,nosuid,nodev,noexec` before it forks the workload (`crates/nucleus/src/hardening/pidns.rs`).
+Workload `unshare` and `mount` stay denied.
+
+**What is refused, and where.** Admission (`WorkloadLaunch::admit`) refuses a bind off MicroVM
+and checks it with `WorkspaceBind::compile` (`crates/nucleus/src/hardening/bind.rs`) before the
+confinement, so the forked init only mounts:
+- `source` must be relative plain names, resolve inside the work dir with no symlink on the way,
+  and be a directory;
+- `target` must be absolute plain names, strictly under `guest_layout::WORKSPACE_BIND_ROOT`
+  (`/data/work`), an existing directory that is not a symlink, reached by no symlink, empty, and
+  on a read-only filesystem (so its emptiness cannot change before the launch);
+- the two must not overlap. A test holds that nothing the guest layer reserves lies at or under
+  `/data/work`.
+
+The hook refuses a bind without the workload's own PID namespace (there is no private mount
+namespace then). The launch receipt's preimage gained `bind=` (schema 6 → 7).
+
+**Red, then green.**
+- `bind.rs` unit tests against an accept-all `compile`: 8 failed, 1 passed (the positive case).
+  Real code: 10 passed (the reserved-root test added after a Linux run: the first draft also
+  asked `reserved_by` about each target, which refused every `/tmp` fixture on Linux, so the
+  check moved to the root, where it belongs).
+- Tool-proxy admission (`workload_network_tests.rs`) with the bind checks removed: 2 failed.
+  Restored: 640 passed on macOS, 683 passed and 1 ignored on Linux as root.
+- `tests/workspace_bind.rs`, root Linux (Apple `container`, arm64, kernel 6.18.35, Landlock on):
+  the child (uid 65534, MicroVM confinement) reads the work dir's bytes at the image path, gets
+  `EROFS` writing there, and its mountinfo shows `ro,nosuid,nodev,noexec`; the runtime's
+  namespace sees an empty directory and no mount. With the init's bind disabled it fails at the
+  read; with the read-only remount disabled it fails at the `EROFS` assertion. Green: 3 passed.
+  `child_seccomp`: 11 passed. Linux `cargo clippy -p nucleus -p nucleus-tool-proxy -p nucleus-spec
+  --all-features --all-targets -D warnings`: exit 0 (two `large_enum_variant` expectations, for
+  the bind's two path buffers in the `Copy` value the forked hook reads).
+
+**The digests, through the new path.** Same builder as the table above (`rust:1.96.1-bookworm`,
+arm64), `/data/work/nucleus` a read-only tmpfs with an empty `nucleus/` in it:
+- **E1**, the table's build A by the launcher: `cargo build --release --target
+  wasm32-unknown-unknown` of `sdks/verifier-js`, `CARGO_HOME=/home/runner/.cargo`, spawned by a
+  throwaway harness through `ChildConfinement::apply_with_namespaces` with the bind, as uid
+  65534. Twice: `b4981bc1de71551d…a5099d` both times, equal to A byte for byte. The runtime's
+  `/data/work/nucleus/nucleus` stayed empty.
+- **E2**, `scripts/gatehouse-verifier-sdk.sh` itself, in an emulated gate image (pins.json naming
+  `/data/work/nucleus/nucleus`, a vendored registry, wasm-pack 0.13.1, its wasm-bindgen and
+  wasm-opt cached as the image does). Old path: as root with no bind, so the script's own
+  `unshare -Urm`. New path: through the launcher as uid 65534, twice, where `unshare` is denied.
+  All three runs gave the same `_bg.wasm` (`4228ef55…`), the same `.js` (`8d29fea6…`, the pinned
+  shim digest) and the same raw cargo `.wasm` (`a88b2dcd…`). The `_bg.wasm` is not the pinned
+  `f35bafe6…` because this emulation's `rustc-ci-host` passes through to an aarch64 rustc and its
+  registry path is not the image's; what the run shows is that the bind path and the unshare path
+  give the same bytes. The new path's log names no `unshare`.
+
+**What the script does now.** If the checkout is already at `ci_workspace` (`[ "$src" -ef
+"$workspace" ]`, the launcher's bind), it builds there with `CARGO_TARGET_DIR` set to the SDK's
+subdir and `wasm-pack --out-dir` the checkout's `pkg/`, because the bind is read-only. Otherwise it
+runs the `unshare -Urm` path as before, for a lane whose runtime lets a workload unshare. The
+wasm-opt memo keys on `-o`, so a seed minted by the old path misses it once (about 23 s).
+
+**Not yet true.** A gate can ask for the bind only through gatehouse's plan (`Step.checkout_at`,
+gatehouse `deploy/lane-launcher-bind-20261030`), and the plan gatehouse serves for nucleus is set
+only by a push to `main` (`.github/workflows/gatehouse-plan.yml`, `plan-upload`). Until that plan
+declares the bind on step 0 of `clippy-libs` and `test-libs`, those steps reach the script with
+no bind, and on a trusted-launch lane its `unshare` is refused as before. Nothing here has run on
+the lane.
