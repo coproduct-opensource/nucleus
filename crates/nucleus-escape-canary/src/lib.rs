@@ -21,6 +21,8 @@
 use serde::{Deserialize, Serialize};
 
 pub mod network;
+#[cfg(unix)]
+pub mod staging;
 
 /// The three possible observations; an absent measurement is not a refusal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

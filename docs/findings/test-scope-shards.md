@@ -191,6 +191,61 @@ runs over the week, about 13% of all gate time) and designs automatic re-minting
 both run. The +50% at equal drift is the honest number. Whether the reuse of `test-libs` on
 node-only trees repays it still needs measuring over real pull requests, after the seed is fresh.
 
+## 9. A config filter the `test-libs` pod cannot see, and #3512's heads by lane (2026-10-30)
+
+**The defect.** `2c51b6d34` (#3508's `55dbe3dae`) added a `.config/nextest.toml` override with
+the filter `binary_id(nucleus::child_seccomp)`. nextest refuses a `binary_id()` or `binary()` that
+names no test binary it knows of, and it checks that when it loads the config, before it builds.
+`test-libs` runs in a materialized pod. Its scope excludes `crates/nucleus/*/*/**`, so `nucleus`
+has no test targets there. The whole config was refused, exit 96:
+`failed to parse profile.default.overrides at index 3 … no binary IDs matched this`. That was
+#3512 at `8134a7c50`, gatehouse leaf 18146, on the classic arm64 lane.
+
+**Red, then green.** Both were run in an arm64 Apple `container` (rust 1.96.1, cargo-nextest
+0.9.145), with the plan's step-1 argv for `test-libs`.
+- **The pod's file set**: `git ls-files`, kept if it matches the gate's `scope` and dropped if it
+  matches its `exclude`. 1381 of 2774 files.
+- **The old filter**: refused, exit 96, with 0 crates compiled. This is the red.
+- **A full checkout**, with the same `--exclude nucleus` argv and the old filter: it parsed and
+  ran 6463 tests, all passing. So `--exclude` was not the cause. The missing files were.
+- **Also refused in the pod**: `package(nucleus) and binary(child_seccomp)` ("no binary names
+  matched this"), the regex forms `binary_id(/^nucleus::child_seccomp$/)` and
+  `package(nucleus) and binary(/^child_seccomp$/)`, and `binary_id(=nucleus::child_seccomp)`.
+- **`package(nucleus) and kind(test)`** parsed in a fresh pod. 6463 tests ran and all passed.
+  This is the green.
+- **With `nucleus` in the run** (`-p nucleus`, its three test binaries), the new override still
+  applies. Every passing test showed its output, including `child_seccomp`'s stderr
+  `control: unshare ok / clone ok`. With the override removed, none did.
+- **The price.** `child_landlock` and `child_workspace` now show their passing output too.
+
+`verifier-js/pkg` was a stand-in in those runs, with its digest appended to
+`embedded-wasm.pins` in the scratch copy only. That changes what is embedded, not how nextest
+reads its config. The first green attempt failed to build, with `E0463` ("can't find crate")
+in `nucleus-federation`'s tests. A rerun with nothing changed built and passed. Cause not found.
+
+**#3512's previous head, `8134a7c50`, was decided on the classic lane.** This note was at
+`tools/test-shard/classic-lane-2026-10-30.md` and is moved here. `tools/**` is a constitutional
+path, so it made #3512 a guardrail change for a note. The facts from that note:
+- `7a61338f8` (tree `384ec3bf4`) was decided on the trusted-launch lane, node `node-9e7b2c870`.
+  Eight required gates held.
+- `clippy-libs` (leaf 18120) and `test-libs` (leaf 18126) failed with
+  `unshare: Operation not permitted`. Their recipes `unshare` a mount namespace to put the
+  workspace where the verifier SDK's digest pins it. The trusted launcher refuses that. The
+  launcher's workspace bind replaces it, but only for a plan that declares `checkout_at`, and
+  main's served plan does not yet (#3511, gatehouse F-322).
+- On the classic stack (node `cb47c1b64`, agent `6ed2dfda7`) those `unshare`s run.
+  `clippy-libs` held there. `test-libs` hit the defect above.
+- **Do not run a plan that declares `checkout_at` on classic.** The classic agent parses steps
+  with `deny_unknown_fields` and refuses the job (gatehouse F-325).
+
+**A wrong assumption.** The old note expected `text-north-star`'s held trusted-launch receipt
+(leaf 18123) to be reused, because the note did not change that gate's scope. The classic worker
+ran the gate anyway, and it failed on the node's `svid_key_later_fetch` breach (leaf 18143). That
+failure then also decided `text-north-star` for `7a61338f8`, whose explain page flipped from
+held to failed. The receipt lookup is keyed on `(gate_def, scope)` and takes the newest receipt,
+whichever lane signed it. This section is under `docs/**`, which is in `text-north-star`'s scope,
+so this head re-decides that gate. It runs on the trusted-launch lane.
+
 ## Not yet
 
 * ~~**The plan.**~~ Done 2026-10-05, see §5.
