@@ -25,7 +25,7 @@
 //! 2. **The init**, pid 1 of the new namespace, still root. It sets
 //!    `PR_SET_PDEATHSIG(SIGKILL)` so it dies with the waiter, makes the mount
 //!    tree private, mounts a fresh `/proc` for its namespace (`hidepid=invisible`,
-//!    like the guest's), forks the
+//!    like the guest's), binds a requested workspace read-only (`bind.rs`), forks the
 //!    workload, closes every descriptor, and reaps every child until the
 //!    workload exits. It then exits with the workload's status (a signal `n`
 //!    as `128 + n`), and its exit kills whatever is left in the namespace.
@@ -51,6 +51,75 @@
 //! runtime may have held when it was copied.
 
 use crate::command::ContainmentMode;
+
+/// Requested namespaces; admission and the installed hook must agree on all coordinates.
+#[derive(Debug, Clone, Copy)]
+pub struct NamespaceRequest {
+    /// Whether the workload gets a private process table.
+    pub pids: PidNamespace,
+    /// Which network interfaces the child may reach.
+    pub network: NetworkNamespace,
+    /// Optional single-ID map of the already-dropped outer UID/GID.
+    pub user_namespace_uid: Option<u32>,
+    /// A read-only bind the init performs in the private mount namespace,
+    /// checked by [`super::WorkspaceBind::compile`]. Needs [`PidNamespace::Own`]:
+    /// without it there is no mount namespace of the workload's own.
+    pub workspace_bind: Option<super::WorkspaceBind>,
+}
+
+/// Parent-compiled single-ID maps. No formatting or allocation after fork.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct UidMapping {
+    pub(super) inner: u32,
+    uid: [u8; 32],
+    uid_len: usize,
+    gid: [u8; 32],
+    gid_len: usize,
+}
+
+impl UidMapping {
+    pub(super) fn compile(inner: u32, uid: u32, gid: u32) -> std::io::Result<Self> {
+        if inner == 0 || inner == u32::MAX {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let uid_text = format!("{inner} {uid} 1\n");
+        let gid_text = format!("{inner} {gid} 1\n");
+        let mut mapping = Self {
+            inner,
+            uid: [0; 32],
+            uid_len: uid_text.len(),
+            gid: [0; 32],
+            gid_len: gid_text.len(),
+        };
+        mapping.uid[..mapping.uid_len].copy_from_slice(uid_text.as_bytes());
+        mapping.gid[..mapping.gid_len].copy_from_slice(gid_text.as_bytes());
+        Ok(mapping)
+    }
+}
+
+/// The network a trusted launcher creates before dropping and filtering a child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkNamespace {
+    /// Preserve the pod's network; the existing default.
+    Shared,
+    /// A fresh namespace with every interface down and no routes.
+    PrivateOffline,
+    /// A fresh namespace with only its loopback interface enabled.
+    PrivateLoopback,
+}
+
+impl NetworkNamespace {
+    /// The spelling bound into the launch receipt.
+    #[must_use]
+    pub fn canonical(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::PrivateOffline => "private_offline",
+            Self::PrivateLoopback => "private_loopback",
+        }
+    }
+}
 
 /// Whether a child runs in a PID namespace of its own (#3344): what a spawn
 /// asks [`super::ChildConfinement::apply_with_pids`] for, and what the
@@ -126,7 +195,13 @@ const INIT_NAME: &std::ffi::CStr = c"nucleus-init";
     unsafe_code,
     reason = "#3344: the namespace setup is raw syscalls in a pre_exec hook; audited with imp"
 )]
-pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
+pub(super) unsafe fn enter(
+    uid: u32,
+    gid: u32,
+    network: NetworkNamespace,
+    mapping: Option<UidMapping>,
+    bind: Option<super::WorkspaceBind>,
+) -> std::io::Result<()> {
     use std::io;
     // SAFETY: scalar and static-string arguments, and pointers to live
     // locals, to async-signal-safe syscalls in a single-threaded forked
@@ -182,8 +257,39 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
             }
         };
 
-        if libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) != 0 {
+        let net_flags = match network {
+            NetworkNamespace::Shared => 0,
+            NetworkNamespace::PrivateOffline | NetworkNamespace::PrivateLoopback => {
+                libc::CLONE_NEWNET
+            }
+        };
+        if libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS | net_flags) != 0 {
             return Err(io::Error::last_os_error());
+        }
+        if network == NetworkNamespace::PrivateLoopback {
+            // Raw syscalls only in this forked child. The socket belongs to
+            // the new namespace and never crosses the eventual exec.
+            let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut request: libc::ifreq = std::mem::zeroed();
+            std::ptr::copy_nonoverlapping(c"lo".as_ptr(), request.ifr_name.as_mut_ptr(), 3);
+            let result = if libc::syscall(libc::SYS_ioctl, fd, libc::SIOCGIFFLAGS, &raw mut request)
+                != 0
+            {
+                Err(io::Error::last_os_error())
+            } else {
+                request.ifr_ifru.ifru_flags |= libc::c_short::try_from(libc::IFF_UP)
+                    .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+                if libc::syscall(libc::SYS_ioctl, fd, libc::SIOCSIFFLAGS, &raw const request) != 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            };
+            libc::close(fd);
+            result?;
         }
         let init = fork_raw()?;
         if init > 0 {
@@ -232,8 +338,108 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
         {
             return Err(io::Error::last_os_error());
         }
+        // The workspace bind (`bind.rs`), in this private namespace only and
+        // before the workload exists. A bind cannot be made read-only in the
+        // same call, so it is remounted at once; a failure of either fails
+        // the spawn, and nothing has run under a writable or exec alias.
+        if let Some(bind) = bind
+            && (libc::mount(
+                bind.source_ptr(),
+                bind.target_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            ) != 0
+                || libc::mount(
+                    std::ptr::null(),
+                    bind.target_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND
+                        | libc::MS_REMOUNT
+                        | libc::MS_RDONLY
+                        | libc::MS_NOSUID
+                        | libc::MS_NODEV
+                        | libc::MS_NOEXEC,
+                    std::ptr::null(),
+                ) != 0)
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // The still-privileged init writes only the one precompiled mapping
+        // into its own child. The child cannot exec before the acknowledgement.
+        let pipes = if mapping.is_some() {
+            let mut ready = [0; 2];
+            let mut done = [0; 2];
+            if libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) != 0
+                || libc::pipe2(done.as_mut_ptr(), libc::O_CLOEXEC) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Some((ready, done))
+        } else {
+            None
+        };
         let workload = fork_raw()?;
         if workload > 0 {
+            if let (Some(mapping), Some((ready, done))) = (mapping, pipes) {
+                libc::close(ready[1]);
+                libc::close(done[0]);
+                let mut byte = 0_u8;
+                if libc::read(ready[0], (&raw mut byte).cast(), 1) == 1 && byte == 1 {
+                    let install = || -> io::Result<()> {
+                        // Decimal pid paths in stack buffers: no formatting,
+                        // allocation or locks in the forked init.
+                        let mut digits = [0_u8; 10];
+                        let mut count = 0;
+                        let mut pid = u32::try_from(workload)
+                            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+                        while pid > 0 {
+                            digits[count] = b'0'
+                                + u8::try_from(pid % 10)
+                                    .map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+                            count += 1;
+                            pid /= 10;
+                        }
+                        for (name, bytes) in [
+                            (b"/uid_map".as_slice(), &mapping.uid[..mapping.uid_len]),
+                            (b"/setgroups".as_slice(), b"deny\n".as_slice()),
+                            (b"/gid_map".as_slice(), &mapping.gid[..mapping.gid_len]),
+                        ] {
+                            let mut path = [0_u8; 64];
+                            path[..6].copy_from_slice(b"/proc/");
+                            let mut at = 6;
+                            for digit in digits[..count].iter().rev() {
+                                path[at] = *digit;
+                                at += 1;
+                            }
+                            path[at..at + name.len()].copy_from_slice(name);
+                            let fd =
+                                libc::open(path.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC);
+                            if fd < 0 {
+                                return Err(io::Error::last_os_error());
+                            }
+                            let written = libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+                            let error = if written < 0 {
+                                Some(io::Error::last_os_error())
+                            } else if usize::try_from(written).ok() != Some(bytes.len()) {
+                                Some(io::Error::from_raw_os_error(libc::EIO))
+                            } else {
+                                None
+                            };
+                            libc::close(fd);
+                            if let Some(error) = error {
+                                return Err(error);
+                            }
+                        }
+                        Ok(())
+                    };
+                    let code = install()
+                        .err()
+                        .map_or(0, |error| error.raw_os_error().unwrap_or(libc::EIO));
+                    let bytes = code.to_ne_bytes();
+                    libc::write(done[1], bytes.as_ptr().cast(), bytes.len());
+                }
+            }
             // The init: reap every child (an orphan is reparented here)
             // until the workload exits, then leave with its status; the
             // kernel kills what is left in the namespace.
@@ -245,13 +451,72 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
             }
             libc::_exit(libc::WEXITSTATUS(status));
         }
-        // The workload: drop here, now the privileged steps are done.
-        // `setresuid` from root clears every capability set.
-        if libc::setgroups(0, std::ptr::null()) != 0
-            || libc::setresgid(gid, gid, gid) != 0
-            || libc::setresuid(uid, uid, uid) != 0
-        {
+        if libc::setgroups(0, std::ptr::null()) != 0 {
             return Err(io::Error::last_os_error());
+        }
+        let (uid, gid) = if let (Some(mapping), Some((ready, done))) = (mapping, pipes) {
+            libc::close(ready[0]);
+            libc::close(done[1]);
+            if libc::unshare(libc::CLONE_NEWUSER) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let byte = 1_u8;
+            if libc::write(ready[1], (&raw const byte).cast(), 1) != 1 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut code = [0_u8; 4];
+            if libc::read(done[0], code.as_mut_ptr().cast(), code.len()) != 4 {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            libc::close(ready[1]);
+            libc::close(done[0]);
+            let code = i32::from_ne_bytes(code);
+            if code != 0 {
+                return Err(io::Error::from_raw_os_error(code));
+            }
+            (mapping.inner, mapping.inner)
+        } else {
+            (uid, gid)
+        };
+        if libc::setresgid(gid, gid, gid) != 0 || libc::setresuid(uid, uid, uid) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if mapping.is_some() {
+            // Creating a user namespace grants namespace-local capabilities.
+            // Relinquish them explicitly, before Landlock and seccomp, even
+            // though the nonzero UID and no_new_privs would strip them at exec.
+            #[repr(C)]
+            struct Header {
+                version: u32,
+                pid: i32,
+            }
+            #[repr(C)]
+            struct Data {
+                effective: u32,
+                permitted: u32,
+                inheritable: u32,
+            }
+            let header = Header {
+                version: 0x2008_0522,
+                pid: 0,
+            };
+            let data = [
+                Data {
+                    effective: 0,
+                    permitted: 0,
+                    inheritable: 0,
+                },
+                Data {
+                    effective: 0,
+                    permitted: 0,
+                    inheritable: 0,
+                },
+            ];
+            if libc::syscall(libc::SYS_capset, &raw const header, data.as_ptr()) != 0
+                || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
         }
     }
     Ok(())

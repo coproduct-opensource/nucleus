@@ -365,6 +365,14 @@ impl GuestBinary {
 /// The per-pod scratch mount.
 pub const WORK_DIR: &str = "/work";
 
+/// Where a [`crate::WorkspaceBind`] may land: strictly beneath this image
+/// directory, and nowhere else. The canonical CI builder's checkout path,
+/// `/data/work/<owner>/<repo>`, is under it, which is what a build whose
+/// bytes embed source paths needs (nucleus's verifier SDK, pinned in
+/// `crates/nucleus-verifier-service/embedded-wasm.pins`). Not reserved: the
+/// guest layer mounts nothing here, and the image owns what is inside.
+pub const WORKSPACE_BIND_ROOT: &str = "/data/work";
+
 /// The workload door: the Unix socket on which the tool-proxy serves the
 /// workload, and only the workload (#3031 option B, #2696 P1).
 ///
