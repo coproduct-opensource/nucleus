@@ -163,3 +163,51 @@ only by a push to `main` (`.github/workflows/gatehouse-plan.yml`, `plan-upload`)
 declares the bind on step 0 of `clippy-libs` and `test-libs`, those steps reach the script with
 no bind, and on a trusted-launch lane its `unshare` is refused as before. Nothing here has run on
 the lane.
+
+## 2026-10-30, evening: `exec_noexec_run` is decided by the mount table, and names its paths
+
+On the lane, this branch's `9e7b2c870` (tree `c0b76edd`, node `9e7b2c870`) still failed
+`text-north-star` (leaf 18056, exit 2): `exec_noexec_run` answered could-not-look, "a directory
+can be searched but not listed". The real guest's `/run` has a directory that uid 65534 may enter
+but not read, and the probe stopped the search there and did not say which directory it was. The
+emulated layouts above had no such directory. That is gatehouse F-331.
+
+**Wrong belief corrected.** That the search decides, with the mount flags as a fallback for "found
+nothing". The property is noexec, and `/proc/self/mountinfo` states it per mount. A file under
+`/run`, hidden directory or not, lives on some mount at or under `/run` (a symlink out of `/run`
+leads to another mount, which other probes cover). Every such mount is in the table, so if each
+one is `noexec`, a directory the search cannot list cannot hide a file the kernel would execute.
+So the mount table now
+decides first (`staging::runtime_exec_denied`):
+
+- a mount at or under `/run` without `noexec` is a breach, whatever the search found. Before, a
+  staged exec denied `EACCES` beside such a mount was refused, and an incomplete search beside it
+  could-not-look;
+- a staged payload that ran is a breach, whatever the table says;
+- a searchable, unlistable directory is recorded and the search goes on, so a writable directory
+  beside it is still found and tested directly. With every mount `noexec` and nothing seen
+  writable it is refused. With the table unknown it stays could-not-look. It is never counted as
+  empty;
+- the record now carries `detail`, naming the hidden directories, the staged path, or the mount
+  point that is not `noexec`.
+
+Every mount listed at or under `/run` counts, including one the workload could not reach by path
+and one covered by a later mount: that only makes the answer stricter. Not covered: a mount
+elsewhere that shows the same tmpfs without `noexec` (a bind of `/run`'s superblock at another
+path). The probe is about the paths under `/run`, and `exec_noexec_tmp` and the rootfs write
+probes cover the others.
+
+**Red, then green.** The new tests against the old behaviour behind the new interface: 6 of 28
+failed. Against the tempting weak fix (a hidden directory refused without asking the table): 4 of
+28 failed, among them `a_hidden_directory_beside_an_exec_mount_is_a_breach`. Green: 28 passed on
+macOS, and 28 passed on Linux as uid 65534. End to end, the canary binary as uid 65534 on a
+Linux tmpfs `/run` in an Apple `container` (arm64), each layout with `/run/nucleus` 0700 root
+and `/run/hidden` 0711 holding a 0777 `inner`:
+
+| `/run` | `9e7b2c870` | this change |
+|---|---|---|
+| nothing writable, all `noexec` (the guest's shape) | could-not-look | refused, names `/run/hidden` |
+| plus an exec tmpfs at `/run/user/65534`, not writable | could-not-look | breach, names `/run/user/65534` |
+| `/run` itself without `noexec` | could-not-look | breach, names `/run` |
+| a writable `/run/user/65534`, `noexec` | could-not-look | refused, staged there, exec `EACCES` |
+| a writable exec tmpfs at `/run/user/65534` | could-not-look | breach, the staged file ran |
