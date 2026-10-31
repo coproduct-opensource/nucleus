@@ -177,3 +177,8 @@ nucleus-oidc-core = { path = "../nucleus-oidc-core" }
 
 [lints]
 workspace = true
+
+# `state_lock`'s umask test calls umask(2) on every unix; the linux-only `libc`
+# above left the test build broken on macOS.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
