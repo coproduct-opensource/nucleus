@@ -126,6 +126,7 @@ mod tests {
             record.outcome.version = version;
             record.outcome.settlement = Some(Settlement::UsageUnreadable {
                 tariff_micro_usd: 1,
+                ceiling_micro_usd: 0,
                 reason: "r".into(),
             });
             record.signature = hex::encode(
