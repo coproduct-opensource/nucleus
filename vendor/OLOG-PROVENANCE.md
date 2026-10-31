@@ -21,3 +21,12 @@ This snapshot first landed in commit `f4f84964e`, whose message says "local only
 private olog vendor". That message is wrong about intent: on 2026-10-31 the owner ruled that the
 snapshot is public under the MIT license its manifests declare. It was already on public branches
 of this repository, and it stays. Future updates follow the same terms.
+
+## Clippy (2026-10-31)
+
+Owner decision, 2026-10-31: clippy's findings in this snapshot are allowed in the two vendor
+crates only, through `[lints.clippy]` in their manifests, so `src/lib.rs` keeps the hashes above.
+Measured with clippy 0.1.96 (arm64 Linux, `rust:1.96.1-bookworm`): five `type_complexity` (four
+in `olog-store`, one in `olog-ledger`) and one `disallowed_methods` in `olog-store`
+(`std::fs::OpenOptions::append`, ADR 0007 G-1; the store's WAL, not a nucleus record log).
+Everything outside `vendor/` keeps the workspace's `-D warnings` and `clippy.toml`.
