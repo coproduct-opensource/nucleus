@@ -77,7 +77,7 @@ mod tests {
 
     fn spec(label: Option<&str>) -> PodSpec {
         let mut spec: PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("a minimal spec parses");
         if let Some(v) = label {
             spec.metadata
@@ -107,14 +107,14 @@ mod tests {
     fn a_declaring_spec_parses_as_any_other() {
         let json = format!(
             r#"{{"apiVersion":"nucleus/v1","kind":"Pod",
-                "metadata":{{"labels":{{"{REVIEW_GATED_LABEL}":"true"}}}},"spec":{{}}}}"#
+                "metadata":{{"labels":{{"{REVIEW_GATED_LABEL}":"true"}}}},"spec":{{"policy":{{"type":"profile","name":"default"}}}}}}"#
         );
         let parsed: PodSpec = serde_json::from_str(&json).expect("parses");
         assert_eq!(of(&parsed), Ok(WorkspaceReview::ReviewGated));
         // The field shape a spec author might reach for first is refused by the
         // spec type the guest parses with, which is why this is a label.
         let field = r#"{"apiVersion":"nucleus/v1","kind":"Pod",
-            "spec":{"workspace":{"review_gated":true}}}"#;
+            "spec":{"policy":{"type":"profile","name":"default"},"workspace":{"review_gated":true}}}"#;
         assert!(serde_json::from_str::<PodSpec>(field).is_err());
     }
 }

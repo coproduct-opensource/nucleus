@@ -1408,7 +1408,10 @@ async fn a_review_gated_pods_tainted_write_is_not_a_flow_refusal() {
         let dir = tempfile::tempdir().expect("tempdir");
         let auth = authority(dir.path());
         let mut policy = PermissionLattice::permissive();
-        policy.obligations.insert(Operation::WriteFiles);
+        policy.declare(
+            Operation::WriteFiles,
+            portcullis::ConsentMode::RequiresApproval,
+        );
         let mut spec = spec_with(policy);
         if let Some(v) = declared {
             spec.metadata.labels.insert(
