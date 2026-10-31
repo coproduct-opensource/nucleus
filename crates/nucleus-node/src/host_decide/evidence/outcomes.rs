@@ -125,10 +125,18 @@ pub(crate) struct Pending {
     /// The body, kept only when metered, up to `metering::CAPTURE_MAX`.
     captured: Vec<u8>,
     overflow: bool,
+    /// Micro-USD of the ceiling reserved beyond the tariff at authorization,
+    /// released when this outcome settles.
+    hold: u64,
 }
 
 impl super::Recorded {
-    pub(in crate::host_decide) fn observe(self, policy: SharedPodPolicy, now: u64) -> Pending {
+    pub(in crate::host_decide) fn observe(
+        self,
+        policy: SharedPodPolicy,
+        now: u64,
+        hold: u64,
+    ) -> Pending {
         Pending {
             policy,
             authorization: Some(self.authorization),
@@ -141,6 +149,7 @@ impl super::Recorded {
             metering: None,
             captured: Vec::new(),
             overflow: false,
+            hold,
         }
     }
 }
@@ -152,7 +161,12 @@ impl Pending {
     /// Meter this call: keep a bounded copy of the body to read usage and any
     /// refusal reason from. `tariff` is the flat charge already debited;
     /// `request_bytes` is the size of what was sent.
-    pub(crate) fn meter(&mut self, metering: &crate::metering::Metering, tariff: u64, request_bytes: u64) {
+    pub(crate) fn meter(
+        &mut self,
+        metering: &crate::metering::Metering,
+        tariff: u64,
+        request_bytes: u64,
+    ) {
         self.metering = Some((metering.clone(), tariff, request_bytes));
     }
     pub(crate) fn bytes(&mut self, bytes: &[u8]) {
@@ -209,19 +223,25 @@ impl Pending {
             .start_unix
             .saturating_add(self.started.elapsed().as_secs());
         let mut policy = self.policy.lock().map_err(|_| "host policy unavailable")?;
-        // Debit the top-up and sign the outcome under one lock, so the ledger and
-        // the record cannot disagree. The ledger saturates at its ceiling, which
-        // refuses the pod's next call: a runaway stops at the next authorization.
+        // Settle the hold and sign the outcome under one lock, so the ledger and the
+        // record cannot disagree. The call reserved its ceiling before it ran
+        // (`CallCharge::reserving`), so its charge fits the hold and the unused part
+        // is refunded. A charge beyond the hold is an alarm, never a silent clamp
+        // (`SharedBudget::settle`).
         let debit = match &settlement {
-            Some(Settlement::Priced { top_up_micro_usd, .. }) => *top_up_micro_usd,
+            Some(Settlement::Priced {
+                top_up_micro_usd, ..
+            }) => *top_up_micro_usd,
             // The ceiling is the whole charge; the tariff was debited already.
-            Some(Settlement::UsageUnreadable { ceiling_micro_usd, tariff_micro_usd, .. }) => {
-                ceiling_micro_usd.saturating_sub(*tariff_micro_usd)
-            }
+            Some(Settlement::UsageUnreadable {
+                ceiling_micro_usd,
+                tariff_micro_usd,
+                ..
+            }) => ceiling_micro_usd.saturating_sub(*tariff_micro_usd),
             None => 0,
         };
-        if debit > 0 {
-            policy.budget.settle(debit)?;
+        if debit > 0 || self.hold > 0 {
+            policy.budget.settle(self.hold, debit)?;
         }
         policy
             .evidence
@@ -444,12 +464,24 @@ mod tests {
         observation.finish(Termination::TransportFailure).unwrap();
         let record = &records(dir.path())[0];
         // 4,000 request bytes x 0.3 + 1,000 output x 2.5 = 1,200 + 2,500.
-        assert!(matches!(
-            &record.outcome.settlement,
-            Some(Settlement::UsageUnreadable { ceiling_micro_usd: 3700, tariff_micro_usd: 0, .. })
-        ), "{:?}", record.outcome.settlement);
+        assert!(
+            matches!(
+                &record.outcome.settlement,
+                Some(Settlement::UsageUnreadable {
+                    ceiling_micro_usd: 3700,
+                    tariff_micro_usd: 0,
+                    ..
+                })
+            ),
+            "{:?}",
+            record.outcome.settlement
+        );
         let after = policy.lock().unwrap().budget.available().unwrap();
-        assert_eq!(before - after, rust_decimal::Decimal::new(3700, 6), "the ledger carries the ceiling");
+        assert_eq!(
+            before - after,
+            rust_decimal::Decimal::new(3700, 6),
+            "the ledger carries the ceiling"
+        );
     }
 
     #[test]
@@ -524,5 +556,104 @@ mod tests {
                 .is_err()
         );
         assert!(!path.exists());
+    }
+
+    /// An observation of a metered call that reserved its ceiling for
+    /// `request_bytes`, as the broker authorizes one.
+    fn reserved(policy: &SharedPodPolicy, request_bytes: u64) -> Pending {
+        let charge =
+            crate::upstreams::CallCharge::free().reserving(metering().ceiling(request_bytes, 0));
+        let permit = policy
+            .lock()
+            .unwrap()
+            .authorize_effect(
+                ArgsDigest::new([8; 32]),
+                Operation::WebFetch,
+                "https://upstream.invalid",
+                100,
+                charge,
+                false,
+            )
+            .unwrap();
+        let (_call, mut pending) = permit.observe(policy.clone(), 100);
+        pending.meter(&metering(), 0, request_bytes);
+        pending
+    }
+
+    fn balance(policy: &SharedPodPolicy) -> rust_decimal::Decimal {
+        policy.lock().unwrap().budget.available().unwrap()
+    }
+
+    /// 2026-10-31, reserve then refund: the ceiling is held while the call runs,
+    /// and the balance after it is the start less the real price.
+    #[test]
+    fn a_reserved_call_settles_down_to_its_price() {
+        let (_dir, policy, _) = fixture();
+        let start = balance(&policy);
+        // 4,000 request bytes x 0.3 + 1,000 output x 2.5 = 3,700.
+        let mut observation = reserved(&policy, 4000);
+        assert_eq!(
+            start - balance(&policy),
+            rust_decimal::Decimal::new(3700, 6)
+        );
+        assert_eq!(policy.lock().unwrap().budget.held_micro().unwrap(), 3700);
+        observation.response(200);
+        observation.bytes(br#"{"meta":{"in":1000,"out":100}}"#);
+        observation.body_complete();
+        observation.finish(Termination::ResponseRead).unwrap();
+        // 1,000 x 0.3 + 100 x 2.5 = 550.
+        assert_eq!(start - balance(&policy), rust_decimal::Decimal::new(550, 6));
+        let budget = &policy.lock().unwrap().budget;
+        assert_eq!(budget.held_micro().unwrap(), 0, "the hold is released");
+        assert_eq!(budget.overrun_micro().unwrap(), 0);
+    }
+
+    /// An unread call keeps its whole reservation: it is charged its ceiling.
+    /// A call dropped mid-flight (`Interrupted`) settles the same way.
+    #[test]
+    fn an_unread_reserved_call_is_charged_its_ceiling() {
+        let (_dir, policy, _) = fixture();
+        let start = balance(&policy);
+        let observation = reserved(&policy, 4000);
+        observation.finish(Termination::TransportFailure).unwrap();
+        assert_eq!(
+            start - balance(&policy),
+            rust_decimal::Decimal::new(3700, 6)
+        );
+        drop(reserved(&policy, 4000));
+        assert_eq!(
+            start - balance(&policy),
+            rust_decimal::Decimal::new(7400, 6)
+        );
+        assert_eq!(policy.lock().unwrap().budget.held_micro().unwrap(), 0);
+    }
+
+    /// A price beyond the reserved ceiling should be impossible. If it happens it
+    /// is charged, and the excess is kept as an alarm, never clamped away.
+    #[test]
+    fn a_price_beyond_its_reservation_is_an_alarm_not_a_clamp() {
+        let (dir, policy, _) = fixture();
+        let start = balance(&policy);
+        let mut observation = reserved(&policy, 4000);
+        observation.response(200);
+        // 200,000 output tokens, far past the 1,000-token ceiling: 800,000 micro-USD.
+        observation.bytes(br#"{"meta":{"in":1000000,"out":200000}}"#);
+        observation.body_complete();
+        observation.finish(Termination::ResponseRead).unwrap();
+        assert_eq!(
+            start - balance(&policy),
+            rust_decimal::Decimal::new(800_000, 6)
+        );
+        assert_eq!(
+            policy.lock().unwrap().budget.overrun_micro().unwrap(),
+            800_000 - 3700
+        );
+        assert!(matches!(
+            records(dir.path())[0].outcome.settlement,
+            Some(Settlement::Priced {
+                priced_micro_usd: 800_000,
+                ..
+            })
+        ));
     }
 }
