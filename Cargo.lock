@@ -6780,6 +6780,8 @@ dependencies = [
  "chrono",
  "hex",
  "nucleus-identity",
+ "olog-ledger",
+ "olog-store",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -7357,6 +7359,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
 dependencies = [
  "asn1-rs",
+]
+
+[[package]]
+name = "olog-ledger"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "olog-store",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "olog-store"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

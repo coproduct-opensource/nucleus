@@ -1,0 +1,14 @@
+[package]
+name = "olog-store"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A durable ordered map. The substrate the chase needs, without a database under it."
+
+# NO storage-engine dependency, on purpose. The mandate is our own store, and swapping
+# SQLite for redb/sled/fjall would be the same category of thing it rules out. The only
+# dependency is a CRC, and that is 40 lines rather than a crate.
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3"
