@@ -8,6 +8,7 @@ use nucleus_cred_protocol::EgressMethod;
 
 mod declassify;
 mod human_paced;
+mod push_refs;
 
 /// What the fake remote saw of one request.
 #[derive(Debug, Clone)]

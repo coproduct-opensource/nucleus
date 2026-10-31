@@ -574,6 +574,48 @@ fn label_matches_effect(asked: &Asked<'_>, entry: &RegistryEntry) -> bool {
     }
 }
 
+/// Step 3b, for a push: every ref its command list names must match the
+/// operator's `push_refs` for the upstream, or the whole push is refused.
+///
+/// `body_head` is the start of the request body (at least the command list,
+/// see [`push_refs::MAX_COMMAND_LIST_BYTES`]); `content_encoding` the
+/// encoding the call would be sent with. Runs after the body is owned by the
+/// host and before the credential is fetched or any upstream byte is sent, on
+/// both the perform frame and the streamed call.
+///
+/// `Ok(None)`: not a push, or an upstream whose operator declared no
+/// patterns (a push there is unrestricted by ref, as before). `Ok(Some(_))`:
+/// a push whose every ref matched, with its commands. `Err`: the refusal,
+/// named so the guest and the call's record can say which ref or which part
+/// of the request was refused. A push whose body is encoded (`gzip`, say) is
+/// refused: the host would be judging bytes the upstream decodes into
+/// something else.
+///
+/// [`push_refs::MAX_COMMAND_LIST_BYTES`]: nucleus_cred_protocol::egress::push_refs::MAX_COMMAND_LIST_BYTES
+pub(crate) fn check_push_refs(
+    asked: &Asked<'_>,
+    entry: &RegistryEntry,
+    content_encoding: Option<&str>,
+    body_head: &[u8],
+) -> Result<Option<Vec<nucleus_cred_protocol::egress::push_refs::RefUpdate>>, String> {
+    use nucleus_cred_protocol::egress::{EgressOperation, operation_for, push_refs};
+    let is_push = matches!(
+        operation_for(&entry.spec().effects, asked.method, asked.path, asked.query),
+        Ok(EgressOperation::GitPush)
+    );
+    let Some(patterns) = entry.push_refs().filter(|_| is_push) else {
+        return Ok(None);
+    };
+    if content_encoding.is_some_and(|e| !e.trim().eq_ignore_ascii_case("identity")) {
+        return Err("push refused: an encoded push body cannot be checked against this \
+                    upstream's push ref patterns"
+            .to_string());
+    }
+    push_refs::check(patterns, body_head)
+        .map(Some)
+        .map_err(|refusal| refusal.to_string())
+}
+
 /// The credential header for a resolved call, and whether it was minted.
 pub(crate) struct InjectedHeader {
     /// The header value, with the entry's encoding applied
@@ -736,6 +778,23 @@ where
     ) else {
         return refused("not permitted");
     };
+    // 3b. A push names only the refs the operator allows, read from the
+    //     frame's own bytes before anything is claimed, charged or sent.
+    if let Err(reason) = check_push_refs(
+        &Asked {
+            operation: &req.operation,
+            target: &req.target,
+            justification: &req.justification,
+            method: nucleus_cred_protocol::EgressMethod::Post,
+            path: &req.path,
+            query: None,
+        },
+        resolved.entry(),
+        None,
+        &req.body,
+    ) {
+        return refused(&reason);
+    }
     let call_charge = match resolved.entry().call_charge() {
         Ok(charge) => charge,
         Err(reason) => return refused(reason),
@@ -1081,6 +1140,43 @@ mod tests {
             idempotency_key: key.into(),
             ..request()
         }
+    }
+
+    /// **The perform frame is held to the same ref scope as the streamed
+    /// call.** A push to `main` carried whole in one frame is refused by name
+    /// before the key is claimed, the egress charged or the upstream called;
+    /// the same frame naming `refs/heads/studio/a` is not refused by the ref
+    /// check (it then waits for the host's approval, as every push does).
+    #[tokio::test]
+    async fn a_perform_frame_push_outside_the_ref_scope_is_refused_before_any_call() {
+        let policy = PermissionLattice::permissive();
+        let credentials = store();
+        let identity = who();
+        let upstreams = [upstream().with_push_refs(&["refs/heads/studio/**"])];
+        let ledger = IdempotencyLedger::new();
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let body = |refname: &str| {
+            let line = format!(
+                "{} {} {refname}\0report-status\n",
+                "1".repeat(40),
+                "2".repeat(40)
+            );
+            format!("{:04x}{line}0000PACK", line.len() + 4).into_bytes()
+        };
+        let push = |key: &str, refname: &str| PerformRequest {
+            operation: "GitPush".into(),
+            path: "/org/repo.git/git-receive-pack".into(),
+            idempotency_key: key.into(),
+            body: body(refname),
+            ..request()
+        };
+        let net = Upstream::default();
+        let reply = handle_perform(&push("main", "refs/heads/main"), &context, NOW, net.caller()).await;
+        assert!(!reply.granted);
+        assert!(reply.reason.contains("refs/heads/main"), "{}", reply.reason);
+        assert_eq!(net.count(), 0);
+        let reply = handle_perform(&push("studio", "refs/heads/studio/a"), &context, NOW, net.caller()).await;
+        assert!(!reply.reason.contains("push refused"), "{}", reply.reason);
     }
 
     #[tokio::test]

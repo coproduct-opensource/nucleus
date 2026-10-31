@@ -553,6 +553,28 @@ pub(crate) async fn start_broker_for_pod(
             .unwrap_or_default(),
     );
 
+    // The launch receipt of the grant's ref scope: which refs a push to each
+    // held upstream may name. Written once, before the broker serves a call.
+    let push_scope: serde_json::Map<String, serde_json::Value> = upstreams
+        .iter()
+        .filter_map(|entry| {
+            entry.push_refs().map(|patterns| {
+                (
+                    entry.spec().name.clone(),
+                    patterns
+                        .iter()
+                        .map(|p| serde_json::Value::from(p.as_str()))
+                        .collect(),
+                )
+            })
+        })
+        .collect();
+    if !push_scope.is_empty() {
+        egress
+            .record_push_refs(&serde_json::Value::Object(push_scope).to_string())
+            .await;
+    }
+
     // The operator's host environment or per-exchange federation supplies the
     // credentials. Values stripped from the caller's spec are not substituted.
     let credentials =

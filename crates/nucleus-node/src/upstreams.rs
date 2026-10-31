@@ -105,6 +105,11 @@
 //! # `value_prefix + credential`. `value_prefix` is refused beside `basic`; a
 //! # username that is empty or contains ':' refuses the registry.
 //! value_encoding = { basic = { username = "token-user" } }
+//! # Optional: the refs a push may create, update or delete. The host reads
+//! # each push's command list and refuses the whole push, before any byte
+//! # goes upstream, when one ref matches none of these. `*` is one segment,
+//! # a final `**` one or more. Default: a push is unrestricted by ref.
+//! push_refs = ["refs/heads/studio/**"]
 //!
 //! [upstream.credential.env]
 //! var = "GIT_REMOTE_TOKEN"
@@ -242,6 +247,12 @@ struct EntryFile {
     /// model's method and not every API that shares the base.
     #[serde(default)]
     paths: Vec<String>,
+    /// The refs a push to this upstream may create, update or delete, as
+    /// ref patterns (`refs/heads/studio/**`). Empty (the default) leaves a
+    /// push unrestricted by ref, as before this field existed. Host-only: a
+    /// guest never sees or chooses it (`nucleus_cred_protocol::egress::push_refs`).
+    #[serde(default)]
+    push_refs: Vec<String>,
 }
 
 /// `value_encoding = "raw"` or `value_encoding = { basic = { username = "…" } }`.
@@ -411,6 +422,9 @@ pub(crate) struct RegistryEntry {
     header_policy: HeaderPolicy,
     /// Exact paths the guest may call; empty is any path under the base. Validated at load.
     paths: BTreeSet<String>,
+    /// The refs a push may name; empty is any. Validated at load. See
+    /// [`RegistryEntry::push_refs`].
+    push_refs: Vec<nucleus_cred_protocol::egress::push_refs::RefPattern>,
 }
 
 /// What the operator fixed about an upstream's request headers beyond the
@@ -529,6 +543,25 @@ impl RegistryEntry {
                 .contains(&format!("/{}", path.trim_start_matches('/')))
     }
 
+    /// The refs a push to this upstream may name, or `None` when the operator
+    /// declared none and a push is unrestricted by ref. With `Some`, the host
+    /// reads every push's command list and refuses the whole push when one
+    /// ref matches no pattern, before any upstream byte
+    /// (`nucleus_cred_protocol::egress::push_refs::check`).
+    pub fn push_refs(&self) -> Option<&[nucleus_cred_protocol::egress::push_refs::RefPattern]> {
+        (!self.push_refs.is_empty()).then_some(self.push_refs.as_slice())
+    }
+
+    /// This entry with `patterns` as its push ref patterns: for tests.
+    #[cfg(test)]
+    pub(crate) fn with_push_refs(mut self, patterns: &[&str]) -> Self {
+        self.push_refs = nucleus_cred_protocol::egress::push_refs::parse_patterns(
+            patterns.iter().map(|p| (*p).to_string()).collect(),
+        )
+        .expect("valid patterns");
+        self
+    }
+
     pub fn forwards_header(&self, name: &str) -> bool {
         self.request_headers.contains(name)
             && nucleus_spec::workload_egress::guest_may_propose_header(name)
@@ -581,6 +614,7 @@ impl RegistryEntry {
             request_headers: BTreeSet::new(),
             header_policy: HeaderPolicy::none(),
             paths: BTreeSet::new(),
+            push_refs: Vec::new(),
         }
     }
 }
@@ -657,9 +691,12 @@ impl UpstreamRegistry {
             let effects = nucleus_spec::EffectTable::from_parts(up.kind, up.effects)
                 .map_err(|e| format!("upstream {:?}: {e}", up.name))?;
             let paths = paths(&up.name, up.paths)?;
+            let push_refs = nucleus_cred_protocol::egress::push_refs::parse_patterns(up.push_refs)
+                .map_err(|e| format!("upstream {:?}: push_refs: {e}", up.name))?;
             entries.push(RegistryEntry {
                 value_encoding,
                 paths,
+                push_refs,
                 request_headers,
                 header_policy,
                 call_charge: up.call_charge_micro_usd.map(CallCharge),
@@ -1109,6 +1146,37 @@ policy_id = "example-policy-0001"
     /// forwarded. The per-call check also stands on its own: an entry whose
     /// list was never validated still forwards neither `authorization` nor
     /// its own credential header.
+    /// `push_refs` loads as validated patterns, stays out of the projection a
+    /// pod spec selects by (the guest neither sees nor chooses it), and a
+    /// pattern that is not one refuses the registry by the entry's name.
+    #[test]
+    fn push_refs_load_as_patterns_and_stay_host_only() {
+        let with = |list: &str| {
+            format!(
+                "[[upstream]]\nname = \"git-remote\"\nbase_url = \"https://forge.invalid/\"\n\
+                 header = \"authorization\"\npush_refs = {list}\n\
+                 [upstream.credential.env]\nvar = \"GIT_REMOTE_KEY\"\n"
+            )
+        };
+        let reg = UpstreamRegistry::from_toml_str(&with(r#"["refs/heads/studio/**"]"#))
+            .expect("a pattern loads");
+        let entry = &reg.resolve(reg.entries())[0];
+        let patterns: Vec<&str> = entry
+            .push_refs()
+            .expect("declared")
+            .iter()
+            .map(|p| p.as_str())
+            .collect();
+        assert_eq!(patterns, ["refs/heads/studio/**"]);
+        assert!(!serde_json::to_string(&reg.entries()[0]).unwrap().contains("studio"));
+        let unscoped = UpstreamRegistry::from_toml_str(&with("[]")).unwrap();
+        assert!(unscoped.resolve(unscoped.entries())[0].push_refs().is_none());
+        for bad in [r#"["heads/studio/*"]"#, r#"["refs/heads/studio*"]"#, r#"["refs/**/x"]"#] {
+            let err = UpstreamRegistry::from_toml_str(&with(bad)).unwrap_err();
+            assert!(err.contains("git-remote") && err.contains("push_refs"), "{bad}: {err}");
+        }
+    }
+
     #[test]
     fn request_headers_admit_protocol_headers_and_never_a_credential() {
         let with = |list: &str| {
