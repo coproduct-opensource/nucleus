@@ -2,6 +2,11 @@
 //! Handoff transfers responsibility to the caller; an abandoned handoff
 //! tears down the registered pod and releases authority only after cleanup.
 use crate::{ApiError, NodeState, PodSpec, pod_authority};
+
+// Service guests: operator-declared, long-lived launches (stage 1: decided and tested, not yet
+// wired into the launch path). Declared here, not in `main.rs`, which sits on its line ceiling.
+#[path = "service_guest.rs"]
+pub(crate) mod service_guest;
 use uuid::Uuid;
 
 type Result = std::result::Result<(Uuid, Option<String>), ApiError>;

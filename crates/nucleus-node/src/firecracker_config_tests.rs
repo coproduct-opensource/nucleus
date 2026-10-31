@@ -8,7 +8,7 @@ use crate::rootfs_source::HostImage;
 use proptest::prelude::*;
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Minimal valid PodSpec with all optional sections defaulted to absent.
 /// Built by deserialization so it exercises the real spec defaults rather
@@ -2387,4 +2387,98 @@ fn a_write_to_the_callers_file_after_placement_does_not_reach_an_eval_cells_gues
                 && r.placement() == Placement::GuestWritesThrough),
         "a standard pod's caller scratch is still linked: {standard:?}"
     );
+}
+
+// ----- Invariant (5): a surviving writable drive only for a service guest, and never a NIC ----
+
+/// A service volume from the operator's registry: the only way to construct one.
+fn service_volume() -> crate::pod_launch::service_guest::ServiceVolume {
+    let reg = crate::pod_launch::service_guest::ServiceRegistry::from_toml_str(
+        r#"
+[[service]]
+name = "console"
+spec = "/etc/nucleus/services/console.json"
+volume = { size_mib = 1024 }
+restart = { policy = "never" }
+"#,
+    )
+    .expect("registry");
+    let spec: PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#,
+    )
+    .unwrap();
+    reg.plan(
+        &crate::pod_launch::service_guest::ServiceName::new("console").unwrap(),
+        &spec,
+        Path::new("/var/lib/nucleus"),
+    )
+    .unwrap()
+    .unwrap()
+    .volume()
+    .cloned()
+    .expect("a volume")
+}
+
+/// An ordinary pod's drives carry no volume, whatever its image, and with no network policy it
+/// lowers to zero NICs.
+#[test]
+fn an_ordinary_pod_lowers_no_service_volume_and_no_nic() {
+    for scratch in [false, true] {
+        for jailed in [false, true] {
+            let drives = lower_drives(&host(&image(true, scratch)), jailed);
+            assert!(drives.iter().all(|d| d.drive_id != "volume"));
+            assert_eq!(
+                drives.iter().filter(|d| !d.is_read_only).count(),
+                usize::from(scratch)
+            );
+        }
+    }
+    let plan = net::NetnsPlan::decide(true, base_spec().spec.network.as_ref());
+    assert!(!plan.allocate_net_plan);
+    assert!(lower_network_interfaces(None).is_empty());
+}
+
+/// A service volume is writable, non-root, at its fixed in-jail name (and its derived host path
+/// unjailed), and attaching it adds a drive and nothing else: no NIC.
+#[test]
+fn a_service_volume_is_a_writable_drive_and_adds_no_nic() {
+    let v = service_volume();
+    let jailed = lower_service_volume(&v, true);
+    assert_eq!(jailed.drive_id, "volume");
+    assert_eq!(jailed.path_on_host, in_jail::VOLUME);
+    assert!(!jailed.is_read_only && !jailed.is_root_device);
+    assert_eq!(
+        lower_service_volume(&v, false).path_on_host,
+        "/var/lib/nucleus/services/console/volume.img"
+    );
+
+    let mut base = full_config();
+    base.network_interfaces.clear();
+    let before = base.drives.len();
+    assert!(!base.has_service_volume());
+    let with = base.with_service_volume(&v, true);
+    assert!(with.has_service_volume());
+    assert_eq!(with.drives.len(), before + 1);
+    assert_eq!(with.nic_count(), 0, "a service volume brought a NIC");
+}
+
+/// The same through the real lowering, where `from_spec` exists.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_service_guest_lowered_from_its_spec_has_no_nic() {
+    let config = FirecrackerConfig::from_spec(
+        &base_spec(),
+        std::path::Path::new("/unused/firecracker.log"),
+        std::path::Path::new("/unused/vsock.sock"),
+        &host(&image(true, true)),
+        None,
+        "aa00bb11-approval-pubkeys",
+        Some(15012),
+        None,
+        None,
+    );
+    assert_eq!(config.nic_count(), 0);
+    let config = config.with_service_volume(&service_volume(), false);
+    assert_eq!(config.nic_count(), 0);
+    assert!(config.has_service_volume());
 }
