@@ -356,6 +356,9 @@ pub(crate) struct EffectPermit {
     _decisions: Vec<DecisionToken>,
     _effect: ArgsDigest,
     _record: super::evidence::Recorded,
+    /// Micro-USD of the call's ceiling held beyond its tariff; the outcome
+    /// settles it (`Pending`).
+    hold: u64,
 }
 
 #[derive(Debug)]
@@ -375,13 +378,14 @@ impl EffectPermit {
             _decisions,
             _effect,
             _record,
+            hold,
         } = self;
         (
             ExecutingEffect {
                 _decisions,
                 _effect,
             },
-            _record.observe(policy, now),
+            _record.observe(policy, now, hold),
         )
     }
 }
@@ -453,14 +457,17 @@ impl PodPolicy {
                 require_approval,
             },
         )?;
-        let record = self.budget.commit(charge.usd(), || {
-            self.evidence
-                .commit(digest, op, subject, now, charge, declassification)
-        })?;
+        let record = self
+            .budget
+            .commit_holding(charge.usd(), charge.hold_micro(), || {
+                self.evidence
+                    .commit(digest, op, subject, now, charge, declassification)
+            })?;
         Ok(EffectPermit {
             _decisions: tokens,
             _effect: digest,
             _record: record,
+            hold: charge.hold_micro(),
         })
     }
 
@@ -480,8 +487,14 @@ impl PodPolicy {
         self.ensure_live()
             .map_err(|_| "host policy revoked or unavailable")?;
         self.evidence.available()?;
-        if charge.usd() > self.budget.available()? {
-            return Err("host budget exhausted for operator call charge".into());
+        // A metered call must find room for its whole ceiling, not just its tariff:
+        // refused here, before any credential or upstream traffic, if it cannot.
+        if charge.reserved_usd() > self.budget.available()? {
+            return Err(if charge.hold_micro() > 0 {
+                "host budget cannot reserve this call's ceiling".into()
+            } else {
+                "host budget exhausted for operator call charge".into()
+            });
         }
         let mut tokens = Vec::new();
         let mut approval_ops = Vec::new();

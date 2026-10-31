@@ -2,11 +2,15 @@
 //! upstream's own response reports usage and refusal reasons, as JSON pointers.
 //! Nothing here knows any upstream's format or price; the registry names both.
 //!
-//! The flat call tariff is debited before the call (`CallCharge`). After a
-//! successful response this prices the call from its reported usage, and the
-//! caller debits any excess over the tariff. The ledger only grows, so the
-//! tariff is a floor and an overestimate is not refunded: an operator who wants
-//! each call charged at its price sets `call_charge_micro_usd = 0`.
+//! The flat call tariff is debited before the call (`CallCharge`), and the rest
+//! of the call's [`Metering::ceiling`] is held beside it: a call whose ceiling
+//! does not fit the pod's balance is refused before any upstream traffic. After
+//! a successful response this prices the call from its reported usage, and the
+//! hold is settled to the excess over the tariff, the unused part refunded. The
+//! tariff is a floor and is not refunded: an operator who wants each call
+//! charged at its price sets `call_charge_micro_usd = 0`. Until 2026-10-31 the
+//! ceiling was not held, so with a zero tariff the call that crossed a pod's
+//! line ran in full and the ledger clamped the overshoot away.
 //!
 //! A call whose usage cannot be read is charged its ceiling, never zero: its
 //! request's bytes (each input token is at least one byte, so this bounds the
@@ -93,6 +97,23 @@ impl Metering {
         })
     }
 
+    /// The live coding-model's rates and ceiling (registry, 2026-10-29): 0.75 and
+    /// 3.75 USD per million input and output tokens, 65,536 output tokens at most.
+    /// Usage under `/usage/in` and `/usage/out`.
+    #[cfg(test)]
+    pub(crate) fn live_rates() -> Self {
+        Self {
+            input_rate: 750_000,
+            output_rate: 3_750_000,
+            input_tokens: vec!["/usage/in".into()],
+            output_tokens: vec!["/usage/out".into()],
+            ceiling_output: 65_536,
+            error_code: None,
+            error_status: None,
+            error_message: None,
+        }
+    }
+
     /// Whether a refusal body is worth keeping: only if the operator named fields.
     pub(crate) fn reads_errors(&self) -> bool {
         self.error_code.is_some() || self.error_status.is_some() || self.error_message.is_some()
@@ -135,7 +156,8 @@ impl Metering {
 
     /// The most a call with a `request_bytes` body can cost: every input token
     /// is at least one byte, and output is at most `ceiling_output_tokens`.
-    /// Never below the tariff, which was debited already.
+    /// Never below the tariff, which was debited already. Reserved before the
+    /// call, so it must bound every price `settle` can return.
     pub(crate) fn ceiling(&self, request_bytes: u64, tariff: u64) -> u64 {
         self.price(request_bytes, self.ceiling_output).max(tariff)
     }
@@ -325,8 +347,16 @@ mod tests {
     fn a_zero_tariff_charges_each_call_its_price() {
         let body = br#"{"meta":{"in":2670,"out":2}}"#;
         match metering().settle(body, false, true, 0, 9000) {
-            Settlement::Priced { priced_micro_usd, top_up_micro_usd, tariff_micro_usd, .. } => {
-                assert_eq!((priced_micro_usd, tariff_micro_usd, top_up_micro_usd), (806, 0, 806));
+            Settlement::Priced {
+                priced_micro_usd,
+                top_up_micro_usd,
+                tariff_micro_usd,
+                ..
+            } => {
+                assert_eq!(
+                    (priced_micro_usd, tariff_micro_usd, top_up_micro_usd),
+                    (806, 0, 806)
+                );
             }
             other => panic!("{other:?}"),
         }

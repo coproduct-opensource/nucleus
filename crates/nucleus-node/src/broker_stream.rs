@@ -654,6 +654,14 @@ where
         let reason = Refusal::Named(format!("a {} carries no request body", req.method.as_str()));
         return refuse(&reason, 0, Remaining::Ended, reader, writer).await;
     }
+    // The upload is staged, so its size is known: a metered call reserves its
+    // ceiling before any upstream traffic, as the buffered path does.
+    let call_charge = match resolved.entry().metering() {
+        Some(metering) => {
+            call_charge.reserving(metering.ceiling(staged.len(), call_charge.micro_usd()))
+        }
+        None => call_charge,
+    };
     let current_time = || {
         let elapsed = started.elapsed();
         now.saturating_add(elapsed.as_secs())
@@ -816,7 +824,11 @@ where
     use nucleus_spec::host_effect::outcome::Termination;
     let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time());
     if let Some(metering) = resolved.entry().metering() {
-        observation.meter(metering, call_charge.micro_usd(), u64::try_from(staged.len()).unwrap_or(u64::MAX));
+        observation.meter(
+            metering,
+            call_charge.micro_usd(),
+            u64::try_from(staged.len()).unwrap_or(u64::MAX),
+        );
     }
     // The body owns the charge through HTTP handoff and cancellation.
     let call = (ctx.streams.caller)(StreamCall {
@@ -1382,6 +1394,40 @@ mod tests {
         let second = drive(&pod, &open("model-api", "exhausted"), b"request").await;
         assert!(!second.head.granted);
         assert!(second.head.reason.contains("budget exhausted"));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    /// 2026-10-31: the streamed path reserves a metered call's ceiling as the
+    /// buffered one does. A pod with a positive balance below one ceiling is
+    /// refused before the upstream sees a byte; it was admitted on `3ee48704b`.
+    #[tokio::test]
+    async fn a_streamed_call_whose_ceiling_does_not_fit_is_refused_before_upstream_io() {
+        let (base, seen) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        // One cent; the 7-byte request's ceiling at the live rates is 0.245766 USD.
+        pod.policy.budget.max_cost_usd = rust_decimal::Decimal::new(10_000, 6);
+        pod.host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        pod.upstreams = pod
+            .upstreams
+            .into_iter()
+            .map(|entry| entry.with_metering(crate::metering::Metering::live_rates()))
+            .collect();
+        let refused = drive(&pod, &open("model-api", "short"), b"request").await;
+        assert!(!refused.head.granted);
+        assert!(
+            refused.head.reason.contains("budget"),
+            "{}",
+            refused.head.reason
+        );
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "the upstream saw no request"
+        );
+        // Exactly one ceiling fits, and the call that runs is charged at most it.
+        pod.policy.budget.max_cost_usd = rust_decimal::Decimal::new(245_766, 6);
+        pod.host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        let ran = drive(&pod, &open("model-api", "fits"), b"request").await;
+        assert!(ran.head.granted, "{}", ran.head.reason);
         assert_eq!(seen.lock().unwrap().len(), 1);
     }
 

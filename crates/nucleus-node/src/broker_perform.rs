@@ -741,6 +741,15 @@ where
         Ok(charge) => charge,
         Err(reason) => return refused(reason),
     };
+    // A metered call reserves its ceiling, the most this request can cost, so a
+    // pod that cannot cover it is refused before any upstream traffic.
+    let call_charge = match resolved.entry().metering() {
+        Some(metering) => call_charge.reserving(metering.ceiling(
+            u64::try_from(req.body.len()).unwrap_or(u64::MAX),
+            call_charge.micro_usd(),
+        )),
+        None => call_charge,
+    };
     let spec = resolved.entry.spec();
     let url = resolved.url.clone();
     // Hash the checked destination and exact bytes, never a guest digest.
@@ -907,7 +916,11 @@ where
             // ambiguous about whether the upstream saw the body.
             let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time);
             if let Some(metering) = resolved.entry().metering() {
-                observation.meter(metering, call_charge.micro_usd(), u64::try_from(req.body.len()).unwrap_or(u64::MAX));
+                observation.meter(
+                    metering,
+                    call_charge.micro_usd(),
+                    u64::try_from(req.body.len()).unwrap_or(u64::MAX),
+                );
             }
             let outcome = tokio::time::timeout_at(
                 deadline,
@@ -984,6 +997,7 @@ where
 #[cfg(test)]
 mod tests {
     mod paced;
+    mod reserve;
     use super::*;
     use nucleus_cred_broker::Credential;
     use portcullis::CapabilityLevel;

@@ -449,27 +449,69 @@ impl HeaderPolicy {
     }
 }
 
-/// A fixed operator tariff for one authorized dispatch attempt, never guest usage.
+/// A fixed operator tariff for one authorized dispatch attempt, never guest usage,
+/// and, for a metered upstream, the rest of the call's ceiling held with it.
+///
+/// The tariff is debited when the call is authorized and is what the signed
+/// authorization records. The hold is reserved beside it, so a call is admitted
+/// only if its worst-case price fits the balance, and is released when the
+/// call's outcome settles (2026-10-31; before, a zero tariff admitted any pod
+/// with a positive balance to a call that could cost its whole ceiling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CallCharge(u64);
+pub(crate) struct CallCharge {
+    tariff: u64,
+    hold: u64,
+}
 
 impl CallCharge {
-    pub(crate) fn micro_usd(self) -> u64 {
-        self.0
+    fn tariff(micro_usd: u64) -> Self {
+        Self {
+            tariff: micro_usd,
+            hold: 0,
+        }
     }
+    /// The tariff, in micro-USD.
+    pub(crate) fn micro_usd(self) -> u64 {
+        self.tariff
+    }
+    /// The tariff, in USD.
     pub(crate) fn usd(self) -> rust_decimal::Decimal {
-        rust_decimal::Decimal::from_i128_with_scale(i128::from(self.0), 6)
+        rust_decimal::Decimal::from_i128_with_scale(i128::from(self.tariff), 6)
+    }
+    /// Reserve up to `ceiling_micro_usd` for this call: the tariff plus a hold of
+    /// the rest. A ceiling below the tariff holds nothing more.
+    pub(crate) fn reserving(self, ceiling_micro_usd: u64) -> Self {
+        Self {
+            hold: ceiling_micro_usd.saturating_sub(self.tariff),
+            ..self
+        }
+    }
+    /// Micro-USD held beyond the tariff until the call settles.
+    pub(crate) fn hold_micro(self) -> u64 {
+        self.hold
+    }
+    /// Everything the call must find room for before it runs, in USD.
+    pub(crate) fn reserved_usd(self) -> rust_decimal::Decimal {
+        rust_decimal::Decimal::from_i128_with_scale(
+            i128::from(self.tariff) + i128::from(self.hold),
+            6,
+        )
     }
     #[cfg(test)]
     pub(crate) fn free() -> Self {
-        Self(0)
+        Self::tariff(0)
     }
 }
 
 impl RegistryEntry {
     #[cfg(test)]
     pub(crate) fn with_call_charge(mut self, micro_usd: u64) -> Self {
-        self.call_charge = Some(CallCharge(micro_usd));
+        self.call_charge = Some(CallCharge::tariff(micro_usd));
+        self
+    }
+    #[cfg(test)]
+    pub(crate) fn with_metering(mut self, metering: crate::metering::Metering) -> Self {
+        self.metering = Some(metering);
         self
     }
     pub(crate) fn metering(&self) -> Option<&crate::metering::Metering> {
@@ -664,7 +706,7 @@ impl UpstreamRegistry {
                 metering,
                 request_headers,
                 header_policy,
-                call_charge: up.call_charge_micro_usd.map(CallCharge),
+                call_charge: up.call_charge_micro_usd.map(CallCharge::tariff),
                 spec: CredentialedEgressSpec::registry_projection(
                     up.name,
                     up.base_url,

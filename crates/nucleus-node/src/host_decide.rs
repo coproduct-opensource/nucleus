@@ -503,6 +503,12 @@ impl PodPolicy {
         }))
     }
 
+    /// The pod's conserved balance, for tests that watch a call reserve and settle.
+    #[cfg(test)]
+    pub(crate) fn budget(&self) -> &crate::pod_authority::budget::SharedBudget {
+        &self.budget
+    }
+
     /// Record host-delivered external content before making it visible to the
     /// guest. A guest report is not needed and cannot undo this observation.
     pub(crate) fn observe_response(policy: &SharedPodPolicy, now: u64) -> Result<(), ChannelError> {
