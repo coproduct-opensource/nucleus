@@ -177,6 +177,8 @@
 //! `credential_env` would be one source spelled differently from the other,
 //! and nothing outside this branch ever wrote one.
 
+pub(crate) mod metering;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -245,7 +247,7 @@ struct EntryFile {
     /// Operator per-token prices and where the upstream reports usage and
     /// refusal reasons. Absent: only the flat `call_charge_micro_usd` is debited.
     #[serde(default)]
-    metering: Option<crate::metering::MeteringFile>,
+    metering: Option<metering::MeteringFile>,
 }
 
 /// `value_encoding = "raw"` or `value_encoding = { basic = { username = "…" } }`.
@@ -416,7 +418,7 @@ pub(crate) struct RegistryEntry {
     /// Exact paths the guest may call; empty is any path under the base. Validated at load.
     paths: BTreeSet<String>,
     /// Post-call pricing from reported usage; `None` keeps the flat tariff only.
-    metering: Option<crate::metering::Metering>,
+    metering: Option<metering::Metering>,
 }
 
 /// What the operator fixed about an upstream's request headers beyond the
@@ -485,7 +487,7 @@ impl RegistryEntry {
         self.call_charge = Some(CallCharge(micro_usd));
         self
     }
-    pub(crate) fn metering(&self) -> Option<&crate::metering::Metering> {
+    pub(crate) fn metering(&self) -> Option<&metering::Metering> {
         self.metering.as_ref()
     }
     pub(crate) fn call_charge(&self) -> Result<CallCharge, &'static str> {
@@ -669,7 +671,7 @@ impl UpstreamRegistry {
             let paths = paths(&up.name, up.paths)?;
             let metering = up
                 .metering
-                .map(|m| crate::metering::Metering::from_file(&up.name, m))
+                .map(|m| metering::Metering::from_file(&up.name, m))
                 .transpose()?;
             entries.push(RegistryEntry {
                 value_encoding,

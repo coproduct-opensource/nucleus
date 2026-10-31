@@ -121,7 +121,7 @@ pub(crate) struct Pending {
     started: Instant,
     /// Set only for a metered upstream: its metering, the tariff already debited,
     /// and the request's size in bytes (which bounds its input tokens).
-    metering: Option<(crate::metering::Metering, u64, u64)>,
+    metering: Option<(crate::upstreams::metering::Metering, u64, u64)>,
     /// The body, kept only when metered, up to `metering::CAPTURE_MAX`.
     captured: Vec<u8>,
     overflow: bool,
@@ -152,14 +152,21 @@ impl Pending {
     /// Meter this call: keep a bounded copy of the body to read usage and any
     /// refusal reason from. `tariff` is the flat charge already debited;
     /// `request_bytes` is the size of what was sent.
-    pub(crate) fn meter(&mut self, metering: &crate::metering::Metering, tariff: u64, request_bytes: u64) {
+    pub(crate) fn meter(
+        &mut self,
+        metering: &crate::upstreams::metering::Metering,
+        tariff: u64,
+        request_bytes: u64,
+    ) {
         self.metering = Some((metering.clone(), tariff, request_bytes));
     }
     pub(crate) fn bytes(&mut self, bytes: &[u8]) {
         self.body.update(bytes);
         self.bytes = self.bytes.saturating_add(bytes.len() as u64);
         if self.metering.is_some() && !self.overflow {
-            if self.captured.len().saturating_add(bytes.len()) <= crate::metering::CAPTURE_MAX {
+            if self.captured.len().saturating_add(bytes.len())
+                <= crate::upstreams::metering::CAPTURE_MAX
+            {
                 self.captured.extend_from_slice(bytes);
             } else {
                 self.overflow = true;
@@ -213,11 +220,15 @@ impl Pending {
         // the record cannot disagree. The ledger saturates at its ceiling, which
         // refuses the pod's next call: a runaway stops at the next authorization.
         let debit = match &settlement {
-            Some(Settlement::Priced { top_up_micro_usd, .. }) => *top_up_micro_usd,
+            Some(Settlement::Priced {
+                top_up_micro_usd, ..
+            }) => *top_up_micro_usd,
             // The ceiling is the whole charge; the tariff was debited already.
-            Some(Settlement::UsageUnreadable { ceiling_micro_usd, tariff_micro_usd, .. }) => {
-                ceiling_micro_usd.saturating_sub(*tariff_micro_usd)
-            }
+            Some(Settlement::UsageUnreadable {
+                ceiling_micro_usd,
+                tariff_micro_usd,
+                ..
+            }) => ceiling_micro_usd.saturating_sub(*tariff_micro_usd),
             None => 0,
         };
         if debit > 0 {
@@ -337,8 +348,8 @@ mod tests {
         );
     }
 
-    fn metering() -> crate::metering::Metering {
-        crate::metering::Metering::from_file(
+    fn metering() -> crate::upstreams::metering::Metering {
+        crate::upstreams::metering::Metering::from_file(
             "model",
             toml::from_str(
                 r#"
@@ -444,12 +455,24 @@ mod tests {
         observation.finish(Termination::TransportFailure).unwrap();
         let record = &records(dir.path())[0];
         // 4,000 request bytes x 0.3 + 1,000 output x 2.5 = 1,200 + 2,500.
-        assert!(matches!(
-            &record.outcome.settlement,
-            Some(Settlement::UsageUnreadable { ceiling_micro_usd: 3700, tariff_micro_usd: 0, .. })
-        ), "{:?}", record.outcome.settlement);
+        assert!(
+            matches!(
+                &record.outcome.settlement,
+                Some(Settlement::UsageUnreadable {
+                    ceiling_micro_usd: 3700,
+                    tariff_micro_usd: 0,
+                    ..
+                })
+            ),
+            "{:?}",
+            record.outcome.settlement
+        );
         let after = policy.lock().unwrap().budget.available().unwrap();
-        assert_eq!(before - after, rust_decimal::Decimal::new(3700, 6), "the ledger carries the ceiling");
+        assert_eq!(
+            before - after,
+            rust_decimal::Decimal::new(3700, 6),
+            "the ledger carries the ceiling"
+        );
     }
 
     #[test]

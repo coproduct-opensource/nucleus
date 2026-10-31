@@ -31,7 +31,7 @@
 //!
 //! The decision includes actual WebFetch authority and the guest's declared
 //! operation. Trusted mappings of remote API semantics and revocation remain
-//! separate work. A metered upstream (`crate::metering`) is priced from its
+//! separate work. A metered upstream (`crate::upstreams::metering`) is priced from its
 //! reported usage after the response; any excess over the tariff is debited then.
 //! Download bytes are not charged by the upload-only egress ledger;
 //! [`StreamLimits`] bounds each response.
@@ -816,7 +816,11 @@ where
     use nucleus_spec::host_effect::outcome::Termination;
     let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time());
     if let Some(metering) = resolved.entry().metering() {
-        observation.meter(metering, call_charge.micro_usd(), u64::try_from(staged.len()).unwrap_or(u64::MAX));
+        observation.meter(
+            metering,
+            call_charge.micro_usd(),
+            u64::try_from(staged.len()).unwrap_or(u64::MAX),
+        );
     }
     // The body owns the charge through HTTP handoff and cancellation.
     let call = (ctx.streams.caller)(StreamCall {

@@ -325,8 +325,16 @@ mod tests {
     fn a_zero_tariff_charges_each_call_its_price() {
         let body = br#"{"meta":{"in":2670,"out":2}}"#;
         match metering().settle(body, false, true, 0, 9000) {
-            Settlement::Priced { priced_micro_usd, top_up_micro_usd, tariff_micro_usd, .. } => {
-                assert_eq!((priced_micro_usd, tariff_micro_usd, top_up_micro_usd), (806, 0, 806));
+            Settlement::Priced {
+                priced_micro_usd,
+                top_up_micro_usd,
+                tariff_micro_usd,
+                ..
+            } => {
+                assert_eq!(
+                    (priced_micro_usd, tariff_micro_usd, top_up_micro_usd),
+                    (806, 0, 806)
+                );
             }
             other => panic!("{other:?}"),
         }
