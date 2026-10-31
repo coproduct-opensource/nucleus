@@ -57,6 +57,10 @@
 // macOS build compiles none of it. On Linux the detector stays live.
 #![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
+// Job grants: the guest-bound capability a service guest's broker calls carry (stage 1).
+#[path = "job_grant.rs"]
+pub(crate) mod job_grant;
+
 use nucleus_cred_broker::{
     AuthorizedRequest, BrokerError, Credential, CredentialStore, PodIdentity, TaskRequestEnvelope,
 };
