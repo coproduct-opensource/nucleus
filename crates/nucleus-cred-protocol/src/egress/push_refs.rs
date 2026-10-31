@@ -39,7 +39,7 @@
 //! command list, or more than [`MAX_COMMANDS`] commands. A signed push
 //! (`push-cert`) and push options (`push-options`) are refused: both carry
 //! data to the remote's hooks that the ref check does not see, and nothing in
-//! the Studio flow uses them. A capability outside [`KNOWN_CAPABILITIES`] is
+//! an agent.s ordinary push uses them. A capability outside [`KNOWN_CAPABILITIES`] is
 //! refused, because the parser cannot say it leaves the command list's
 //! meaning alone. `atomic` and `report-status` are accepted: they change how
 //! the remote applies and reports the commands, never which refs they name,
@@ -61,7 +61,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The most commands one push may carry. Far above a Studio push (one or two
+/// The most commands one push may carry. Far above an agent.s push (one or two
 /// branches); a bound so a hostile body cannot make the host parse forever.
 pub const MAX_COMMANDS: usize = 1024;
 
@@ -106,11 +106,14 @@ impl TryFrom<String> for RefPattern {
         let segments: Vec<&str> = text.split('/').collect();
         let valid = segments.len() >= 2
             && segments[0] == "refs"
-            && segments.iter().enumerate().all(|(i, segment)| match *segment {
-                "*" => true,
-                "**" => i + 1 == segments.len(),
-                literal => valid_ref_component(literal),
-            });
+            && segments
+                .iter()
+                .enumerate()
+                .all(|(i, segment)| match *segment {
+                    "*" => true,
+                    "**" => i + 1 == segments.len(),
+                    literal => valid_ref_component(literal),
+                });
         if valid {
             Ok(Self(text))
         } else {
@@ -148,10 +151,7 @@ impl RefPattern {
 }
 
 fn segments_match(pattern: &[&str], name: &[&str]) -> bool {
-    pattern
-        .iter()
-        .zip(name)
-        .all(|(p, n)| *p == "*" || p == n)
+    pattern.iter().zip(name).all(|(p, n)| *p == "*" || p == n)
 }
 
 /// Why a pattern list was refused.
@@ -250,11 +250,8 @@ pub fn commands(body: &[u8]) -> Result<Vec<RefUpdate>, PushRefusal> {
     let mut out: Vec<RefUpdate> = Vec::new();
     let mut oid_len: Option<usize> = None;
     let mut seen_command = false;
-    loop {
-        let Some(payload) = next_pkt(body, &mut at)? else {
-            // The flush that ends the command list.
-            break;
-        };
+    // `None` is the flush that ends the command list.
+    while let Some(payload) = next_pkt(body, &mut at)? {
         let line = payload.strip_suffix(b"\n").unwrap_or(payload);
         if !seen_command && line.starts_with(b"shallow ") {
             let oid = &line[b"shallow ".len()..];
@@ -266,7 +263,11 @@ pub fn commands(body: &[u8]) -> Result<Vec<RefUpdate>, PushRefusal> {
         }
         let (command, capabilities) = match line.iter().position(|&b| b == 0) {
             Some(nul) if !seen_command => (&line[..nul], Some(&line[nul + 1..])),
-            Some(_) => return Err(PushRefusal::Malformed("capabilities after the first command")),
+            Some(_) => {
+                return Err(PushRefusal::Malformed(
+                    "capabilities after the first command",
+                ));
+            }
             None => (line, None),
         };
         if let Some(capabilities) = capabilities {
@@ -275,14 +276,18 @@ pub fn commands(body: &[u8]) -> Result<Vec<RefUpdate>, PushRefusal> {
             // Git always writes a capability list on the first command, even
             // an empty one after the NUL. A first command without the NUL is
             // not what any client sends.
-            return Err(PushRefusal::Malformed("first command carries no capability list"));
+            return Err(PushRefusal::Malformed(
+                "first command carries no capability list",
+            ));
         }
         seen_command = true;
         let mut fields = command.split(|&b| b == b' ');
         let (Some(old), Some(new), Some(refname), None) =
             (fields.next(), fields.next(), fields.next(), fields.next())
         else {
-            return Err(PushRefusal::Malformed("a command is not <old> <new> <refname>"));
+            return Err(PushRefusal::Malformed(
+                "a command is not <old> <new> <refname>",
+            ));
         };
         check_oid(old, &mut oid_len)?;
         check_oid(new, &mut oid_len)?;
@@ -323,14 +328,16 @@ pub fn check(patterns: &[RefPattern], body: &[u8]) -> Result<Vec<RefUpdate>, Pus
 
 /// The next pkt-line's payload, or `None` at a flush. `at` advances past it.
 fn next_pkt<'b>(body: &'b [u8], at: &mut usize) -> Result<Option<&'b [u8]>, PushRefusal> {
-    let header = body
-        .get(*at..*at + 4)
-        .ok_or(PushRefusal::Malformed("the command list ends without a flush"))?;
+    let header = body.get(*at..*at + 4).ok_or(PushRefusal::Malformed(
+        "the command list ends without a flush",
+    ))?;
     let len = std::str::from_utf8(header)
         .ok()
         .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
         .and_then(|h| usize::from_str_radix(h, 16).ok())
-        .ok_or(PushRefusal::Malformed("a pkt-line length that is not four hex digits"))?;
+        .ok_or(PushRefusal::Malformed(
+            "a pkt-line length that is not four hex digits",
+        ))?;
     match len {
         0 => {
             *at += 4;
@@ -353,9 +360,13 @@ fn next_pkt<'b>(body: &'b [u8], at: &mut usize) -> Result<Option<&'b [u8]>, Push
 /// length throughout one push.
 fn check_oid(oid: &[u8], len: &mut Option<usize>) -> Result<(), PushRefusal> {
     let shaped = (oid.len() == 40 || oid.len() == 64)
-        && oid.iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b));
+        && oid
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b));
     if !shaped {
-        return Err(PushRefusal::Malformed("an object id that is not 40 or 64 lowercase hex"));
+        return Err(PushRefusal::Malformed(
+            "an object id that is not 40 or 64 lowercase hex",
+        ));
     }
     match len {
         Some(l) if *l != oid.len() => Err(PushRefusal::Malformed("object ids of mixed length")),
@@ -367,7 +378,8 @@ fn check_oid(oid: &[u8], len: &mut Option<usize>) -> Result<(), PushRefusal> {
 }
 
 fn check_capabilities(list: &[u8]) -> Result<(), PushRefusal> {
-    let list = std::str::from_utf8(list).map_err(|_| PushRefusal::Malformed("capabilities are not UTF-8"))?;
+    let list = std::str::from_utf8(list)
+        .map_err(|_| PushRefusal::Malformed("capabilities are not UTF-8"))?;
     for capability in list.split(' ').filter(|c| !c.is_empty()) {
         let name = capability.split_once('=').map_or(capability, |(n, _)| n);
         if !KNOWN_CAPABILITIES.contains(&name) {
@@ -525,8 +537,11 @@ mod tests {
             ),
             (
                 "four fields",
-                format!("{}0000", pkt(&format!("{A} {B} refs/heads/studio/a extra\0\n")))
-                    .into_bytes(),
+                format!(
+                    "{}0000",
+                    pkt(&format!("{A} {B} refs/heads/studio/a extra\0\n"))
+                )
+                .into_bytes(),
             ),
             (
                 "short oid",
@@ -534,13 +549,19 @@ mod tests {
             ),
             (
                 "upper-case oid",
-                format!("{}0000", pkt(&format!("{} {B} refs/heads/studio/a\0\n", "A".repeat(40))))
-                    .into_bytes(),
+                format!(
+                    "{}0000",
+                    pkt(&format!("{} {B} refs/heads/studio/a\0\n", "A".repeat(40)))
+                )
+                .into_bytes(),
             ),
             (
                 "mixed oid lengths",
-                format!("{}0000", pkt(&format!("{A} {} refs/heads/studio/a\0\n", "2".repeat(64))))
-                    .into_bytes(),
+                format!(
+                    "{}0000",
+                    pkt(&format!("{A} {} refs/heads/studio/a\0\n", "2".repeat(64)))
+                )
+                .into_bytes(),
             ),
             (
                 "not under refs/",
@@ -548,8 +569,11 @@ mod tests {
             ),
             (
                 "dot-dot",
-                format!("{}0000", pkt(&format!("{A} {B} refs/heads/studio/../../main\0\n")))
-                    .into_bytes(),
+                format!(
+                    "{}0000",
+                    pkt(&format!("{A} {B} refs/heads/studio/../../main\0\n"))
+                )
+                .into_bytes(),
             ),
             (
                 "double slash",
@@ -608,12 +632,20 @@ mod tests {
         let mut late = pkt(&format!("{A} {B} refs/heads/studio/a\0\n")).into_bytes();
         late.extend(pkt(&format!("shallow {A}\n")).into_bytes());
         late.extend(b"0000");
-        assert!(matches!(check(&studio(), &late), Err(PushRefusal::Malformed(_))));
+        assert!(matches!(
+            check(&studio(), &late),
+            Err(PushRefusal::Malformed(_))
+        ));
     }
 
     #[test]
     fn patterns_are_validated() {
-        for good in ["refs/heads/studio/**", "refs/heads/*", "refs/heads/main", "refs/*/x"] {
+        for good in [
+            "refs/heads/studio/**",
+            "refs/heads/*",
+            "refs/heads/main",
+            "refs/*/x",
+        ] {
             parse_patterns(vec![good.into()]).unwrap();
         }
         for bad in [

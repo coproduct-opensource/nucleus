@@ -18,7 +18,11 @@ fn pkt(payload: &str) -> String {
 fn commands(updates: &[(&str, &str, &str)], caps: &str) -> Vec<u8> {
     let mut out = String::new();
     for (i, (old, new, name)) in updates.iter().enumerate() {
-        let caps = if i == 0 { format!("\0{caps}") } else { String::new() };
+        let caps = if i == 0 {
+            format!("\0{caps}")
+        } else {
+            String::new()
+        };
         out.push_str(&pkt(&format!("{old} {new} {name}{caps}\n")));
     }
     out.push_str("0000PACK");
@@ -88,7 +92,11 @@ async fn a_push_to_main_is_refused_before_any_upstream_byte() {
         .lines()
         .find(|l| l.contains("egress_stream_call"))
         .expect("a record of the call");
-    assert!(line.contains("\\\"push_refs_checked\\\":true") || line.contains("\"push_refs_checked\":true"), "{line}");
+    assert!(
+        line.contains("\\\"push_refs_checked\\\":true")
+            || line.contains("\"push_refs_checked\":true"),
+        "{line}"
+    );
     assert!(line.contains("refs/heads/main"), "{line}");
     assert!(line.contains("refused"), "{line}");
 }
@@ -147,7 +155,14 @@ async fn a_malformed_command_list_is_refused() {
     let (base, hits) = remote().await;
     let pod = scoped(&base);
     // The bare `0000PACK` older tests push: no commands at all.
-    refused(&pod, &hits, "flush-only", b"0000PACK", "malformed command list").await;
+    refused(
+        &pod,
+        &hits,
+        "flush-only",
+        b"0000PACK",
+        "malformed command list",
+    )
+    .await;
     refused(&pod, &hits, "garbage", b"zzzz", "malformed command list").await;
     let unterminated = pkt(&format!("{A} {B} refs/heads/studio/a\0{CAPS}\n"));
     refused(
@@ -162,7 +177,10 @@ async fn a_malformed_command_list_is_refused() {
         &pod,
         &hits,
         "options",
-        &commands(&[(A, B, "refs/heads/studio/a")], "report-status push-options"),
+        &commands(
+            &[(A, B, "refs/heads/studio/a")],
+            "report-status push-options",
+        ),
         "capability \"push-options\"",
     )
     .await;
@@ -175,11 +193,19 @@ async fn an_encoded_push_body_is_refused() {
     let (base, hits) = remote().await;
     let pod = scoped(&base);
     let mut req = receive_pack("gzip");
-    req.headers
-        .insert("content-encoding".into(), "gzip".into());
-    let heard = drive(&pod, &req, &commands(&[(A, B, "refs/heads/studio/a")], CAPS)).await;
+    req.headers.insert("content-encoding".into(), "gzip".into());
+    let heard = drive(
+        &pod,
+        &req,
+        &commands(&[(A, B, "refs/heads/studio/a")], CAPS),
+    )
+    .await;
     assert!(!heard.head.granted, "{:?}", heard.head);
-    assert!(heard.head.reason.contains("encoded push body"), "{:?}", heard.head);
+    assert!(
+        heard.head.reason.contains("encoded push body"),
+        "{:?}",
+        heard.head
+    );
     assert!(hits.lock().unwrap().is_empty());
 }
 
@@ -202,7 +228,10 @@ async fn a_push_to_a_studio_branch_is_allowed() {
     assert_eq!(pushed.body, RESULT);
     let hits = hits.lock().unwrap().clone();
     assert_eq!(hits.len(), 1);
-    assert_eq!((hits[0].method.as_str(), hits[0].body_len), ("POST", body.len()));
+    assert_eq!(
+        (hits[0].method.as_str(), hits[0].body_len),
+        ("POST", body.len())
+    );
     let audit = pod.audit();
     assert!(
         audit
@@ -218,7 +247,10 @@ async fn a_push_to_a_studio_branch_is_allowed() {
 async fn a_fetch_is_unaffected() {
     let (base, hits) = remote().await;
     let pod = scoped(&base);
-    for (service, nonce) in [("git-upload-pack", "adv-fetch"), ("git-receive-pack", "adv-push")] {
+    for (service, nonce) in [
+        ("git-upload-pack", "adv-fetch"),
+        ("git-receive-pack", "adv-push"),
+    ] {
         let read = drive(&pod, &advertise(service, nonce), b"").await;
         assert!(read.head.granted, "{service}: {:?}", read.head);
     }
@@ -228,7 +260,12 @@ async fn a_fetch_is_unaffected() {
         None,
         "fetch",
     );
-    let heard = drive(&pod, &fetch, b"0032want 1111111111111111111111111111111111111111\n00000009done\n").await;
+    let heard = drive(
+        &pod,
+        &fetch,
+        b"0032want 1111111111111111111111111111111111111111\n00000009done\n",
+    )
+    .await;
     assert!(heard.head.granted, "{:?}", heard.head);
     assert_eq!(hits.lock().unwrap().len(), 3);
     assert!(!pod.audit().contains("push_refs_checked"));

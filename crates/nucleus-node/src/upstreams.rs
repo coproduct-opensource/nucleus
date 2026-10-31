@@ -1168,12 +1168,27 @@ policy_id = "example-policy-0001"
             .map(|p| p.as_str())
             .collect();
         assert_eq!(patterns, ["refs/heads/studio/**"]);
-        assert!(!serde_json::to_string(&reg.entries()[0]).unwrap().contains("studio"));
+        assert!(
+            !serde_json::to_string(&reg.entries()[0])
+                .unwrap()
+                .contains("studio")
+        );
         let unscoped = UpstreamRegistry::from_toml_str(&with("[]")).unwrap();
-        assert!(unscoped.resolve(unscoped.entries())[0].push_refs().is_none());
-        for bad in [r#"["heads/studio/*"]"#, r#"["refs/heads/studio*"]"#, r#"["refs/**/x"]"#] {
+        assert!(
+            unscoped.resolve(unscoped.entries())[0]
+                .push_refs()
+                .is_none()
+        );
+        for bad in [
+            r#"["heads/studio/*"]"#,
+            r#"["refs/heads/studio*"]"#,
+            r#"["refs/**/x"]"#,
+        ] {
             let err = UpstreamRegistry::from_toml_str(&with(bad)).unwrap_err();
-            assert!(err.contains("git-remote") && err.contains("push_refs"), "{bad}: {err}");
+            assert!(
+                err.contains("git-remote") && err.contains("push_refs"),
+                "{bad}: {err}"
+            );
         }
     }
 

@@ -607,9 +607,11 @@ pub(crate) fn check_push_refs(
         return Ok(None);
     };
     if content_encoding.is_some_and(|e| !e.trim().eq_ignore_ascii_case("identity")) {
-        return Err("push refused: an encoded push body cannot be checked against this \
+        return Err(
+            "push refused: an encoded push body cannot be checked against this \
                     upstream's push ref patterns"
-            .to_string());
+                .to_string(),
+        );
     }
     push_refs::check(patterns, body_head)
         .map(Some)
@@ -1171,11 +1173,23 @@ mod tests {
             ..request()
         };
         let net = Upstream::default();
-        let reply = handle_perform(&push("main", "refs/heads/main"), &context, NOW, net.caller()).await;
+        let reply = handle_perform(
+            &push("main", "refs/heads/main"),
+            &context,
+            NOW,
+            net.caller(),
+        )
+        .await;
         assert!(!reply.granted);
         assert!(reply.reason.contains("refs/heads/main"), "{}", reply.reason);
         assert_eq!(net.count(), 0);
-        let reply = handle_perform(&push("studio", "refs/heads/studio/a"), &context, NOW, net.caller()).await;
+        let reply = handle_perform(
+            &push("studio", "refs/heads/studio/a"),
+            &context,
+            NOW,
+            net.caller(),
+        )
+        .await;
         assert!(!reply.reason.contains("push refused"), "{}", reply.reason);
     }
 
