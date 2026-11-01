@@ -1492,7 +1492,7 @@ mod tests {
         let probes = table::probes();
         assert_eq!(
             probes.len(),
-            65,
+            66,
             "the probe count is part of the accounting line"
         );
         let shell = probes
