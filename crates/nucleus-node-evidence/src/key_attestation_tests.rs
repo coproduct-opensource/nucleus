@@ -68,7 +68,7 @@ fn quoted(e: &NodeEvidence) -> BTreeMap<u8, [u8; 32]> {
 }
 
 fn point(sk: &SigningKey) -> ([u8; 32], [u8; 32]) {
-    let p = sk.verifying_key().to_encoded_point(false);
+    let p = sk.verifying_key().to_sec1_point(false);
     (
         p.x().unwrap().as_slice().try_into().unwrap(),
         p.y().unwrap().as_slice().try_into().unwrap(),

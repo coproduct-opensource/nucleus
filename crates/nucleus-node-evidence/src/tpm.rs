@@ -301,7 +301,7 @@ pub(crate) mod build {
 
     /// `TPM2B_PUBLIC` for a P-256 ECDSA/SHA-256 key with `attributes`.
     pub(crate) fn p256_public(vk: &p256::ecdsa::VerifyingKey, attributes: u32) -> Vec<u8> {
-        let point = vk.to_encoded_point(false);
+        let point = vk.to_sec1_point(false);
         let mut t = Vec::new();
         t.extend_from_slice(&TPM_ALG_ECC.to_be_bytes());
         t.extend_from_slice(&HashAlg::TPM_SHA256.to_be_bytes());

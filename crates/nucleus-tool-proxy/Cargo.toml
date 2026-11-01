@@ -130,7 +130,7 @@ tracing-opentelemetry = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 nix = { version = "0.31", default-features = false, features = ["fs", "process", "user"] }
-p256 = { version = "0.13", features = ["ecdsa"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = "0.7"

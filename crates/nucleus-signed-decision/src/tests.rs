@@ -41,7 +41,7 @@ impl Signer {
                 // SPKI of an uncompressed P-256 point: id-ecPublicKey, prime256v1, BIT STRING.
                 let mut der = hex::decode("3059301306072a8648ce3d020106082a8648ce3d030107034200")
                     .expect("hex");
-                der.extend_from_slice(k.verifying_key().to_encoded_point(false).as_bytes());
+                der.extend_from_slice(k.verifying_key().to_sec1_point(false).as_bytes());
                 pem_of(&der)
             }
             Self::Ed25519(k) => {
