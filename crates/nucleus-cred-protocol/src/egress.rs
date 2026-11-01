@@ -452,4 +452,43 @@ mod tests {
             }
         }
     }
+
+    /// **A push is a push whatever the operator's table declares** (olog Pa.Egress.1
+    /// L1). A table that names the push service as a fetch, or as a pull request,
+    /// on a forge or an api, cannot weaken it: the receive-service check runs
+    /// before the table is consulted. No other test declares an effect for
+    /// `git-receive-pack`, so before this one, consulting the table first passed
+    /// every classification test.
+    #[test]
+    fn a_declaration_cannot_turn_a_push_into_a_fetch() {
+        use EgressMethod::Post;
+        use EgressOperation::{CreatePr, GitPush, WebFetch};
+        let effect = |path: &str, operation| DeclaredEffect {
+            method: Post,
+            path: path.into(),
+            operation,
+        };
+        for kind in [UpstreamKind::Forge, UpstreamKind::Api] {
+            for weaker in [WebFetch, CreatePr] {
+                let table = EffectTable::from_parts(
+                    Some(kind),
+                    vec![
+                        effect("*/*/git-receive-pack", weaker),
+                        effect("*/*/info/refs", weaker),
+                    ],
+                )
+                .expect("a valid table");
+                for (path, query) in [
+                    ("org/repo.git/git-receive-pack", None),
+                    ("org/repo.git/info/refs", Some("service=git-receive-pack")),
+                ] {
+                    assert_eq!(
+                        operation_for(&table, Post, path, query),
+                        Ok(GitPush),
+                        "{kind:?} declaring {weaker:?}: {path} {query:?}"
+                    );
+                }
+            }
+        }
+    }
 }
