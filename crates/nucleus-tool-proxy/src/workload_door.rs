@@ -157,6 +157,7 @@ fn handler(route: DoorRoute) -> MethodRouter<crate::AppState> {
 /// nowhere else.
 pub(crate) fn router(state: crate::AppState) -> Router {
     let auth = state.clone();
+    let measured = state.clone();
     table(move |route| {
         entered(
             route,
@@ -167,6 +168,11 @@ pub(crate) fn router(state: crate::AppState) -> Router {
         )
     })
     .with_state(state)
+    // The host's tool record measures what the door answered (host_decide).
+    .layer(axum::middleware::from_fn_with_state(
+        measured,
+        crate::host_decide::record_completion,
+    ))
     .layer(tower_http::catch_panic::CatchPanicLayer::custom(
         crate::fail_closed_panic_response,
     ))

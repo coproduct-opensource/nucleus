@@ -375,6 +375,29 @@ pub enum GuestFrame {
         decided: Seq,
         local: Outcome,
     },
+    /// The call the `Decide` numbered `decided` has finished, and this is what
+    /// it returned. Sent after that decision was compared; the host
+    /// appends it to the pod's lifecycle record beside the decision. Every
+    /// field is the guest's claim about its own execution: the host can bind it
+    /// to a decision it numbered, once, but cannot see the call run.
+    Completed {
+        seq: Seq,
+        decided: Seq,
+        completion: Completion,
+    },
+}
+
+/// What one decided call returned, as its guest reports it ([`GuestFrame::Completed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Completion {
+    /// The HTTP status the tool-proxy answered the call with.
+    pub status: u16,
+    /// The process exit code, for a call that ran a process; `None` for any other.
+    pub exit_code: Option<i32>,
+    /// SHA-256 of the response body the caller received.
+    pub output_sha256: [u8; 32],
+    /// The response body's length in bytes.
+    pub output_len: u64,
 }
 
 /// A frame the host sends. Every guest frame is answered by exactly one.
@@ -387,4 +410,6 @@ pub enum HostFrame {
     /// SHADOW MODE ONLY (P8): the `Shadow` report numbered `seq` was compared,
     /// and this is what the host found.
     Compared { seq: Seq, agreement: Agreement },
+    /// The `Completed` report numbered `seq` was appended to the host's record.
+    Recorded { seq: Seq },
 }
