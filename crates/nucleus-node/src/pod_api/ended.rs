@@ -21,6 +21,26 @@
 //!   the node keeps no lineage for a previous life's pod that a pod could not
 //!   have written, so no narrower scope can be checked.
 //! * Anything else: `404`.
+//!
+//! ## `spent_micro_usd`: what the pod was charged
+//!
+//! On a `200`, `spent_micro_usd` is what the node's budget ledger was charged for
+//! the pod when it was released, in micro-USD (1 USD = 1_000_000), rounded up: its
+//! metered spend, at most its allocation, when its federated binding settles
+//! `metered`, else its whole allocation (`pod_authority::settle`). The release
+//! keeps it beside the pod (`pods/<id>/settled-spend.json`), so it is reported
+//! for a pod of a previous life too, settled in that life or at this one's
+//! startup (`pod_authority::previous_life`).
+//!
+//! **Absent means unknown, never 0.** It is absent when the pod has not been
+//! released yet (a pod reads `exited` as soon as it stops; the reaper releases it
+//! after cleanup, so a caller may ask again), when no ledger above the pod was
+//! charged (admitted by the root minter, or not through the authority at all),
+//! when the ledger held no allocation for it, when the record could not be
+//! written or read, and for a pod released before the record existed. A caller
+//! settling a reservation from this route must treat absent as the whole
+//! reservation spent: fail-closed. A `0` is reported only when a ledger was
+//! charged nothing (a metered pod that metered nothing, or an unspawned launch).
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
@@ -49,6 +69,10 @@ pub(crate) struct Ended {
     /// The pod as `GET /v1/pods` shows it, for a pod of this life.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) pod: Option<PodInfo>,
+    /// What the node's budget ledger was charged for the pod at its release, in
+    /// micro-USD. Absent is unknown, never 0: see the module docs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) spent_micro_usd: Option<u64>,
 }
 
 pub(crate) async fn ended(
@@ -69,6 +93,7 @@ pub(crate) async fn ended(
             id,
             ended,
             pod: Some(info),
+            spent_micro_usd: state.authority.settled_spend(id).await,
         }));
     }
     if matches!(caller, CallerScope::NodeWide) && state.authority.of_previous_life(id).await {
@@ -76,6 +101,7 @@ pub(crate) async fn ended(
             id,
             ended: Cause::PreviousNodeLife,
             pod: None,
+            spent_micro_usd: state.authority.settled_spend(id).await,
         }));
     }
     Err(ApiError::NotFound)
@@ -170,5 +196,180 @@ mod tests {
         assert!(body["pod"]["parent_pod_id"].is_null());
         // Scoped like every per-pod read.
         assert_eq!(ask(&st, CallerScope::Pod(Uuid::new_v4()), id).await.0, 404);
+    }
+}
+
+// What the node's budget ledger was charged for an ended pod (`spent_micro_usd`).
+#[cfg(all(test, feature = "local-driver"))]
+mod spend_tests {
+    use super::*;
+    use crate::pod_api::handler_tests::{register, state};
+    use crate::pod_authority::Admission;
+    use axum::response::IntoResponse;
+
+    async fn ask(st: &NodeState, id: Uuid) -> (u16, serde_json::Value) {
+        let response = ended(
+            State(st.clone()),
+            Extension(CallerScope::NodeWide),
+            Path(id),
+        )
+        .await
+        .into_response();
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("body");
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    fn spec(budget_usd: u32) -> nucleus_spec::PodSpec {
+        let mut lattice = portcullis::PermissionLattice::permissive();
+        lattice.budget.max_cost_usd = rust_decimal::Decimal::from(budget_usd);
+        let mut spec: nucleus_spec::PodSpec = serde_json::from_str(
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#,
+        )
+        .expect("minimal spec");
+        spec.spec.work_dir = std::path::PathBuf::from("/work");
+        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(lattice),
+        };
+        spec
+    }
+
+    /// A pod admitted by the root minter: it holds an allocation, but no ledger
+    /// above it is charged when it ends.
+    async fn admit_root(st: &NodeState, id: Uuid, budget_usd: u32) {
+        let by = Admission {
+            caller_spiffe_id: st.authority.root_minter().to_string(),
+            caller_pod: None,
+            header_cert: None,
+        };
+        st.authority
+            .admit_kept(&by, &spec(budget_usd), id)
+            .await
+            .expect("root admits");
+    }
+
+    /// A child of `parent`, charged to `parent`'s ledger.
+    async fn admit_child(st: &NodeState, parent: Uuid, id: Uuid, budget_usd: u32) {
+        let by = Admission {
+            caller_spiffe_id: st.authority.pod_spiffe_id(parent),
+            caller_pod: Some(parent),
+            header_cert: None,
+        };
+        st.authority
+            .admit_kept(&by, &spec(budget_usd), id)
+            .await
+            .expect("parent admits its child");
+    }
+
+    async fn cancel(st: &NodeState, id: Uuid) {
+        let _cancelled = crate::pod_api::cancel_pod(
+            State(st.clone()),
+            Extension(CallerScope::NodeWide),
+            Path(id),
+        )
+        .await
+        .expect("cancels");
+    }
+
+    /// An exited pod charged to its parent's ledger reports what that ledger
+    /// was charged at release; before the release settles it, nothing is
+    /// claimed.
+    #[tokio::test]
+    async fn an_exited_pod_reports_what_its_ledger_was_charged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let parent = Uuid::new_v4();
+        admit_root(&st, parent, 5).await;
+        let child = register(&st, Some(parent)).await;
+        admit_child(&st, parent, child, 2).await;
+
+        cancel(&st, child).await;
+        let (status, body) = ask(&st, child).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["ended"], "exited");
+        assert!(
+            body.get("spent_micro_usd").is_none(),
+            "exited but not yet settled: unknown, never 0: {body}"
+        );
+
+        // What the reaper does once the pod is cleaned up.
+        st.authority.release_child(child).await;
+        let (status, body) = ask(&st, child).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            body["spent_micro_usd"], 2_000_000,
+            "an unmetered binding's pod is charged its whole $2 allocation: {body}"
+        );
+    }
+
+    /// A pod with no ledger above it (admitted by the root minter, or never
+    /// admitted through the authority at all) omits the field.
+    #[tokio::test]
+    async fn a_pod_no_ledger_was_charged_for_omits_its_spend() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let rooted = register(&st, None).await;
+        admit_root(&st, rooted, 5).await;
+        let bare = register(&st, None).await;
+        for id in [rooted, bare] {
+            cancel(&st, id).await;
+            st.authority.release_child(id).await;
+            let (status, body) = ask(&st, id).await;
+            assert_eq!(status, 200, "{body}");
+            assert!(body.get("spent_micro_usd").is_none(), "{body}");
+        }
+    }
+
+    /// After a restart: a pod settled in the earlier life, and one the earlier
+    /// life left registered (settled at this startup), both report their charge.
+    /// The root-admitted parent, and a record naming another pod, report none.
+    #[tokio::test]
+    async fn a_previous_lifes_pod_reports_its_persisted_charge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = state(&dir);
+        let parent = Uuid::new_v4();
+        admit_root(&first, parent, 5).await;
+        let settled = Uuid::new_v4();
+        admit_child(&first, parent, settled, 2).await;
+        first.authority.release_child(settled).await;
+        let stranded = Uuid::new_v4();
+        admit_child(&first, parent, stranded, 1).await;
+        // Killed here: `stranded` and `parent` are never released by this life.
+
+        // A record copied from another pod's directory says nothing of this one.
+        let foreign = Uuid::new_v4();
+        let foreign_dir = crate::lifecycle::pod_dir(&first.state_dir, foreign);
+        std::fs::create_dir_all(&foreign_dir).expect("pod dir");
+        std::fs::copy(
+            crate::lifecycle::pod_dir(&first.state_dir, settled).join("settled-spend.json"),
+            foreign_dir.join("settled-spend.json"),
+        )
+        .expect("a settled record was written for the released pod");
+        drop(first);
+
+        let next = state(&dir);
+        next.authority.restore_from_disk().await;
+        next.authority.release_previous_life().await;
+
+        for (id, spent) in [(settled, Some(2_000_000)), (stranded, Some(1_000_000))] {
+            let (status, body) = ask(&next, id).await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(body["ended"], "previous_node_life");
+            assert_eq!(
+                body.get("spent_micro_usd").and_then(|v| v.as_u64()),
+                spent,
+                "{body}"
+            );
+        }
+        for id in [parent, foreign] {
+            let (status, body) = ask(&next, id).await;
+            assert_eq!(status, 200, "{body}");
+            assert!(body.get("spent_micro_usd").is_none(), "{body}");
+        }
     }
 }

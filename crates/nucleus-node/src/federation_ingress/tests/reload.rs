@@ -681,6 +681,11 @@ async fn a_metered_binding_charges_the_day_what_its_pods_spent() {
     live.st.authority.meter(whole, usd("0.25")).await.unwrap();
     live.st.authority.release_child(whole).await;
     assert_eq!(live.ledger_file()["ledger"]["consumed_micro"], 2_000_000);
+    // What `GET /v1/pods/{id}/ended` reports for it: the whole allocation it was charged.
+    assert_eq!(
+        live.st.authority.settled_spend(whole).await,
+        Some(2_000_000)
+    );
 
     assert_eq!(settle("metered"), ReloadOutcome::Applied);
     let who = live.exchange().await.unwrap();
@@ -688,6 +693,7 @@ async fn a_metered_binding_charges_the_day_what_its_pods_spent() {
     assert!(refused_with(&live.admit(&who, 1).await, "daily allowance"));
     live.st.authority.meter(a, usd("0.5")).await.unwrap();
     live.st.authority.release_child(a).await;
+    assert_eq!(live.st.authority.settled_spend(a).await, Some(500_000));
     // The day keeps 2 + 0.5: 2 fits, then 1 more does not.
     assert_eq!(live.ledger_file()["ledger"]["consumed_micro"], 2_500_000);
     let b = live
@@ -697,6 +703,11 @@ async fn a_metered_binding_charges_the_day_what_its_pods_spent() {
     assert!(refused_with(&live.admit(&who, 1).await, "daily allowance"));
     // A pod that spent nothing is charged nothing.
     live.st.authority.release_child(b).await;
+    assert_eq!(
+        live.st.authority.settled_spend(b).await,
+        Some(0),
+        "a ledger charged nothing reports 0, not unknown"
+    );
     assert_eq!(live.ledger_file()["ledger"]["consumed_micro"], 2_500_000);
     live.admit(&who, 2).await.expect("b's 2 came back too");
 

@@ -1923,6 +1923,14 @@ impl PodAuthority {
         self.inner.lock().await.previous_life.contains(&pod_id)
     }
 
+    /// What `pod_id`'s release charged the ledger above it, in micro-USD: its metered
+    /// spend when its binding settles `metered`, else its whole allocation. Kept on
+    /// disk at release, so it is read for a pod of this life or of a previous one.
+    /// `None` is unknown: not yet released, no ledger above it, or no readable record.
+    pub(crate) async fn settled_spend(&self, pod_id: Uuid) -> Option<u64> {
+        settle::settled_spend(&self.state_dir, pod_id).await
+    }
+
     /// Rebuild the registry from `pods/<id>/authority.json` after a restart,
     /// and every ledger with it: each holder's recorded consumption, then each
     /// live child re-allocated against its parent. See the module docs for
