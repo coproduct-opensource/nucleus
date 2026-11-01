@@ -34,6 +34,13 @@ pub(crate) struct MeteringFile {
     output_micro_usd_per_million_tokens: u64,
     /// JSON pointers summed as billed input tokens; at least one must resolve.
     input_tokens: Vec<String>,
+    /// The part of the input billed at the cached rate (Vertex `cachedContentTokenCount`), as
+    /// pointers summed like `input_tokens`; it is counted inside them. Given together with
+    /// `cached_input_micro_usd_per_million_tokens`, or not at all.
+    #[serde(default)]
+    cached_input_tokens: Vec<String>,
+    #[serde(default)]
+    cached_input_micro_usd_per_million_tokens: Option<u64>,
     /// JSON pointers summed as billed output tokens; absent ones count zero.
     output_tokens: Vec<String>,
     /// The most output (thinking included) one call can bill. Required: an
@@ -50,6 +57,10 @@ pub(crate) struct MeteringFile {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Metering {
     input_rate: u64,
+    /// The cached-input rate, at most `input_rate`, so the ceiling (all input at the input rate)
+    /// still bounds every price and the reserve-then-refund hold stays sound.
+    cached_rate: u64,
+    cached_tokens: Vec<String>,
     output_rate: u64,
     input_tokens: Vec<String>,
     output_tokens: Vec<String>,
@@ -85,8 +96,26 @@ impl Metering {
                 .collect::<Result<Vec<_>, _>>()
         };
         let one = |v: Option<String>| v.map(|p| pointer(upstream, &p)).transpose();
+        if file.cached_input_tokens.is_empty()
+            != file.cached_input_micro_usd_per_million_tokens.is_none()
+            || file.cached_input_tokens.len() > 8
+        {
+            return Err(format!(
+                "upstream {upstream:?}: cached_input_tokens and cached_input_micro_usd_per_million_tokens go together (0-8 pointers)"
+            ));
+        }
+        let cached_rate = file
+            .cached_input_micro_usd_per_million_tokens
+            .unwrap_or(file.input_micro_usd_per_million_tokens);
+        if cached_rate > file.input_micro_usd_per_million_tokens {
+            return Err(format!(
+                "upstream {upstream:?}: the cached input rate may not exceed the input rate"
+            ));
+        }
         Ok(Self {
             input_rate: file.input_micro_usd_per_million_tokens,
+            cached_rate,
+            cached_tokens: all(file.cached_input_tokens)?,
             output_rate: file.output_micro_usd_per_million_tokens,
             input_tokens: all(file.input_tokens)?,
             output_tokens: all(file.output_tokens)?,
@@ -104,6 +133,8 @@ impl Metering {
     pub(crate) fn live_rates() -> Self {
         Self {
             input_rate: 750_000,
+            cached_rate: 750_000,
+            cached_tokens: Vec::new(),
             output_rate: 3_750_000,
             input_tokens: vec!["/usage/in".into()],
             output_tokens: vec!["/usage/out".into()],
@@ -148,7 +179,14 @@ impl Metering {
     }
 
     fn price(&self, input: u64, output: u64) -> u64 {
-        let micro = (u128::from(input) * u128::from(self.input_rate)
+        self.price_cached(input, 0, output)
+    }
+
+    /// `cached` of the `input` tokens at the cached rate, the rest at the input rate.
+    fn price_cached(&self, input: u64, cached: u64, output: u64) -> u64 {
+        let cached = cached.min(input);
+        let micro = (u128::from(input - cached) * u128::from(self.input_rate)
+            + u128::from(cached) * u128::from(self.cached_rate)
             + u128::from(output) * u128::from(self.output_rate))
         .div_ceil(1_000_000);
         u64::try_from(micro).unwrap_or(u64::MAX)
@@ -194,7 +232,8 @@ impl Metering {
                 continue;
             }
             let (output, _) = Self::count(&doc, &self.output_tokens);
-            let priced = self.price(input, output);
+            let (cached, _) = Self::count(&doc, &self.cached_tokens);
+            let priced = self.price_cached(input, cached, output);
             return Settlement::Priced {
                 usage: Usage {
                     input_tokens: input,
@@ -395,5 +434,110 @@ mod tests {
         assert!(toml::from_str::<MeteringFile>(
             "input_micro_usd_per_million_tokens = 1\noutput_micro_usd_per_million_tokens = 1\ninput_tokens = [\"/meta/in\"]\noutput_tokens = []"
         ).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cached_input_tests {
+    use super::*;
+
+    /// Vertex reports `promptTokenCount` (every input token, cached included) and
+    /// `cachedContentTokenCount` (the cached part), billed at the cached rate. The
+    /// cached part is priced at that rate and the rest at the input rate.
+    fn vertex() -> Metering {
+        Metering::from_file(
+            "model",
+            toml::from_str(
+                r#"
+                input_micro_usd_per_million_tokens = 750000
+                cached_input_micro_usd_per_million_tokens = 75000
+                output_micro_usd_per_million_tokens = 3750000
+                input_tokens = ["/usageMetadata/promptTokenCount"]
+                cached_input_tokens = ["/usageMetadata/cachedContentTokenCount"]
+                output_tokens = ["/usageMetadata/candidatesTokenCount", "/usageMetadata/thoughtsTokenCount"]
+                ceiling_output_tokens = 65536
+                "#,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cached_input_is_priced_at_the_cached_rate() {
+        let body = br#"{"usageMetadata":{"promptTokenCount":100000,"cachedContentTokenCount":80000,"candidatesTokenCount":1000,"thoughtsTokenCount":0}}"#;
+        // 20,000 x 0.75 + 80,000 x 0.075 + 1,000 x 3.75 = 15,000 + 6,000 + 3,750 micro-USD.
+        match vertex().settle(body, false, true, 0, 400_000) {
+            Settlement::Priced {
+                usage,
+                priced_micro_usd,
+                top_up_micro_usd,
+                ..
+            } => {
+                assert_eq!(usage.input_tokens, 100_000, "input stays every input token");
+                assert_eq!((priced_micro_usd, top_up_micro_usd), (24_750, 24_750));
+            }
+            other => panic!("{other:?}"),
+        }
+        // No cache report: priced as before, all input at the input rate.
+        let plain = br#"{"usageMetadata":{"promptTokenCount":100000,"candidatesTokenCount":1000}}"#;
+        assert!(matches!(
+            vertex().settle(plain, false, true, 0, 400_000),
+            Settlement::Priced {
+                priced_micro_usd: 78_750,
+                ..
+            }
+        ));
+        // A cached count above the input count is clamped to it, never a negative input.
+        let odd = br#"{"usageMetadata":{"promptTokenCount":10,"cachedContentTokenCount":50,"candidatesTokenCount":0}}"#;
+        assert!(matches!(
+            vertex().settle(odd, false, true, 0, 400_000),
+            Settlement::Priced {
+                priced_micro_usd: 1,
+                ..
+            }
+        ));
+    }
+
+    /// The reserve-then-refund hold must still bound every price: the cached rate may
+    /// not exceed the input rate, and the ceiling prices all input at the input rate.
+    #[test]
+    fn the_ceiling_still_bounds_a_cached_price_and_a_dearer_cached_rate_is_refused() {
+        let m = vertex();
+        let body = br#"{"usageMetadata":{"promptTokenCount":5000,"cachedContentTokenCount":4000,"candidatesTokenCount":65536}}"#;
+        let Settlement::Priced {
+            priced_micro_usd, ..
+        } = m.settle(body, false, true, 0, 5000)
+        else {
+            panic!()
+        };
+        assert!(priced_micro_usd <= m.ceiling(5000, 0));
+        let dearer: MeteringFile = toml::from_str(
+            r#"
+            input_micro_usd_per_million_tokens = 750000
+            cached_input_micro_usd_per_million_tokens = 900000
+            output_micro_usd_per_million_tokens = 3750000
+            input_tokens = ["/u/in"]
+            cached_input_tokens = ["/u/cached"]
+            output_tokens = []
+            ceiling_output_tokens = 1
+            "#,
+        )
+        .unwrap();
+        assert!(Metering::from_file("model", dearer).is_err());
+        let rate_without_pointer: Result<MeteringFile, _> = toml::from_str(
+            r#"
+            input_micro_usd_per_million_tokens = 750000
+            cached_input_micro_usd_per_million_tokens = 75000
+            output_micro_usd_per_million_tokens = 3750000
+            input_tokens = ["/u/in"]
+            output_tokens = []
+            ceiling_output_tokens = 1
+            "#,
+        );
+        assert!(
+            Metering::from_file("model", rate_without_pointer.unwrap()).is_err(),
+            "a cached rate needs its pointers, and the reverse"
+        );
     }
 }
