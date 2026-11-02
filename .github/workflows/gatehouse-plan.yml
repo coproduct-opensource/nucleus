@@ -81,6 +81,10 @@ jobs:
       # it the plan is `b2121648…`. `ci.checkoutPlain_b` holds the path strictly under /data/work.
       # That gatehouse keeps the previous `ci` (235b8819) by digest, so main's plan re-derives
       # `430d31f8…` bit for bit until this merges. No gate JSON changed in this move.
+      # The four shard gates' terms (and the import line) are GENERATED: `cargo xtask test-shards`
+      # renders `checkoutAt` from each step's `checkout_at` and writes the import digest from its
+      # `CI_IMPORT`. The first push of this move hand-edited them, and `test-shards --check` below
+      # refused it (run 41366170187): pipeline.writ is partly a generated file, not a source.
       GATEHOUSE_REF: 0c485d7b08abe9709d6271e12911b0a5fc90b929
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
