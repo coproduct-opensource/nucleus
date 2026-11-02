@@ -194,5 +194,22 @@
 # `2ae203e6…` on CI, not `fb79e41f…`, with the same checkout path, rustc 1.96.1, wasm-pack
 # 0.13.1 and wasm-bindgen 0.2.122 as the #3417 run that minted it. The runner class changed
 # (fly build runners then, GCP build runners now); the moving input is not yet found.
+#
+# 2026-11-02: CORRECTED, the runner class is not the moving input. An aarch64 Linux container
+# (rust:1.96.1-bookworm, wasm-pack 0.13.1, cargo told the host is x86_64-unknown-linux-gnu,
+# CARGO_HOME /home/runner/.cargo) builds main 8e3108333 to `2ae203e6…` too. That container is
+# neither a Fly runner nor a GCP runner, so the class is ruled out; what does move it is not found.
+#
+# 2026-11-02: a SECOND digest for the SAME source, because the gate lane builds at another path.
+# CI has checked out at /home/runner/_work/nucleus/nucleus since at least 2026-10-13 (job
+# 115410780665, Fly; job 124908646861, GCP, the run that minted 55ec10a7). The gate image's
+# `ci_workspace`, and this plan's `checkout_at`, still name /data/work/nucleus/nucleus, the path
+# recorded on 2026-10-01 above. The wasm embeds the path, so the lane builds `17b4e15c…`
+# (gatehouse leaves 18625/18626, clippy-libs and test-libs step 0 of b4c8057fa). The same
+# aarch64 container, from b4c8057fa's tree: /data/work/nucleus/nucleus gives `17b4e15c…` and
+# /home/runner/_work/nucleus/nucleus gives `55ec10a7…`, byte for byte. Both are built from this
+# tree's source, so neither is a superseded artifact. The second digest goes when the lane moves
+# to CI's path: the gate image's CI_WORKSPACE plus `checkout_at`, in the gatehouse repository.
 55ec10a781572a9c0d75379dc1c4491063ac3a84b05e8da1677be522d051f825  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+17b4e15cfcceef894dd5eaa61034409309e95069c5842477855e0d71300349e4  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
