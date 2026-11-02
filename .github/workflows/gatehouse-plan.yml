@@ -70,7 +70,18 @@ jobs:
       # appended a field to `ci.Gate` (`exclude`), so every gate in .gatehouse/pipeline.writ gained
       # a trailing `[] : Bytes`; the gate JSON already carried `scope.exclude`, so no gate's
       # definition hash moved. `test-shards --check --gate` now runs below.
-      GATEHOUSE_REF: efa1e1a2e7ecd5e3de051c45223d8ef982d79721
+      #
+      # Moved efa1e1a -> 0c485d7b on 2026-11-01 so the plan can SAY the launcher bind
+      # (gatehouse `writ/checkout-at-on-plan-from-pr`, on the production line 40c89958). The prelude
+      # appended `checkoutAt` to `ci.Step`, so every step in .gatehouse/pipeline.writ gained a
+      # trailing value: `#b"/data/work/nucleus/nucleus"` on clippy-libs and test-libs step 0
+      # (scripts/gatehouse-verifier-sdk.sh), `#b""` on the other 22. Before this the bind was in the
+      # gate JSON only, which `gate plan check` never opens, so the plan hash stayed main's
+      # `430d31f8…` and controld refused the pull request's plan candidate as main's own (422). With
+      # it the plan is `b2121648…`. `ci.checkoutPlain_b` holds the path strictly under /data/work.
+      # That gatehouse keeps the previous `ci` (235b8819) by digest, so main's plan re-derives
+      # `430d31f8…` bit for bit until this merges. No gate JSON changed in this move.
+      GATEHOUSE_REF: 0c485d7b08abe9709d6271e12911b0a5fc90b929
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
