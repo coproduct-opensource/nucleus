@@ -208,7 +208,7 @@ pub struct SignedGeneration {
 ///
 /// Owner decision, 2026-10-26: **a rollback is not a generation.** Under strict improvement a
 /// revert can never be one, since it can only hold or regress what the generation it undoes
-/// improved (gatehouse F-231). So a rollback carries no number and is judged for no
+/// improved (gatehouse F-335). So a rollback carries no number and is judged for no
 /// improvement: it restores the target's release and its role's ledger, and, for the judge, the
 /// target's judge key. It is still linked into the log (the next entry's `parent` is its id), so
 /// it cannot be dropped from a chain without breaking the chain.
