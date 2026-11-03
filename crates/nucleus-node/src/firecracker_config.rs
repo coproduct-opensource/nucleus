@@ -132,6 +132,10 @@ pub(crate) mod in_jail {
     /// restorable: Firecracker has no `drive_overrides` on `/snapshot/load`, so a restored VM
     /// reopens its drives at the paths inside the snapshot.
     pub const DATA: &str = "/data.img";
+    /// A service guest's persistent volume (`service_guest::ServiceVolume`). Writable, and the
+    /// only writable drive that outlives a pod: a service guest is therefore never a snapshot
+    /// base (a snapshot would freeze one life's view of state the next life changes).
+    pub const VOLUME: &str = "/volume.img";
     pub const VSOCK: &str = "/vsock.sock";
     pub const LOG: &str = "/firecracker.log";
     pub const CONFIG: &str = "/config.json";
@@ -1186,6 +1190,59 @@ fn lower_network_interfaces(net_plan: Option<&net::NetPlan>) -> Vec<NetworkInter
             guest_mac: plan.guest_mac.clone(),
         }],
         None => Vec::new(),
+    }
+}
+
+/// ISOLATION INVARIANT (5) — a writable drive that outlives the pod exists only for a service
+/// guest, and it brings no network interface with it.
+///
+/// `from_spec` never emits this drive: the only argument that produces one is a
+/// [`crate::pod_launch::service_guest::ServiceVolume`], which only the operator's service registry
+/// constructs (`ServicePlan`). So an ordinary pod's drives are exactly what `lower_drives` gives,
+/// and a service guest's are those plus this one. Writable and non-root, like scratch; unlike
+/// scratch, its host file is not deleted when the pod ends.
+// Stage 1: reached only from tests until the launch path attaches service volumes.
+#[cfg_attr(not(test), allow(dead_code))]
+fn lower_service_volume(
+    volume: &crate::pod_launch::service_guest::ServiceVolume,
+    jailed: bool,
+) -> DriveConfig {
+    DriveConfig {
+        drive_id: "volume".to_string(),
+        path_on_host: if jailed {
+            in_jail::VOLUME.to_string()
+        } else {
+            volume.host_path().display().to_string()
+        },
+        is_root_device: false,
+        is_read_only: false,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl FirecrackerConfig {
+    /// Attach a service guest's persistent volume. Touches the drives only: the network
+    /// interfaces stay what `from_spec` lowered, which for a service guest is none (the
+    /// registry refuses a service spec with a network policy).
+    pub(crate) fn with_service_volume(
+        mut self,
+        volume: &crate::pod_launch::service_guest::ServiceVolume,
+        jailed: bool,
+    ) -> Self {
+        self.drives.push(lower_service_volume(volume, jailed));
+        self
+    }
+
+    /// Whether this machine carries a service volume. A snapshot of it must be refused (stage 2
+    /// wires the refusal into the snapshot path; `snapshot_inputs` would otherwise read the
+    /// volume as scratch).
+    pub(crate) fn has_service_volume(&self) -> bool {
+        self.drives.iter().any(|d| d.drive_id == "volume")
+    }
+
+    /// How many network interfaces this machine is configured with.
+    pub(crate) fn nic_count(&self) -> usize {
+        self.network_interfaces.len()
     }
 }
 

@@ -50,6 +50,17 @@ impl std::fmt::Debug for VsockBridge {
 impl VsockBridge {
     pub async fn start(uds_path: PathBuf, guest_port: u32) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
+        Self::serve(listener, uds_path, guest_port)
+    }
+
+    /// A bridge on a listener the caller bound: a service guest's ingress (`service_guest`),
+    /// where the operator names the address and every listener is bound before any serves. The
+    /// same tunnel as [`Self::start`], so ingress is bytes over VSOCK, never a guest NIC.
+    pub fn serve(
+        listener: TcpListener,
+        uds_path: PathBuf,
+        guest_port: u32,
+    ) -> std::io::Result<Self> {
         let listen_addr = listener.local_addr()?;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         // When this bridge opened. A handshake EOF means the guest's vsock port answered with
