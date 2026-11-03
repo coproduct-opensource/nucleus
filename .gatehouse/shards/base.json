@@ -47,6 +47,7 @@
   "steps": [
     {
       "program": "scripts/gatehouse-verifier-sdk.sh",
+      "checkout_at": "/data/work/nucleus/nucleus",
       "reads": [
         "**",
         "scripts/**"

@@ -162,8 +162,19 @@ impl Queue {
                 let _ = sender.send(opened);
             })?;
         let socket = receiver.await.map_err(io::Error::other)??;
+        // tokio 1.54 deprecates `AsyncFd::new` as unsound for a `T` whose `as_raw_fd` could change
+        // or close under the reactor (tokio#8587); the replacement, `AsyncFd::register`, is an
+        // `unsafe fn` with that obligation. Here `T` is `netlink_sys::Socket`, which owns its
+        // descriptor and returns the same one until it is dropped with the `AsyncFd`, so the
+        // obligation holds. Kept as an `expect` rather than an `unsafe` block so it fails, and
+        // has to be revisited, the day the call stops being deprecated or is removed.
+        #[expect(
+            deprecated,
+            reason = "Socket owns its fd for the AsyncFd's lifetime; tokio#8587"
+        )]
+        let socket = AsyncFd::new(socket)?;
         let mut queue = Self {
-            socket: AsyncFd::new(socket)?,
+            socket,
             sequence: 0,
             pending: VecDeque::new(),
         };

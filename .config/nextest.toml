@@ -45,3 +45,19 @@ slow-timeout = { period = "180s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = 'package(nucleus-identity) and test(crypto)'
 test-group = 'crypto-tests'
+
+# A passing child_seccomp run can carry a weaker attribution: when this process already runs under a
+# seccomp filter that denies the operation (a gate step under the trusted launcher, measured on the
+# arm64 lane 2026-10-30), errno cannot say which filter denied the confined child, and the test
+# reports `UNATTRIBUTED <op>` on stderr and attributes by filter count instead. `success-output =
+# "never"` above would drop that line from the gate's log, so this binary's output is shown.
+#
+# Spelled `package(nucleus) and kind(test)`, not by binary: nextest refuses a `binary_id()` or
+# `binary()` that names no test binary it knows of, and `test-libs` runs in a materialized pod whose
+# scope excludes `crates/nucleus/*/*/**`, so `nucleus` has no test targets there and the whole config
+# is refused ("no binary IDs matched this", exit 96, #3512 at 8134a7c50 on the arm64 lane
+# 2026-10-30, reproduced in that pod's file set). `package()` and `kind()` parse there. The price is
+# that `child_landlock` and `child_workspace` show their passing output too.
+[[profile.default.overrides]]
+filter = 'package(nucleus) and kind(test)'
+success-output = "immediate"

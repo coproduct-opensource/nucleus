@@ -18,7 +18,17 @@ targets = [
 [advisories]
 version = 2
 # See https://github.com/RustSec/advisory-db
-ignore = []
+ignore = [
+    # EXPIRES 2027-01-31 (re-check then; drop as soon as age ships on p256 0.14).
+    # crypto-bigint 0.5.5 timing variability; patched only in 0.7.6+. It survives
+    # in the lockfile solely via age 0.12.1 (latest) -> p256 0.13 / hpke 0.12,
+    # used by age for its p256tag recipient. Every nucleus crate that signs or
+    # verifies P-256/P-384 was moved to p256/p384 0.14 (crypto-bigint 0.7) in
+    # this change. nucleus-oidc-provider, the only age user, decrypts with
+    # age::scrypt::Identity only (keystore/file.rs), so no secret ever reaches
+    # crypto-bigint 0.5.
+    { id = "RUSTSEC-2026-0387", reason = "only via age 0.12 p256tag recipients, unused by nucleus (scrypt only); expires 2027-01-31" },
+]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"
 unsound = "workspace"

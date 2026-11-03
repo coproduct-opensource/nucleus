@@ -19,4 +19,17 @@ ignore = [
     # heapless 0.8+. Informational/unmaintained only — same class as the paste/
     # proc-macro-error ignores above.
     "RUSTSEC-2023-0089",
+
+    # EXPIRES 2027-01-31. crypto-bigint 0.5.5 timing variability (patched only
+    # in 0.7.6+). Reachable only through age 0.12.1 (latest) -> p256 0.13 for
+    # p256tag recipients; nucleus-oidc-provider decrypts with
+    # age::scrypt::Identity only. All nucleus P-256/P-384 code is on p256/p384
+    # 0.14. Mirrors the deny.toml ignore.
+    "RUSTSEC-2026-0387",
+
+    # EXPIRES 2027-01-31. basic-toml unmaintained (RUSTSEC-2026-0374), no
+    # security issue. Transitive, build-time only: age 0.12.1 -> i18n-embed-fl /
+    # i18n-embed-impl (proc-macros) -> i18n-config. cargo-deny already scopes
+    # unmaintained to workspace deps and does not flag it.
+    "RUSTSEC-2026-0374",
 ]
