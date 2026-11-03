@@ -24,6 +24,7 @@ enum Sent {
     Decide(Operation),
     Redeem,
     Shadow,
+    Completed(Seq, Completion),
 }
 
 /// How the double behaves.
@@ -96,6 +97,17 @@ async fn double(mut io: DuplexStream, rule: HostRule, seen: Arc<Seen>) {
                     seq,
                     agreement: Agreement::of(host, local),
                 }
+            }
+            GuestFrame::Completed {
+                seq,
+                decided,
+                completion,
+            } => {
+                seen.frames
+                    .lock()
+                    .unwrap()
+                    .push(Sent::Completed(decided, completion));
+                HostFrame::Recorded { seq }
             }
             GuestFrame::Redeem { seq, approval_id } => {
                 seen.frames.lock().unwrap().push(Sent::Redeem);
@@ -529,5 +541,72 @@ async fn the_telemetry_follows_the_last_decision_without_waiting() {
     assert!(
         last.is_some(),
         "no final line before the interval: {console}"
+    );
+}
+
+/// Owner, 2026-11-01: the host's record must say what each tool call returned.
+/// A decision made inside a measured call holds a ticket; the call's answer is
+/// reported against the very `Decide` the host numbered for it, after its
+/// `Shadow`. A decision outside a call holds none and reports nothing.
+#[tokio::test]
+async fn a_measured_call_reports_its_completion_against_its_decision() {
+    let seen = Arc::new(Seen::default());
+    let hd = HostDecide::start(dialer(HostRule::Decide(allow_all), Arc::clone(&seen)));
+    let mut k = permissive_kernel();
+    let g = FlowGraph::new();
+    // Outside a call: decided and shadowed, no ticket.
+    let v = decide(&mut k, &g, Operation::ReadFiles, ".console/inbox.json");
+    let ((), none) = within_call(async {}).await;
+    hd.submit(&k, &g, Operation::ReadFiles, ".console/inbox.json", &v);
+    assert!(none.is_empty());
+    // Inside one: the ticket comes back to the middleware.
+    let v = decide(&mut k, &g, Operation::RunBash, "git grep -i proof");
+    let ((), tickets) = within_call(async {
+        hd.submit(&k, &g, Operation::RunBash, "git grep -i proof", &v);
+    })
+    .await;
+    assert_eq!(tickets.len(), 1);
+    let body = br#"{"status":1,"stdout":"","stderr":""}"#;
+    let measured = measure("/v1/run", 200, body);
+    hd.complete(tickets[0], measured);
+    hd.flush().await;
+    let frames = seen.frames.lock().unwrap().clone();
+    assert_eq!(
+        frames,
+        vec![
+            Sent::Observe,
+            Sent::Decide(Operation::ReadFiles),
+            Sent::Shadow,
+            Sent::Decide(Operation::RunBash),
+            Sent::Shadow,
+            // Frames 0..=4 went before it: the run's `Decide` was number 3.
+            Sent::Completed(Seq::new(3), measured),
+        ]
+    );
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        measured.exit_code,
+        Some(1),
+        "a run's exit code is its answer's status"
+    );
+    assert_eq!(measured.output_len, body.len() as u64);
+    assert_eq!(
+        measured.output_sha256,
+        <[u8; 32]>::from(Sha256::digest(body))
+    );
+    // A ticket the worker never saw decided reports nothing.
+    hd.complete(u64::MAX, measured);
+    hd.flush().await;
+    assert_eq!(seen.frames.lock().unwrap().len(), frames.len());
+}
+
+#[test]
+fn only_a_run_carries_an_exit_code() {
+    assert_eq!(measure("/v1/read", 200, br#"{"status":0}"#).exit_code, None);
+    assert_eq!(measure("/v1/run", 403, br#"{"status":0}"#).exit_code, None);
+    assert_eq!(measure("/v1/run", 200, b"not json").exit_code, None);
+    assert_eq!(
+        measure("/v1/run", 200, br#"{"status":0}"#).exit_code,
+        Some(0)
     );
 }

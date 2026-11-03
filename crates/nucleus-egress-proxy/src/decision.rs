@@ -189,7 +189,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DecisionClient<S> {
             | HostFrame::Compared {
                 seq: _,
                 agreement: _,
-            } => unreachable(U::UnexpectedFrame),
+            }
+            | HostFrame::Recorded { seq: _ } => unreachable(U::UnexpectedFrame),
         }
     }
 }

@@ -11,16 +11,20 @@
 //!   0x02 Observe    label
 //!   0x03 Redeem     approval_id
 //!   0x04 Shadow     decided:u64be outcome                (P8 shadow mode only)
+//!   0x05 Completed  decided:u64be status:u16be exit output_sha256[32] output_len:u64be
 //! host tags
 //!   0x81 Allowed            decision_id
 //!   0x82 Denied             reason:u8
 //!   0x83 ApprovalRequired   approval_id
 //!   0x84 Observed           (empty)
 //!   0x85 Compared           agreement:u8                 (P8 shadow mode only)
+//!   0x86 Recorded           (empty)
 //!
 //! decision_id = approval_id = epoch:u64be number:u64be
 //!
 //! outcome = kind:u8 [reason:u8 iff kind is Denied]
+//!
+//! exit    = present:u8 [code:i32be iff present is 1]       present is 0 or 1
 //!
 //! label  = confidentiality:u8 integrity:u8 provenance:u8
 //!          observed_at:u64be ttl_secs:u64be authority:u8 derivation:u8
@@ -42,8 +46,8 @@ use nucleus_ifc_kernel::{
 };
 
 use crate::frame::{
-    Agreement, ApprovalId, ArgsDigest, DecisionId, DenyReason, GuestFrame, HostFrame, LabelRaise,
-    MAX_SUBJECT_LEN, Outcome, Seq, Subject, SubjectError, Verdict,
+    Agreement, ApprovalId, ArgsDigest, Completion, DecisionId, DenyReason, GuestFrame, HostFrame,
+    LabelRaise, MAX_SUBJECT_LEN, Outcome, Seq, Subject, SubjectError, Verdict,
 };
 
 /// The protocol version this crate speaks. Any other version byte is refused.
@@ -90,6 +94,10 @@ pub enum Field {
     Decided,
     Outcome,
     Agreement,
+    Status,
+    ExitCode,
+    OutputDigest,
+    OutputLen,
 }
 
 /// Where unconsumed bytes were found.
@@ -223,14 +231,16 @@ pub(crate) enum GuestTag {
     Observe,
     Redeem,
     Shadow,
+    Completed,
 }
 
 impl GuestTag {
-    pub(crate) const ALL: [GuestTag; 4] = [
+    pub(crate) const ALL: [GuestTag; 5] = [
         GuestTag::Decide,
         GuestTag::Observe,
         GuestTag::Redeem,
         GuestTag::Shadow,
+        GuestTag::Completed,
     ];
 
     pub(crate) const fn wire(self) -> u8 {
@@ -239,6 +249,7 @@ impl GuestTag {
             GuestTag::Observe => 0x02,
             GuestTag::Redeem => 0x03,
             GuestTag::Shadow => 0x04,
+            GuestTag::Completed => 0x05,
         }
     }
 }
@@ -250,15 +261,17 @@ pub(crate) enum HostTag {
     ApprovalRequired,
     Observed,
     Compared,
+    Recorded,
 }
 
 impl HostTag {
-    pub(crate) const ALL: [HostTag; 5] = [
+    pub(crate) const ALL: [HostTag; 6] = [
         HostTag::Allowed,
         HostTag::Denied,
         HostTag::ApprovalRequired,
         HostTag::Observed,
         HostTag::Compared,
+        HostTag::Recorded,
     ];
 
     pub(crate) const fn wire(self) -> u8 {
@@ -268,6 +281,7 @@ impl HostTag {
             HostTag::ApprovalRequired => 0x83,
             HostTag::Observed => 0x84,
             HostTag::Compared => 0x85,
+            HostTag::Recorded => 0x86,
         }
     }
 }
@@ -635,6 +649,51 @@ fn put_label(out: &mut Vec<u8>, label: IFCLabel) {
     out.push(derivation_wire(derivation));
 }
 
+/// A [`Completion`] on the wire. No `..`: a field added to it is a build error
+/// here (ADR 0007 E-1).
+fn put_completion(out: &mut Vec<u8>, completion: Completion) {
+    let Completion {
+        status,
+        exit_code,
+        output_sha256,
+        output_len,
+    } = completion;
+    out.extend_from_slice(&status.to_be_bytes());
+    match exit_code {
+        None => out.push(0),
+        Some(code) => {
+            out.push(1);
+            out.extend_from_slice(&code.to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&output_sha256);
+    put_u64(out, output_len);
+}
+
+fn read_completion(r: &mut Reader<'_>) -> Result<Completion, FrameError> {
+    let status = r.u16(Field::Status)?;
+    // Canonical: the presence byte is 0 or 1, never anything else that a
+    // re-encoding would write differently.
+    let exit_code = match r.u8(Field::ExitCode)? {
+        0 => None,
+        1 => Some(i32::from_be_bytes(r.array(Field::ExitCode)?)),
+        got => {
+            return Err(FrameError::UnknownDiscriminant {
+                field: Field::ExitCode,
+                got,
+            });
+        }
+    };
+    let output_sha256 = r.array(Field::OutputDigest)?;
+    let output_len = r.u64(Field::OutputLen)?;
+    Ok(Completion {
+        status,
+        exit_code,
+        output_sha256,
+        output_len,
+    })
+}
+
 fn header(tag: u8, seq: Seq) -> Vec<u8> {
     let mut body = Vec::new();
     body.push(VERSION);
@@ -698,6 +757,16 @@ impl GuestFrame {
                 put_outcome(&mut body, *local);
                 body
             }
+            GuestFrame::Completed {
+                seq,
+                decided,
+                completion,
+            } => {
+                let mut body = header(GuestTag::Completed.wire(), *seq);
+                put_u64(&mut body, decided.get());
+                put_completion(&mut body, *completion);
+                body
+            }
         };
         frame(body)
     }
@@ -746,6 +815,11 @@ impl GuestFrame {
                 decided: Seq::new(r.u64(Field::Decided)?),
                 local: read_outcome(&mut r)?,
             },
+            GuestTag::Completed => GuestFrame::Completed {
+                seq,
+                decided: Seq::new(r.u64(Field::Decided)?),
+                completion: read_completion(&mut r)?,
+            },
         };
         r.finish(Region::Body)?;
         Ok(frame)
@@ -757,7 +831,8 @@ impl GuestFrame {
             GuestFrame::Decide { seq, .. }
             | GuestFrame::Observe { seq, .. }
             | GuestFrame::Redeem { seq, .. }
-            | GuestFrame::Shadow { seq, .. } => *seq,
+            | GuestFrame::Shadow { seq, .. }
+            | GuestFrame::Completed { seq, .. } => *seq,
         }
     }
 }
@@ -789,6 +864,7 @@ impl HostFrame {
                 body.push(agreement_wire(*agreement));
                 body
             }
+            HostFrame::Recorded { seq } => header(HostTag::Recorded.wire(), *seq),
         };
         frame(body)
     }
@@ -839,6 +915,7 @@ impl HostFrame {
                     Field::Agreement,
                 )?,
             },
+            HostTag::Recorded => HostFrame::Recorded { seq },
         };
         r.finish(Region::Body)?;
         Ok(frame)
@@ -849,7 +926,8 @@ impl HostFrame {
         match self {
             HostFrame::Verdict { seq, .. }
             | HostFrame::Observed { seq }
-            | HostFrame::Compared { seq, .. } => *seq,
+            | HostFrame::Compared { seq, .. }
+            | HostFrame::Recorded { seq } => *seq,
         }
     }
 }
