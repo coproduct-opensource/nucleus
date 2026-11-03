@@ -70,6 +70,7 @@ fn host_effect_command_verifies_a_pinned_authorization_and_rejects_a_guest_key()
         termination: outcome::Termination::Interrupted,
         response: None,
         previous_record_sha256: String::new(),
+        settlement: None,
     };
     let signed = outcome::SignedOutcome {
         signature: hex::encode(
