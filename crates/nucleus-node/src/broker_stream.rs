@@ -459,6 +459,15 @@ struct CallRecord {
     /// media type: forwarded proposals and the operator's fixed headers.
     /// Empty when refused.
     headers_forwarded: Vec<String>,
+    /// Whether this call was a push checked against the upstream's push ref
+    /// patterns (refused or not). Only then does the record carry the two
+    /// fields below, so every other call's record is as it was.
+    push_refs_checked: bool,
+    /// The refs a checked push named, every one inside the patterns. A
+    /// refused push names the first ref outside them in `reason`. Refnames
+    /// are what the push DOES, as the path is what a call does, so they are
+    /// recorded as the path is.
+    ref_updates: Vec<String>,
 }
 
 /// A media type the host will put in a request header: visible ASCII and
@@ -495,7 +504,7 @@ pub async fn serve_stream<R, W>(
     // headers: what the call was, without copying values that may carry data
     // the workload read (`query_parameter_names`). The effect digest in the
     // host's signed evidence binds the values.
-    let detail = serde_json::json!({
+    let mut detail = serde_json::json!({
         "target": req.target,
         "method": req.method.as_str(),
         "path": req.path,
@@ -508,8 +517,12 @@ pub async fn serve_stream<R, W>(
         "status": record.status,
         "upload_bytes": record.upload_bytes,
         "download_bytes": record.download_bytes,
-    })
-    .to_string();
+    });
+    if record.push_refs_checked {
+        detail["push_refs_checked"] = true.into();
+        detail["ref_updates"] = record.ref_updates.into();
+    }
+    let detail = detail.to_string();
     ctx.egress.record_call(&detail).await;
 }
 
@@ -558,6 +571,8 @@ where
         upload_bytes,
         download_bytes: 0,
         headers_forwarded: Vec::new(),
+        push_refs_checked: false,
+        ref_updates: Vec::new(),
     }
 }
 
@@ -651,6 +666,41 @@ where
     if !req.method.carries_body() && staged.len() > 0 {
         let reason = Refusal::Named(format!("a {} carries no request body", req.method.as_str()));
         return refuse(&reason, 0, Remaining::Ended, reader, writer).await;
+    }
+    // 3b. A push names only the refs the operator allows. Read from the
+    //     staged bytes the host owns, so what is checked is what would be
+    //     sent; before approval capture, the credential and any upstream I/O.
+    let mut ref_updates = Vec::new();
+    if resolved.entry().push_refs().is_some() {
+        let head = match staged
+            .head(nucleus_cred_protocol::egress::push_refs::MAX_COMMAND_LIST_BYTES)
+            .await
+        {
+            Ok(head) => head,
+            Err(()) => {
+                let reason = Refusal::Named("host upload staging unavailable".into());
+                return refuse(&reason, 0, Remaining::Ended, reader, writer).await;
+            }
+        };
+        let encoding = forwarded
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+            .map(|(_, value)| value.as_str());
+        match crate::broker_perform::check_push_refs(&asked, resolved.entry(), encoding, &head) {
+            Ok(updates) => {
+                ref_updates = updates
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|u| u.refname)
+                    .collect();
+            }
+            Err(reason) => {
+                let mut record =
+                    refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
+                record.push_refs_checked = true;
+                return record;
+            }
+        }
     }
     let current_time = || {
         let elapsed = started.elapsed();
@@ -891,6 +941,8 @@ where
         upload_bytes: uploaded,
         download_bytes: 0,
         headers_forwarded: forwarded.keys().cloned().collect(),
+        push_refs_checked: !ref_updates.is_empty(),
+        ref_updates,
     };
     if write_line(writer, &encode_line(&head)).await.is_err() {
         record.outcome = "guest_gone";

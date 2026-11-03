@@ -456,6 +456,7 @@ mod tests {
             include_str!("stream.rs"),
             include_str!("egress.rs"),
             include_str!("egress/effects.rs"),
+            include_str!("egress/push_refs.rs"),
         ]
         .iter()
         .flat_map(|src| {

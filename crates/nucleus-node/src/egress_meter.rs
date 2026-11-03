@@ -214,6 +214,19 @@ impl EgressMeter {
         .await;
     }
 
+    /// Record, at launch, the push ref patterns of each upstream this pod
+    /// holds that declares any: the grant's ref scope, in the pod's
+    /// `lifecycle.log` beside the calls it later decides.
+    pub async fn record_push_refs(&self, detail: &str) {
+        crate::lifecycle::write_lifecycle_audit(
+            &self.pod_dir,
+            "broker_push_refs",
+            &self.pod_id,
+            detail,
+        )
+        .await;
+    }
+
     /// Settle `holds`, one per account on the chain in order, as the charge
     /// that borrowed this meter made them.
     fn settle(&self, holds: Vec<EgressHold>, outcome: EgressSettlement) {
