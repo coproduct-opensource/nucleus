@@ -70,7 +70,22 @@ jobs:
       # appended a field to `ci.Gate` (`exclude`), so every gate in .gatehouse/pipeline.writ gained
       # a trailing `[] : Bytes`; the gate JSON already carried `scope.exclude`, so no gate's
       # definition hash moved. `test-shards --check --gate` now runs below.
-      GATEHOUSE_REF: efa1e1a2e7ecd5e3de051c45223d8ef982d79721
+      #
+      # Moved efa1e1a -> 0c485d7b on 2026-11-01 so the plan can SAY the launcher bind
+      # (gatehouse `writ/checkout-at-on-plan-from-pr`, on the production line 40c89958). The prelude
+      # appended `checkoutAt` to `ci.Step`, so every step in .gatehouse/pipeline.writ gained a
+      # trailing value: `#b"/data/work/nucleus/nucleus"` on clippy-libs and test-libs step 0
+      # (scripts/gatehouse-verifier-sdk.sh), `#b""` on the other 22. Before this the bind was in the
+      # gate JSON only, which `gate plan check` never opens, so the plan hash stayed main's
+      # `430d31f8…` and controld refused the pull request's plan candidate as main's own (422). With
+      # it the plan is `b2121648…`. `ci.checkoutPlain_b` holds the path strictly under /data/work.
+      # That gatehouse keeps the previous `ci` (235b8819) by digest, so main's plan re-derives
+      # `430d31f8…` bit for bit until this merges. No gate JSON changed in this move.
+      # The four shard gates' terms (and the import line) are GENERATED: `cargo xtask test-shards`
+      # renders `checkoutAt` from each step's `checkout_at` and writes the import digest from its
+      # `CI_IMPORT`. The first push of this move hand-edited them, and `test-shards --check` below
+      # refused it (run 41366170187): pipeline.writ is partly a generated file, not a source.
+      GATEHOUSE_REF: 0c485d7b08abe9709d6271e12911b0a5fc90b929
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -171,9 +186,10 @@ jobs:
       # crates against the stale seed (446 s against ~140 s). The body is built HERE, where the
       # gatehouse checkout and the `gate` that just proved the plan already are, and sent by the
       # job below, which holds the OIDC token and runs nothing from this repository.
+      # A pull request's run builds the same body from its merge commit, for plan-candidate below.
       - name: The plan body this push serves
         id: body
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.tok.outputs.present == 'true'
+        if: ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'pull_request') && steps.tok.outputs.present == 'true'
         run: |
           scripts/gatehouse-plan-body.py . gatehouse/target/debug/gate > "$RUNNER_TEMP/plan-body.json"
           python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); print("plan", b["plan"], "gates", [g["name"] for g in b["gates"]])' "$RUNNER_TEMP/plan-body.json"
@@ -266,3 +282,53 @@ jobs:
               print(f"::error::gatehouse refused the plan (HTTP {e.code}): {msg}")
               sys.exit(1)
           PY
+
+  # A PULL REQUEST THAT CHANGES THE PLAN REGISTERS IT (gatehouse docs/controld-plan-from-pr.md).
+  #
+  # The served plan is main's, so a pull request that changes `.gatehouse/**` used to be judged
+  # under the plan it replaces, and a plan change that needs its script change could never hold
+  # (gatehouse F-322; nothing merged to nucleus from 2026-10-18 to this job's PR). This sends the
+  # same body plan-upload sends, built from this run's merge commit, plus the pull request and its
+  # head. Registering selects nothing: controld judges the head under this plan only after the
+  # owner's hardware `gate approve` of exactly that head, and the check's title then says
+  # "under this pull request's own owner-approved plan, not main's". Without the approval the
+  # head is judged under main's plan, as before.
+  #
+  # The only credential is this run's OIDC token; controld refuses anything but a `pull_request`
+  # run on refs/pull/<n>/merge whose merge commit has the head as a parent and the head's tree.
+  # A 4xx is an answer, not weather, so it is not retried: 422 means the pull request changes no
+  # plan file, 409 that the branch is behind its base or the head moved. curl and jq rather than
+  # another inline Python program (owner, 2026-10-10: no new Python).
+  plan-candidate:
+    name: A pull request that changes the plan registers it (selected only by the owner's approval)
+    needs: plan-check
+    if: github.event_name == 'pull_request' && needs.plan-check.outputs.body == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+    env:
+      CONTROLD: https://controld.gatehouse.coproduct.one
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: plan-body
+          path: ${{ runner.temp }}
+      - name: PUT the plan candidate
+        run: |
+          set -euo pipefail
+          token=$(curl -fsS --max-time 30 \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$(jq -rn --arg a "$CONTROLD" '$a|@uri')" | jq -r .value)
+          jq --arg t "$token" --argjson pr "$PR" --arg h "$HEAD_SHA" \
+            '. + {id_token: $t, pr: $pr, head_sha: $h}' "$RUNNER_TEMP/plan-body.json" > "$RUNNER_TEMP/candidate.json"
+          code=$(curl -sS --max-time 60 -o "$RUNNER_TEMP/answer" -w '%{http_code}' -X PUT \
+            -H 'Content-Type: application/json' --data-binary "@$RUNNER_TEMP/candidate.json" \
+            "$CONTROLD/v1/github/oidc/plan-candidate")
+          rm -f "$RUNNER_TEMP/candidate.json"
+          case "$code" in
+            2??) echo "plan candidate registered: $(cat "$RUNNER_TEMP/answer")" ;;
+            *) echo "::error::gatehouse refused the plan candidate (HTTP $code): $(cat "$RUNNER_TEMP/answer")"; exit 1 ;;
+          esac

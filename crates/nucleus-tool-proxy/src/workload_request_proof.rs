@@ -41,7 +41,7 @@ fn key(config: &Provision) -> Result<SigningKey, ApiError> {
 }
 fn open(config: &Provision, path: &Path) -> Result<Gate, ApiError> {
     let secret = key(config)?;
-    let point = secret.verifying_key().to_encoded_point(false);
+    let point = secret.verifying_key().to_sec1_point(false);
     let public = JsonWebKey::ec_p256(
         URL_SAFE_NO_PAD.encode(point.x().ok_or_else(refused)?),
         URL_SAFE_NO_PAD.encode(point.y().ok_or_else(refused)?),
@@ -265,7 +265,7 @@ mod tests {
             .unwrap();
         let (_, pem) = x509_parser::pem::parse_x509_pem(csr.private_key().as_bytes()).unwrap();
         let secret = SigningKey::from_pkcs8_der(&pem.contents).unwrap();
-        let point = secret.verifying_key().to_encoded_point(false);
+        let point = secret.verifying_key().to_sec1_point(false);
         let label = serde_json::json!({"origin":format!("https://{}.tools.nucleus.invalid",uuid::Uuid::new_v4()),"expires":now()+300,
             "key":{"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(point.x().unwrap()),"y":URL_SAFE_NO_PAD.encode(point.y().unwrap())}});
         let spec: PodSpec =

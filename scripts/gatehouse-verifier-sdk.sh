@@ -8,7 +8,11 @@
 # (rust-lang/cargo#13922), the wasm-bindgen binary (the official release stamps its commit into
 # the producers section) and wasm-opt (pinned by wasm-pack 0.13.1). The gate image provides the
 # builder's paths, the release wasm-bindgen and a rustc that reports the builder's host to
-# cargo; this script mounts the source where the builder had it and builds there.
+# cargo. The source must also sit where the builder had it. On a trusted-launch lane the gate's
+# step declares a workspace bind and nucleus's launcher shows the checkout there, read-only,
+# before the workload starts (WorkloadSpec::workspace_bind); the script builds there. Without
+# that bind it mounts the source itself with `unshare -Urm`, which only a runtime that lets a
+# workload unshare allows.
 #
 # Anywhere without that image (a developer machine, the GitHub shadow lane) it is the plain
 # build CI runs.
@@ -57,6 +61,14 @@ PRESTAMP=200901010000.00 # `touch -t` under TZ=UTC0: 1230768000, 2009-01-01T00:0
 # the wasm embeds absolute paths. So cargo is NOT pointed somewhere else. The subdir is bind-mounted
 # over sdks/verifier-js/target inside the same namespace that puts the source at the CI path, so
 # cargo, rustc and wasm-bindgen see exactly the paths they saw before and only the storage moves.
+#
+# Under the launcher's bind the source is read-only, so there cargo IS pointed at the subdir
+# (CARGO_TARGET_DIR) and wasm-pack writes pkg/ through the writable checkout (--out-dir). That
+# does not move the bytes: the target dir is not embedded (measured 2026-10-30, nucleus
+# docs/findings/trusted-workload-namespaces-2026-10-22.md, build F), and wasm-bindgen's and
+# wasm-opt's output depend on their input bytes, not on where they are written. The wasm-opt
+# memo below keys on its arguments, -o included, so a seed minted by the unshare path misses
+# it once.
 SDK_TARGET=verifier-js-sdk
 
 # ── ...and so does wasm-opt's output ──────────────────────────────────────────────────────────
@@ -276,6 +288,15 @@ if [ -n "${CARGO_TARGET_DIR:-}" ]; then
   mkdir -p "$sdk_target" "$src/sdks/verifier-js/target"
   install_wasm_opt_memo /work/.cache/.wasm-pack
 fi
+if [ "$src" -ef "$workspace" ]; then
+  # The launcher bound this checkout at the CI path (read-only, noexec): build there.
+  out=$src/sdks/verifier-js/pkg
+  ( cd "$workspace" && exec env CARGO_TARGET_DIR="${sdk_target:-$src/sdks/verifier-js/target}" \
+    RUSTC=/opt/gate-tools/bin/rustc-ci-host RUSTUP_HOME=/usr/local/rustup RUSTUP_TOOLCHAIN=1.96.1 \
+    CARGO_HOME=/work/cargo-js XDG_CACHE_HOME=/work/.cache \
+    WASM_OPT_MEMO=${sdk_target:+$sdk_target/$WASM_OPT_MEMO_DIR} \
+    wasm-pack build sdks/verifier-js --target web --release --out-dir "$out" ) || exit $?
+else
 unshare -Urm sh -c '
   mount --bind "$1" "$2"
   if [ -n "$3" ]; then mount --bind "$3" "$2/sdks/verifier-js/target"; fi
@@ -284,8 +305,9 @@ unshare -Urm sh -c '
     RUSTUP_TOOLCHAIN=1.96.1 CARGO_HOME=/work/cargo-js XDG_CACHE_HOME=/work/.cache \
     WASM_OPT_MEMO=${3:+$3/'"$WASM_OPT_MEMO_DIR"'} \
     wasm-pack build sdks/verifier-js --target web --release' sh "$src" "$workspace" "$sdk_target" || exit $?
+fi
 # wasm-pack succeeded. Back-date its byte-identical output to the seed's instant (see the top of
-# this file for why that is sound only here). The bind mount above shares inodes with $src, so
+# this file for why that is sound only here). Either bind shares inodes with $src, so
 # the files are restamped at the paths the manifest names, relative to the source root.
 bootref=$(mktemp)
 if boot_reference "$bootref"; then
