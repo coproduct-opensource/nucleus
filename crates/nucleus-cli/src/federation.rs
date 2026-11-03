@@ -1021,6 +1021,11 @@ var = "SEARCH_API_TOKEN"
     #[test]
     fn init_creates_the_first_key_and_the_jwks_publishes_it() {
         let node = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(node.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let state = node.path().to_str().unwrap();
         let (r, _, _) = cli(&["issuer", "--state-dir", state, "--jwks"], T0);
         assert!(format!("{:#}", r.unwrap_err()).contains("rotate --init"));
@@ -1038,6 +1043,20 @@ var = "SEARCH_API_TOKEN"
 
         let (out, _) = ok(&["issuer", "--state-dir", state, "--jwks"], T0);
         assert_eq!(kids(&json(&out)), vec![kid]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_refuses_group_writable_key_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let node = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(node.path(), std::fs::Permissions::from_mode(0o775)).unwrap();
+        let state = node.path().to_str().unwrap();
+        let (r, out, _) = cli(&["rotate", "--state-dir", state, "--init"], T0);
+        let msg = format!("{:#}", r.unwrap_err());
+        assert!(msg.contains(state), "expected refusal to name key directory {state:?}, got: {msg}");
+        assert!(msg.contains("must not be writable by group or others"), "expected group/other writable error, got: {msg}");
+        assert!(out.is_empty());
     }
 
     /// `rotate --init` on a directory with a key is refused, says so by name,
