@@ -2,15 +2,16 @@
 //!
 //! Replay protection is only as strong as the store that remembers what was
 //! spent: a proof or assertion retired in memory is live again after a
-//! restart. The public build therefore ships no ledger at all. Opening a gate
-//! here fails with [`Error::NoDurableLedger`] unless a build supplies a durable
-//! one, and a configuration that asks for request proofs is refused at startup
-//! rather than run with a weaker store.
+//! restart. So the ledger is durable: the vendored native Olog store
+//! (`vendor/olog-store`, `vendor/olog-ledger`, MIT; see
+//! `vendor/OLOG-PROVENANCE.md`), one exclusive writer per directory, every
+//! commit recorded with the principal that made it. Its on-disk form is the
+//! `request-proof` workspace of an `olog_ledger::Ledgered` at the gate's path.
 //!
-//! Tests, and the `volatile-test-ledger` feature, supply an in-process ledger so the
-//! verifier and its adapters stay tested. It survives a gate being dropped and
-//! reopened within one process, which is what the restart tests exercise, and
-//! it exists only in debug builds.
+//! The `volatile-test-ledger` feature supplies an in-process ledger in its
+//! place, for the tests of this crate's dependents. It survives a gate being
+//! dropped and reopened within one process, not a process restart, and it
+//! exists only in debug builds. This crate's own tests use the durable ledger.
 
 use std::path::Path;
 
@@ -47,30 +48,90 @@ pub(crate) trait ReplayLedger: Send {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error>;
     fn scan_prefix(&self, prefix: &[u8]) -> Result<Rows, Error>;
     fn is_empty(&self) -> Result<bool, Error>;
-    /// Commit `batch` atomically on behalf of `principal`.
-    fn commit(&mut self, principal: &str, batch: Batch) -> Result<(), Error>;
+    /// Commit `batch` atomically on behalf of `principal`, which presented
+    /// `credential` (recorded with the commit).
+    fn commit(&mut self, principal: &str, credential: &str, batch: Batch) -> Result<(), Error>;
 }
 
-/// Whether this build can open a replay ledger at all. Callers check it to
-/// refuse a request-proof configuration before acting on it, rather than
-/// discovering the refusal halfway through.
-pub(crate) const AVAILABLE: bool = cfg!(all(
-    any(test, feature = "volatile-test-ledger"),
-    debug_assertions
-));
+/// Whether this build can open a replay ledger. Every build can: the durable
+/// ledger is part of this crate. Kept so adapters that check it at
+/// configuration time need not change.
+pub(crate) const AVAILABLE: bool = true;
 
 /// Open the replay ledger at `path`, held by exactly one writer.
-#[cfg(not(all(any(test, feature = "volatile-test-ledger"), debug_assertions)))]
-pub(crate) fn open(_path: &Path) -> Result<Box<dyn ReplayLedger>, Error> {
-    Err(Error::NoDurableLedger)
+#[cfg(not(all(feature = "volatile-test-ledger", debug_assertions)))]
+pub(crate) fn open(path: &Path) -> Result<Box<dyn ReplayLedger>, Error> {
+    durable::open(path)
 }
 
-#[cfg(all(any(test, feature = "volatile-test-ledger"), debug_assertions))]
+#[cfg(all(feature = "volatile-test-ledger", debug_assertions))]
 pub(crate) fn open(path: &Path) -> Result<Box<dyn ReplayLedger>, Error> {
     volatile::open(path)
 }
 
-#[cfg(all(any(test, feature = "volatile-test-ledger"), debug_assertions))]
+/// The durable ledger: an Olog `Ledgered` workspace named `request-proof`.
+#[cfg(not(all(feature = "volatile-test-ledger", debug_assertions)))]
+mod durable {
+    use std::path::Path;
+
+    use olog_ledger::{Actor, Ledgered};
+
+    use super::{Batch, ReplayLedger, Rows};
+    use crate::Error;
+
+    /// The workspace name, and so the on-disk layout, a gate's directory holds.
+    const WORKSPACE: &str = "request-proof";
+
+    pub(super) fn open(path: &Path) -> Result<Box<dyn ReplayLedger>, Error> {
+        let db = Ledgered::open(path, WORKSPACE).map_err(|_| Error::Unavailable)?;
+        // A ledger whose hash chain does not verify is not trusted to say what
+        // was spent.
+        db.verify().map_err(|_| Error::Unavailable)?;
+        Ok(Box::new(Durable { db }))
+    }
+
+    struct Durable {
+        db: Ledgered,
+    }
+
+    impl ReplayLedger for Durable {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+            self.db.store().try_get(key).map_err(|_| Error::Unavailable)
+        }
+
+        fn scan_prefix(&self, prefix: &[u8]) -> Result<Rows, Error> {
+            self.db
+                .store()
+                .try_scan_prefix(prefix)
+                .map_err(|_| Error::Unavailable)
+        }
+
+        fn is_empty(&self) -> Result<bool, Error> {
+            Ok(self.db.is_empty())
+        }
+
+        fn commit(&mut self, principal: &str, credential: &str, batch: Batch) -> Result<(), Error> {
+            let mut ops = olog_store::Batch::new();
+            for key in &batch.deletes {
+                ops.delete(key);
+            }
+            for (key, value) in &batch.puts {
+                ops.put(key, value);
+            }
+            self.db
+                .write(
+                    Actor {
+                        principal: principal.into(),
+                        credential: credential.into(),
+                    },
+                    |s| s.commit(ops),
+                )
+                .map_err(|_| Error::Unavailable)
+        }
+    }
+}
+
+#[cfg(all(feature = "volatile-test-ledger", debug_assertions))]
 mod volatile {
     use std::collections::{BTreeMap, HashMap};
     use std::path::{Path, PathBuf};
@@ -143,7 +204,12 @@ mod volatile {
             Ok(rows.is_empty())
         }
 
-        fn commit(&mut self, _principal: &str, batch: Batch) -> Result<(), Error> {
+        fn commit(
+            &mut self,
+            _principal: &str,
+            _credential: &str,
+            batch: Batch,
+        ) -> Result<(), Error> {
             let mut rows = self.rows.lock().map_err(|_| Error::Unavailable)?;
             for key in batch.deletes {
                 rows.remove(&key);
@@ -153,5 +219,38 @@ mod volatile {
             }
             Ok(())
         }
+    }
+}
+
+/// The durable ledger writes to disk, not to this process: a fresh Olog handle
+/// on the same directory, with no gate and no shared memory, reads what a
+/// closed ledger committed and who committed it. The volatile ledger fails
+/// this (it writes nothing to the directory).
+#[cfg(all(test, not(all(feature = "volatile-test-ledger", debug_assertions))))]
+mod durable_tests {
+    use super::{Batch, open};
+
+    #[test]
+    fn a_closed_ledgers_commits_are_on_disk_with_their_principal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let mut ledger = open(dir.path()).expect("opens");
+            let mut batch = Batch::new();
+            batch.put(b"seen/proof/abc", b"123");
+            ledger
+                .commit("thumb", "verified-request-proof", batch)
+                .expect("commits");
+            assert!(open(dir.path()).is_err(), "one writer per directory");
+        }
+        let db = olog_ledger::Ledgered::open(dir.path(), "request-proof").expect("reopens");
+        assert_eq!(db.verify().expect("chain verifies"), 1);
+        assert_eq!(
+            db.store().try_get(b"seen/proof/abc").expect("reads"),
+            Some(b"123".to_vec())
+        );
+        let records = db.records().expect("records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].actor.principal, "thumb");
+        assert_eq!(records[0].actor.credential, "verified-request-proof");
     }
 }

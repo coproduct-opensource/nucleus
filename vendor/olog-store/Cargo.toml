@@ -1,0 +1,24 @@
+[package]
+name = "olog-store"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A durable ordered map. The substrate the chase needs, without a database under it."
+
+# NO storage-engine dependency, on purpose. The mandate is our own store, and swapping
+# SQLite for redb/sled/fjall would be the same category of thing it rules out. The only
+# dependency is a CRC, and that is 40 lines rather than a crate.
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3"
+
+# Clippy in this vendored crate only (owner decision, 2026-10-31). The source is kept byte for
+# byte as vendored (vendor/OLOG-PROVENANCE.md pins its hashes), so the allows live here rather
+# than as `#![allow]` in src/lib.rs. Measured with clippy 0.1.96 on 2026-10-31: four
+# `type_complexity` in src/lib.rs and one `disallowed_methods` (`std::fs::OpenOptions::append`,
+# ADR 0007 G-1, for the store's own WAL, which is not a nucleus record log). The workspace, and
+# every crate outside vendor/, keeps clippy at `-D warnings` with G-1 in force.
+[lints.clippy]
+type_complexity = "allow"
+disallowed_methods = "allow"
