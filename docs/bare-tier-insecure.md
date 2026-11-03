@@ -1,11 +1,150 @@
-# Bare tier is insecure
+# Bare tier: separated or insecure
 
 `nucleus-node --driver local --allow-local-driver` runs each pod's tool-proxy
-as a plain host process. This is the **bare tier**, and it is a declared
-**insecure mode**. Use it for development and for the repository's own
-live-path checks, never for a workload you do not trust.
+as a plain host process. This is the **bare tier**. What its children (every
+`/v1/run` command and the pod's workload) run as is decided once, at node
+start-up, by the local driver's **realization contract**:
 
-## There is no isolation between workloads and the node
+- **Separated** (Program C, C2): the host delegates subordinate ids to the
+  node's user, and every clause of the contract holds. Each pod's children run
+  at their own subordinate host uid and gid, and cannot read the node's keys.
+  The node's evidence states `separated-local`. See
+  [Separated: subordinate host ids](#separated-subordinate-host-ids).
+- **Insecure** (Program C, C0): any clause fails. The children share the
+  node's uid, and the rest of this page applies. The node logs which clause
+  failed.
+
+Neither is a microVM. Use the bare tier for development and for the
+repository's own live-path checks, never for a workload you do not trust.
+
+## Separated: subordinate host ids
+
+### Why a user namespace alone is not enough
+
+An unprivileged process can create a user namespace in which it is "uid 0".
+The kernel still checks file access against the **host** credentials, and that
+namespace's only mapping sends its uid 0 back to the caller's own host uid. A
+child in such a namespace opens every file the node can. Separation needs a
+**different host uid and gid** for the child, and only the setuid helpers
+`newuidmap` / `newgidmap` may map one, after checking `/etc/subuid` and
+`/etc/subgid`.
+
+### What a separated child is
+
+Each pod gets the next offset of the node user's delegated range: host uid
+`start + k` and gid `start + k` (offset 0 is the start-up probe's). An offset
+is never given twice: the next one is kept in `state/subordinate-ids.next`, so
+a later pod never owns files an earlier pod's children left behind.
+
+The pod's tool-proxy is started with `--unsandboxed --subordinate-ids UID:GID`.
+It checks the ids against the delegation itself, and refuses to start rather
+than run its children at its own uid. Every child then, between fork and exec:
+
+1. marks every inherited descriptor above stdio close-on-exec;
+2. enters a fresh user namespace, while two forked helpers run `newuidmap` and
+   `newgidmap` on it with exactly one mapping each, `id id 1`;
+3. drops every supplementary group, then becomes that gid and uid;
+4. reads `/proc/self/uid_map` and `gid_map` back and refuses to exec unless
+   each is exactly `id id 1`. The shape `unshare -r` writes
+   (`0 <node uid> 1`) is refused;
+5. sets `no_new_privs` and the pod's resource limits;
+6. installs the workload syscall denylist and the pod's derived classes, the
+   same filter a microVM child gets. It refuses every new namespace, so no
+   descendant can remap itself, and `no_new_privs` keeps every descendant
+   from running a setuid helper.
+
+### The realization contract
+
+`nucleus::LocalRealization::check` is the one decider. Its clauses:
+
+| Clause | How it is checked |
+|---|---|
+| The node's signing material is unreachable | The child's host uid is neither the node's nor 0, and the state directory is the node's, mode `0700` with no access ACL. A probe child, spawned through the real hook at offset 0, must fail to `cd` into it. |
+| The child cannot impersonate, signal or ptrace the node | A distinct host uid: `SO_PEERCRED` names the subordinate uid, and `kill(2)` / `ptrace(2)` need the node's uid. The probe must fail to `kill -0` the node. |
+| Protected effects stay mediated | The child installs the workload denylist and the pod's derived syscall classes. |
+| It holds across child creation | The denylist refuses new namespaces, and `no_new_privs` refuses setuid helpers. |
+
+The probe also checks the child really runs at its subordinate uid. A clause
+that fails leaves the node in the insecure mode below, with the reason in its
+log.
+
+### Evidence
+
+- Execution claims carry `"sandbox_tier": "separated-local"` and are signed by
+  the node's ordinary executor key, which separated children cannot read.
+  `verify_execution` refuses them as `NotProtectedMicroVm`: a separated host
+  process is not a microVM, even if a claim paired it with
+  `backend = firecracker`.
+- Pod receipts carry `sandbox_tier = "separated-local"` inside the signature,
+  under the node's certificate root.
+- The node still refuses every trusted authority in the table below. Lifting
+  that for the separated tier is a separate decision.
+- A separated node refuses a state directory marked by an insecure one, and an
+  insecure node refuses one that holds an executor key.
+
+### The pod's proxy socket
+
+The local driver's `proxy.sock` used to admit any process at the node's uid as
+a pod peer, so another pod's proxy, or any bare-tier child at the node's uid,
+could drive this pod's control plane. The node now starts each proxy with
+`--node-peer-pid <its pid>`. The socket admits that process alone, and only
+while it is still the proxy's parent, so a recycled pid admits nobody.
+
+### The workspace
+
+A separated child reaches the pod's workspace only if it is granted. The node
+grants it, by POSIX ACL (access and default entries for the pod's ids, with
+the owner's bits), only when all of these hold:
+
+- the pod's `work_dir` resolves strictly inside `--workspace-root`;
+- that root lies outside `--state-dir`. The default root,
+  `<state-dir>/workspaces`, does not qualify, because a separated child cannot
+  traverse the state directory;
+- no other local pod of this node was granted an overlapping directory.
+
+Then the pod's workload door is bound at `<work_dir>/.nucleus-door/`, where the
+workload can reach it. Any other `work_dir`, including `.`, is not widened. The
+child gets only what the directory's own bits give any user, and the door
+stays in the pod directory, where a separated workload cannot reach it.
+
+### Operator setup
+
+On the host that runs the node, as root:
+
+```sh
+apt-get install uidmap          # newuidmap / newgidmap
+usermod --add-subuids 200000-265535 --add-subgids 200000-265535 <node-user>
+```
+
+The kernel must let an unprivileged process create a user namespace and keep
+its capabilities in it. Ubuntu 24.04 restricts this by default
+(`kernel.apparmor_restrict_unprivileged_userns = 1`); then the probe fails and
+the node stays insecure, by name. Either set that sysctl to 0, or give the
+node binary an AppArmor profile that allows `userns`.
+
+For a usable workspace, give the node a `--workspace-root` outside its state
+directory, traversable by other users, and create pods with a `work_dir`
+inside it.
+
+For an operator client certificate, start the node with
+`--operator-identity-dir <dir>` (and `--root-minter-spiffe-id`). The node
+mints a certificate for that identity into the directory at start-up, mode
+`0700`, as `cert.pem`, `key.pem` and `trust-bundle.pem`. Nothing outside the
+node needs to read `state/ca/ca-key.pem`.
+
+### What separation does not cover
+
+- The tool-proxy itself still runs at the node's uid. It is the mediating
+  runtime, not a workload.
+- There is no network namespace. A pod's children reach the network as the
+  pod's lattice and derived syscall classes allow, not through a proxy.
+- A companion with its own explicit `uid` is refused: a pod has one
+  subordinate uid.
+- A pod's ids reveal how many local pods this state directory has started.
+
+## Insecure: shared uid
+
+### There is no isolation between workloads and the node
 
 On a non-root node every bare-tier child runs at the node's own uid. Such a
 child can read every file the node can, including:
@@ -22,11 +161,10 @@ node's bare-tier children drop to an unprivileged uid. They still run with no
 VM, no namespace and no seccomp, so the mode is the same: it follows the
 operator's flag, not the node's uid.
 
-Nucleus does not repair this here. Real separation comes in **Program C, phase
-C2**: bare-tier children run under subordinate host ids. Until then, the node
-makes the mode honest.
+Where the realization contract above is unmet, nothing repairs this, and the
+node makes the mode honest instead.
 
-## What the node does in insecure mode
+### What the node does in insecure mode
 
 **It refuses trusted authorities.** The node refuses to start if any of these
 is configured, and names each one:
@@ -91,9 +229,10 @@ directory does not match the kid the node told the controller to pin.
 (`nucleus::seal_runtime`). A process at the node's uid then cannot read
 `/proc/<node>/environ`, `mem` or `fd`, and cannot `ptrace` the node.
 
-## What insecure mode still leaves open
+### What insecure mode still leaves open
 
 The certificate-root, approval and task-issuer keys and the identity CA are
 still readable by workloads. A workload can therefore impersonate the operator
 **to this node**. None of those keys anchors anything outside the node, and
-the refusals above make sure of that. Separation comes in phase C2.
+the refusals above make sure of that. On a host that can, the separated tier
+above removes this exposure.

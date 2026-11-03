@@ -39,6 +39,17 @@
 //! can impersonate the operator TO THIS NODE. They anchor nothing outside it,
 //! which is what (1) guarantees.
 //!
+//! # Separated, when the host can (Program C, C2)
+//!
+//! Where the node's user is delegated subordinate host ids and the
+//! realization contract holds (`nucleus::LocalRealization`,
+//! `bare_tier_separation`), the bare tier's children run at another host uid
+//! and cannot read the state directory. That node is
+//! [`EvidenceTier::SeparatedLocal`]: it signs with its executor key and states
+//! `separated-local`, which no verifier reads as a microVM. It still refuses
+//! the trusted authorities of (1): lifting that is a later, separate decision.
+//! Where the contract is unmet, everything above applies unchanged.
+//!
 //! Not refused, by decision: `--root-minter-spiffe-id`. It names which caller
 //! the node treats as its operator; it is an input to this node's own
 //! authorization, trusted by nothing outside it, and the C1/C2 live-path gates
@@ -50,6 +61,10 @@ pub(crate) use nucleus_ci_verdict::execution::{INSECURE_SHARED_UID_KID_PREFIX, S
 
 /// The pod receipt's `sandbox_tier` on a node in declared insecure mode.
 pub(crate) const INSECURE_RECEIPT_TIER: &str = "insecure-shared-uid";
+
+/// The pod receipt's `sandbox_tier` on a local-driver node whose children run
+/// at subordinate host ids (Program C, C2).
+pub(crate) const SEPARATED_LOCAL_RECEIPT_TIER: &str = "separated-local";
 
 /// The file a node in declared insecure mode leaves in its state directory.
 const INSECURE_MODE_MARKER: &str = "insecure-shared-uid.marker";
@@ -63,18 +78,32 @@ pub(crate) enum EvidenceTier {
     Separated,
     /// The bare tier: workloads share the node's uid. See the module docs.
     InsecureSharedUid,
+    /// The bare tier, separated (Program C, C2): workloads run at subordinate
+    /// host ids and cannot read the node's keys, so evidence is signed with
+    /// the executor key, and states `separated-local`. Not a microVM, and no
+    /// verifier reads it as one.
+    SeparatedLocal,
 }
 
 impl EvidenceTier {
-    /// The one decider: the bare-tier opt-in is the insecure mode.
+    /// The tier an opt-in alone implies, for test fixtures that do not ask
+    /// the realization contract: the plain bare-tier opt-in is the insecure
+    /// mode.
     ///
     /// Decided from the operator's flags, not from the node's uid. A root
     /// node's bare-tier children drop to an unprivileged uid, but they still
     /// run with no namespace, no seccomp and no VM; the flag that said "no VM
     /// isolation" is what declares the mode.
+    ///
+    /// At start-up the opt-in is not enough, so this is not the decider there:
+    /// `bare_tier_separation::LocalChildren::decide` asks the realization
+    /// contract, and [`start`] takes its tier from that (ADR 0007 G-1).
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "local-driver"), allow(dead_code))]
     pub(crate) fn of(opt_in: nucleus::UnsandboxedOptIn) -> Self {
         match opt_in {
             nucleus::UnsandboxedOptIn::Explicit => Self::InsecureSharedUid,
+            nucleus::UnsandboxedOptIn::Subordinate(_) => Self::SeparatedLocal,
             nucleus::UnsandboxedOptIn::Absent => Self::Separated,
         }
     }
@@ -84,6 +113,7 @@ impl EvidenceTier {
         match self {
             Self::Separated => SandboxTier::Driver,
             Self::InsecureSharedUid => SandboxTier::InsecureSharedUid,
+            Self::SeparatedLocal => SandboxTier::SeparatedLocal,
         }
     }
 
@@ -93,6 +123,7 @@ impl EvidenceTier {
         match self {
             Self::Separated => "",
             Self::InsecureSharedUid => INSECURE_RECEIPT_TIER,
+            Self::SeparatedLocal => SEPARATED_LOCAL_RECEIPT_TIER,
         }
     }
 }
@@ -242,30 +273,37 @@ pub(crate) fn configured(
     out
 }
 
-/// The node's start-up step for this mode, in order: decide the tier from
-/// the same opt-in that puts `--unsandboxed` on a proxy, refuse any trusted
-/// authority, check and mark the state directory, and say so in the log.
+/// The node's start-up step for this mode, in order: decide what the local
+/// driver's children run as (the operator's opt-in, then the realization
+/// contract, `bare_tier_separation`), take the tier from that, refuse any
+/// trusted authority, check and mark the state directory, and say so in the
+/// log.
 ///
 /// # Errors
 /// [`refuse_trusted_authorities`] or [`prepare_state_dir`].
-pub(crate) fn start(args: &crate::Args) -> Result<EvidenceTier, String> {
+pub(crate) fn start(
+    args: &crate::Args,
+) -> Result<(EvidenceTier, crate::bare_tier_separation::LocalChildren), String> {
     #[cfg(feature = "local-driver")]
-    let tier = EvidenceTier::of(crate::local_driver_opt_in(
-        &args.driver,
-        args.allow_local_driver,
-    ));
+    let opt_in = crate::local_driver_opt_in(&args.driver, args.allow_local_driver);
     #[cfg(not(feature = "local-driver"))]
-    let tier = EvidenceTier::of(nucleus::UnsandboxedOptIn::Absent);
+    let opt_in = nucleus::UnsandboxedOptIn::Absent;
+    let children = crate::bare_tier_separation::LocalChildren::decide(opt_in, &args.state_dir);
+    let tier = children.tier();
     refuse_trusted_authorities(tier, &configured(args, |name| std::env::var(name).ok()))?;
     prepare_state_dir(tier, &args.state_dir)?;
     match tier {
         EvidenceTier::Separated => {}
+        EvidenceTier::SeparatedLocal => tracing::info!(
+            "--allow-local-driver, separated: workloads run at subordinate host ids; evidence \
+             states separated-local"
+        ),
         EvidenceTier::InsecureSharedUid => tracing::warn!(
             "INSECURE MODE (--allow-local-driver): workloads share this node's uid and can read \
              its keys; its evidence is signed with an insecure key and verifiers reject it"
         ),
     }
-    Ok(tier)
+    Ok((tier, children))
 }
 
 /// The node could not make itself non-dumpable (`nucleus::seal_runtime`).
@@ -287,6 +325,19 @@ pub(crate) fn refuse_trusted_authorities(
 ) -> Result<(), String> {
     match tier {
         EvidenceTier::Separated => Ok(()),
+        // Separated children cannot read the keys, but the bare tier carries no
+        // trusted authority until that is decided on its own (Program C, C2).
+        EvidenceTier::SeparatedLocal => match configured {
+            [] => Ok(()),
+            some => Err(format!(
+                "--allow-local-driver (separated at subordinate ids) does not yet carry trusted \
+                 authorities; this node refuses to start with: {}",
+                some.iter()
+                    .map(|a| a.setting())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        },
         EvidenceTier::InsecureSharedUid => match configured {
             [] => Ok(()),
             some => Err(format!(
@@ -316,7 +367,7 @@ pub(crate) fn refuse_trusted_authorities(
 pub(crate) fn prepare_state_dir(tier: EvidenceTier, state_dir: &Path) -> Result<(), String> {
     let marker = state_dir.join(INSECURE_MODE_MARKER);
     match tier {
-        EvidenceTier::Separated => match marker.symlink_metadata() {
+        EvidenceTier::Separated | EvidenceTier::SeparatedLocal => match marker.symlink_metadata() {
             Ok(_) => Err(format!(
                 "{} was used by a node in insecure mode (--allow-local-driver): every key in it \
                  was readable by that node's workloads. A node that separates its workloads \

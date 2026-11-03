@@ -145,7 +145,9 @@ impl TrustGateConfig {
         tier: EvidenceTier,
     ) -> Result<Self, String> {
         match tier {
-            EvidenceTier::Separated => Self::separated_from_env(state_dir, custody),
+            EvidenceTier::Separated | EvidenceTier::SeparatedLocal => {
+                Self::separated_from_env(state_dir, custody, tier)
+            }
             // The executor key is never created, and no trust-API variable is
             // read: a node in insecure mode refuses to start with any of them
             // set (`insecure_mode::refuse_trusted_authorities`).
@@ -165,7 +167,11 @@ impl TrustGateConfig {
         }
     }
 
-    fn separated_from_env(state_dir: &Path, custody: &NodeKeyCustody) -> Result<Self, String> {
+    fn separated_from_env(
+        state_dir: &Path,
+        custody: &NodeKeyCustody,
+        tier: EvidenceTier,
+    ) -> Result<Self, String> {
         let receipt_secret = std::env::var("TRUST_RECEIPT_SECRET")
             .ok()
             .and_then(|s| base64::prelude::BASE64_STANDARD.decode(&s).ok())
@@ -186,7 +192,7 @@ impl TrustGateConfig {
             executor_signing_key: Arc::new(executor_signing_key),
             executor_id,
             task_issuer_signing_key: Arc::new(task_issuer_signing_key),
-            tier: EvidenceTier::Separated,
+            tier,
         })
     }
 

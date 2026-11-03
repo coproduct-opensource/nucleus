@@ -412,3 +412,29 @@ fn unknown_schema_duplicate_body_and_missing_hash_are_refused() {
         ExecutionError::InvalidDigest("stdout_sha256")
     );
 }
+
+/// C2: a separated bare-tier node signs with its ordinary key and says
+/// `separated-local`. That is a host process at a subordinate uid, not a
+/// microVM, so a verifier that requires a protected microVM refuses it by
+/// that declaration, even over a claim that pairs it with
+/// `backend = firecracker` and `uid_isolated`; and the declaration is on the
+/// wire, so a verifier predating it refuses it as an unknown field.
+#[test]
+fn separated_local_evidence_never_passes_as_a_microvm() {
+    let key = SigningKey::from_bytes(&[9; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut separated = claim();
+    separated.sandbox_tier = SandboxTier::SeparatedLocal;
+    assert_eq!(separated.backend, Backend::Firecracker);
+    assert!(separated.uid_isolated);
+    assert_eq!(
+        verify_execution(&sign(&separated, &key), &expected(&public)).unwrap_err(),
+        ExecutionError::NotProtectedMicroVm
+    );
+    let body = serde_json::to_value(&separated).unwrap();
+    assert_eq!(body["sandbox_tier"], "separated-local");
+    let back: ExecutionClaim = serde_json::from_value(body).unwrap();
+    assert_eq!(back.sandbox_tier, SandboxTier::SeparatedLocal);
+    // Control: the same claim without the declaration verifies.
+    assert!(verify_execution(&sign(&claim(), &key), &expected(&public)).is_ok());
+}

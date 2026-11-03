@@ -509,12 +509,25 @@ impl WorkloadLaunch {
             }
         }
 
+        // Both guarantees or neither: a subordinate-id child (Program C, C2) in
+        // its own PID namespace (#3344) is not composed, so the plan is
+        // refused rather than spawned without one of them.
+        let pids = nucleus::PidNamespace::for_workload(containment);
+        if pids == nucleus::PidNamespace::Own && confinement.subordinate().is_some() {
+            return Err(Refused(
+                "this workload would run at subordinate host ids in its own PID namespace, \
+                 and that combination is not supported: refusing rather than dropping either \
+                 the PID namespace or the subordinate ids"
+                    .to_string(),
+            ));
+        }
+
         Ok(AdmittedWorkloadPlan {
             command: self.command,
             args: self.args,
             work_dir: self.work_dir,
             confinement,
-            pids: nucleus::PidNamespace::for_workload(containment),
+            pids,
             env: self.env,
             classified: self.classified,
             home: self.home,
@@ -2373,3 +2386,7 @@ mod companion_tests {
         assert_eq!(std::fs::metadata(home).unwrap().uid(), COMPANION_UID);
     }
 }
+
+/// Program C, C2: the canary experiment through `spawn_admitted`.
+#[cfg(all(test, target_os = "linux"))]
+mod subordinate_canary_tests;

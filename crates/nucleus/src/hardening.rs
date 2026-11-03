@@ -73,6 +73,7 @@
 //! | `Unsandboxed`, workload, no `workload.uid`, opted in | drop to 65534 | bare: runtime's uid | none |
 //! | `Unsandboxed`, workload, no `workload.uid`, no opt-in | drop to 65534 | **refused** | none |
 //! | `Unsandboxed`, workload, explicit `workload.uid` | drop to it | **refused** | none |
+//! | `Unsandboxed`, child or default-uid workload, subordinate ids (C2) | drop to 65534 | **separated**: its own user namespace at the subordinate host ids (`subordinate.rs`) | denylist |
 //! | `HostHardened`, `/v1/run` child | drop to 65534 | restricted, runtime's uid | denylist |
 //! | `HostHardened`, workload | drop | **refused** | denylist |
 //! | `MicroVM` (child or workload) | drop | **refused** | denylist |
@@ -197,13 +198,24 @@ mod exec_pin;
 mod landlock;
 mod pidns;
 mod rlimit;
+mod seal;
 #[cfg(target_os = "linux")]
 mod seccomp;
+mod spawn_record;
+mod subordinate;
+#[cfg(target_os = "linux")]
+mod userns;
 mod workspace;
 
 pub use landlock::{LandlockSupport, MIN_LANDLOCK_ABI};
 pub use pidns::PidNamespace;
 pub use rlimit::{AppliedRlimits, RlimitPolicy, RlimitVector};
+pub use seal::{EnvironmentReach, RuntimeSeal, seal_runtime};
+pub use spawn_record::{Hardened, InstalledFilter, SpawnHardening, Unhardened};
+pub use subordinate::{
+    FIRST_POD_OFFSET, LocalRealization, PROBE_OFFSET, SeparationUnmet, SubordinateIds,
+    SubordinateRange, grant_workspace, map_is_exactly,
+};
 use workspace::WriteLayer;
 pub use workspace::{WorkspaceHold, WorkspaceWrites};
 
@@ -242,6 +254,12 @@ enum Posture {
     Restricted(SyscallFilter),
     /// Drop to this uid (and gid), then self-restrict.
     DropTo(u32, SyscallFilter, FilesystemConfinement),
+    /// The non-root bare tier, separated (Program C, C2): enter a fresh user
+    /// namespace whose only mapping is these subordinate host ids, become
+    /// them, confirm the maps, then self-restrict under the workload
+    /// denylist. Reachable only from `Unsandboxed` on a non-root runtime with
+    /// [`UnsandboxedOptIn::Subordinate`].
+    Subordinate(SubordinateIds),
     /// A host service the runtime starts for one pod (the egress proxy, ADR
     /// 0015 §7): enter a fresh, empty network namespace, THEN drop to `uid`
     /// and `gid`, then self-restrict under the workload denylist. The drop is
@@ -262,6 +280,11 @@ enum Isolation {
     NetnsThenDrop { uid: u32, gid: u32 },
     /// The workload's own PID namespace, then the drop (#3344, `pidns.rs`).
     PidnsThenDrop { uid: u32, gid: u32 },
+    /// After the descriptor sweep: `unshare(CLONE_NEWUSER)` with the setuid
+    /// helpers writing a one-id map for each of these ids, then
+    /// `setgroups(0)`, `setresgid`, `setresuid` to them, and the maps read
+    /// back (Program C, C2).
+    UserNamespace(SubordinateIds),
 }
 
 /// How a confined child's filesystem is held (#2696 P3c). Decided per
@@ -365,6 +388,13 @@ pub enum UnsandboxedOptIn {
     /// children and a default-uid workload run at the runtime's uid,
     /// announced by a log line and a banner.
     Explicit,
+    /// The operator passed `--unsandboxed` and the node handed this runtime
+    /// subordinate host ids its user is delegated (`--subordinate-ids`,
+    /// Program C, C2): under `ContainmentMode::Unsandboxed` on a non-root
+    /// runtime, `/v1/run` children and a default-uid workload run at THESE
+    /// host ids, in a user namespace that maps nothing else, under the
+    /// workload denylist. They are not at the runtime's uid.
+    Subordinate(SubordinateIds),
 }
 
 /// Who the child runs as, relative to the runtime. Two-valued on purpose: a
@@ -567,6 +597,11 @@ impl ChildConfinement {
             // mode is not, by itself, consent to a same-uid workload.
             ContainmentMode::Unsandboxed => match requested {
                 None if runtime_uid != 0 => Self::bare(runtime_uid, opt_in),
+                // An explicit `workload.uid` that IS the subordinate uid the
+                // node handed this runtime: honoured by the same namespace.
+                Some(asked) if runtime_uid != 0 && Self::is_subordinate(opt_in, asked) => {
+                    Self::bare(runtime_uid, opt_in)
+                }
                 None | Some(_) => Self::separate(uid, runtime_uid, syscalls, filesystem),
             },
             ContainmentMode::HostHardened | ContainmentMode::MicroVM => {
@@ -580,10 +615,23 @@ impl ChildConfinement {
     /// the ONE place it is granted, for the `/v1/run` child and the workload
     /// alike: only on the operator's explicit opt-in (owner decision,
     /// 2026-10-02). Declaring `Unsandboxed` alone is a named refusal.
+    ///
+    /// With subordinate ids (Program C, C2) the same opt-in is realized as a
+    /// separated child instead: [`Posture::Subordinate`], never the runtime's
+    /// uid.
     fn bare(runtime_uid: u32, opt_in: UnsandboxedOptIn) -> Result<Posture> {
         match opt_in {
             UnsandboxedOptIn::Explicit => Ok(Posture::Unsandboxed),
+            UnsandboxedOptIn::Subordinate(ids) => Ok(Posture::Subordinate(ids)),
             UnsandboxedOptIn::Absent => Err(NucleusError::UnsandboxedNotOptedIn { runtime_uid }),
+        }
+    }
+
+    /// Whether `uid` is the subordinate uid `opt_in` carries.
+    fn is_subordinate(opt_in: UnsandboxedOptIn, uid: u32) -> bool {
+        match opt_in {
+            UnsandboxedOptIn::Subordinate(ids) => ids.uid() == uid,
+            UnsandboxedOptIn::Explicit | UnsandboxedOptIn::Absent => false,
         }
     }
 
@@ -650,6 +698,7 @@ impl ChildConfinement {
     pub fn child_uid(&self) -> ChildUid {
         match self.posture {
             Posture::DropTo(uid, ..) | Posture::Isolated { uid, gid: _ } => ChildUid::Distinct(uid),
+            Posture::Subordinate(ids) => ChildUid::Distinct(ids.uid()),
             Posture::Unsandboxed | Posture::Restricted(_) => ChildUid::SharedWithRuntime,
         }
     }
@@ -660,7 +709,9 @@ impl ChildConfinement {
         match self.posture {
             Posture::Unsandboxed => SyscallFilter::Unfiltered,
             Posture::Restricted(filter) | Posture::DropTo(_, filter, _) => filter,
-            Posture::Isolated { uid: _, gid: _ } => SyscallFilter::WorkloadDenylist,
+            Posture::Isolated { uid: _, gid: _ } | Posture::Subordinate(_) => {
+                SyscallFilter::WorkloadDenylist
+            }
         }
     }
 
@@ -671,7 +722,8 @@ impl ChildConfinement {
             Posture::DropTo(_, _, fs) => fs,
             Posture::Unsandboxed
             | Posture::Restricted(_)
-            | Posture::Isolated { uid: _, gid: _ } => FilesystemConfinement::NotApplied,
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::Subordinate(_) => FilesystemConfinement::NotApplied,
         }
     }
 
@@ -760,9 +812,10 @@ impl ChildConfinement {
     pub fn is_unsandboxed(&self) -> bool {
         match self.posture {
             Posture::Unsandboxed => true,
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                false
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::Subordinate(_) => false,
         }
     }
 
@@ -770,9 +823,10 @@ impl ChildConfinement {
     #[must_use]
     pub fn restricts(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::Subordinate(_) => true,
             Posture::Unsandboxed => false,
         }
     }
@@ -783,9 +837,10 @@ impl ChildConfinement {
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::Subordinate(_) => true,
             Posture::Unsandboxed => cfg!(target_os = "linux"),
         }
     }
@@ -907,6 +962,27 @@ impl ChildConfinement {
                 };
                 Self::restrict(cmd, isolation, filter, filesystem, layer, rlimits, syscalls)
             }
+            // A subordinate-id child in its own PID namespace is not composed:
+            // `pidns::enter` drops from root, and this child is never root on the
+            // host. Refused rather than run without the namespace it asked for;
+            // the tool-proxy refuses the plan first (`admit`).
+            Posture::Subordinate(_) if pids == PidNamespace::Own => {
+                tracing::error!(
+                    "refusing the spawn: a subordinate-id child in its own PID namespace is not \
+                     supported"
+                );
+                refuse(cmd);
+                SpawnHardening::Unhardened(Unhardened::Refused)
+            }
+            Posture::Subordinate(ids) => Self::restrict(
+                cmd,
+                Isolation::UserNamespace(ids),
+                SyscallFilter::WorkloadDenylist,
+                FilesystemConfinement::NotApplied,
+                layer,
+                rlimits,
+                syscalls,
+            ),
             Posture::Isolated { uid, gid } => Self::restrict(
                 cmd,
                 Isolation::NetnsThenDrop { uid, gid },
@@ -941,7 +1017,9 @@ impl ChildConfinement {
         let workspace = layer.hold();
         let pids = match isolation {
             Isolation::PidnsThenDrop { uid: _, gid: _ } => PidNamespace::Own,
-            Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ } => PidNamespace::Shared,
+            Isolation::None
+            | Isolation::NetnsThenDrop { uid: _, gid: _ }
+            | Isolation::UserNamespace(_) => PidNamespace::Shared,
         };
         match imp::install(cmd, isolation, filter, filesystem, layer, rlimits, syscalls) {
             Hook::Installed => SpawnHardening::Hardened(Hardened {
@@ -966,148 +1044,36 @@ impl ChildConfinement {
     ///
     /// # Errors
     /// The `chown` failure, for the caller to log.
+    ///
+    /// A subordinate-id child (Program C, C2) is handed nothing here: a
+    /// non-root runtime cannot `chown`, and an ACL on a path the pod's
+    /// creator named would widen that path. The node grants the workspace it
+    /// confined (`grant_workspace`), before the proxy starts.
     pub fn hand_over(&self, path: &Path) -> std::io::Result<()> {
-        match self.drop_uid() {
-            Some(uid) => imp::chown(path, uid),
-            None => Ok(()),
-        }
-    }
-}
-
-/// What a spawn's confinement hook does to the child, as its launch receipt
-/// states it (#2572).
-///
-/// The hardened case carries a [`Hardened`], which has a private field and is
-/// minted only by [`ChildConfinement::apply`] when it installed the hook, so
-/// the bare tier — or a platform with no hook — cannot claim it. Before this,
-/// the receipt carried a `bool` the caller computed beside the spawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpawnHardening {
-    /// Inherited fds above 2 close-on-exec, `no_new_privs`, the rlimits,
-    /// and the syscall filter when the posture has one.
-    Hardened(Hardened),
-    /// No hook: the child is a plain process, and why.
-    Unhardened(Unhardened),
-}
-
-impl SpawnHardening {
-    /// Whether the hook was installed.
-    #[must_use]
-    pub fn is_hardened(&self) -> bool {
-        match self {
-            Self::Hardened(_) => true,
-            Self::Unhardened(_) => false,
+        match self.posture {
+            Posture::Subordinate(_) => Ok(()),
+            Posture::Unsandboxed
+            | Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ } => match self.drop_uid() {
+                Some(uid) => imp::chown(path, uid),
+                None => Ok(()),
+            },
         }
     }
 
-    /// How the child's workspace is held, as the receipt's preimage spells
-    /// it (#2907), read off what [`ChildConfinement::apply`] installed: the
-    /// one record of it. `refused` only for a spawn the hook fails, which
-    /// never produces a receipt.
+    /// The subordinate host ids this child runs at, when it is the separated
+    /// bare tier (Program C, C2).
     #[must_use]
-    pub fn workspace_canonical(&self) -> String {
-        match self {
-            Self::Hardened(h) => h.workspace.canonical(),
-            Self::Unhardened(Unhardened::BareTierWorkspaceReadOnly { abi }) => {
-                WorkspaceHold::ReadOnly { abi: *abi }.canonical()
-            }
-            Self::Unhardened(Unhardened::DeclaredBareTier | Unhardened::NoHookOnThisPlatform) => {
-                WorkspaceHold::Writable.canonical()
-            }
-            Self::Unhardened(Unhardened::Refused) => "refused".to_string(),
+    pub fn subordinate(&self) -> Option<SubordinateIds> {
+        match self.posture {
+            Posture::Subordinate(ids) => Some(ids),
+            Posture::Unsandboxed
+            | Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ } => None,
         }
     }
-}
-
-/// The evidence that the confinement hook was installed, with which limits
-/// and which syscall filter. Private fields: only [`ChildConfinement::apply`]
-/// mints one (ADR 0007 C-1, C-2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct Hardened {
-    rlimits: AppliedRlimits,
-    syscalls: InstalledFilter,
-    /// How the hook holds the workspace (#2907).
-    workspace: WorkspaceHold,
-    /// Whether the hook made the child a PID namespace (#3344).
-    pids: PidNamespace,
-}
-
-impl Hardened {
-    /// How the hook holds the child's workspace (#2907).
-    #[must_use]
-    pub fn workspace(&self) -> WorkspaceHold {
-        self.workspace
-    }
-
-    /// Whether the hook runs the child in its own PID namespace (#3344).
-    #[must_use]
-    pub fn pid_namespace(&self) -> PidNamespace {
-        self.pids
-    }
-
-    /// The limits the hook sets.
-    #[must_use]
-    pub fn rlimits(&self) -> AppliedRlimits {
-        self.rlimits
-    }
-
-    /// The syscall filter the hook installs.
-    #[must_use]
-    pub fn syscalls(&self) -> InstalledFilter {
-        self.syscalls
-    }
-}
-
-/// The syscall filter a hardened child runs under, as its launch receipt
-/// states it (#2907): the ONE record of the pod's derived classes, written
-/// where the hook that installs them reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum InstalledFilter {
-    /// The workload denylist and, in the same program, the classes the pod's
-    /// lattice denies.
-    WorkloadDenylist {
-        /// The derived classes, serialized as their names.
-        derived: SeccompPolicy,
-    },
-    /// No filter: the declared bare tier's contract. The pod's derived
-    /// classes are NOT applied, and this says so.
-    Unfiltered,
-}
-
-impl InstalledFilter {
-    /// The canonical spelling a receipt's hashed preimage carries.
-    #[must_use]
-    pub fn canonical(&self) -> String {
-        match self {
-            Self::WorkloadDenylist { derived } => format!("denylist+{}", derived.canonical()),
-            Self::Unfiltered => "unfiltered".to_string(),
-        }
-    }
-}
-
-/// Why a spawn has no confinement hook.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Unhardened {
-    /// The declared bare host tier (`ContainmentMode::Unsandboxed` on a
-    /// non-root runtime, explicitly opted in).
-    DeclaredBareTier,
-    /// A posture without a syscall filter on a platform that has no hook
-    /// (a root runtime's `Unsandboxed` child off Linux): the uid drop
-    /// happens, nothing else does.
-    NoHookOnThisPlatform,
-    /// The declared bare host tier, with a read-only workspace (#2907): the
-    /// hook sets `no_new_privs` and installs the Landlock write layer at this
-    /// ABI, and nothing else. No fd closing, no rlimits, no syscall filter.
-    BareTierWorkspaceReadOnly {
-        /// The kernel's Landlock ABI.
-        abi: u32,
-    },
-    /// The hook fails the spawn before exec: the pod's read-only workspace
-    /// cannot be held here (#2907). No child runs, so no receipt carries it.
-    Refused,
 }
 
 /// Make the spawn fail before exec. `EOPNOTSUPP`, because std carries a
@@ -1126,68 +1092,6 @@ enum Hook {
     Installed,
     #[cfg_attr(target_os = "linux", allow(dead_code))]
     NoneOnThisPlatform,
-}
-
-/// What the runtime did to keep its own children out of it (#3461).
-///
-/// A child that shares the runtime's uid (the declared bare tier, or a
-/// `Restricted` child of a non-root runtime) can open
-/// `/proc/<runtime>/environ`, `mem` and `fd/*`. [`seal_runtime`] makes the
-/// process non-dumpable, so the kernel refuses those files and `ptrace` to
-/// every process without `CAP_SYS_PTRACE`. (Descriptors are the spawn's
-/// half: every posture on Linux, the bare tier included, marks those above
-/// stdio close-on-exec in the child.)
-///
-/// Evidence (ADR 0007 C-1): [`Self::environment`] answers
-/// [`EnvironmentReach::ClosedToSameUid`] only for a value [`seal_runtime`]
-/// minted after the kernel confirmed the seal. [`Self::unsealed`] claims
-/// nothing, so a caller can always hold the weaker value.
-#[derive(Debug)]
-pub struct RuntimeSeal {
-    /// True only when the kernel confirmed the process non-dumpable.
-    sealed: bool,
-}
-
-/// Whether a process at the runtime's own uid can read the runtime's
-/// environment and memory. A process at another non-root uid never can.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnvironmentReach {
-    /// The runtime is non-dumpable: `/proc/<pid>/environ` and `mem` refuse
-    /// a same-uid process.
-    ClosedToSameUid,
-    /// Nothing keeps a same-uid process out (no seal, or a platform where
-    /// the environment of a same-uid process is readable regardless).
-    OpenToSameUid,
-}
-
-impl RuntimeSeal {
-    /// A value that claims no seal: what a platform without one holds.
-    #[must_use]
-    pub fn unsealed() -> Self {
-        Self { sealed: false }
-    }
-
-    /// What a same-uid child can read of this process.
-    #[must_use]
-    pub fn environment(&self) -> EnvironmentReach {
-        if self.sealed {
-            EnvironmentReach::ClosedToSameUid
-        } else {
-            EnvironmentReach::OpenToSameUid
-        }
-    }
-}
-
-/// Seal this process against its own children; see [`RuntimeSeal`]. Call it
-/// first, before the process reads a secret or spawns anything.
-///
-/// # Errors
-/// On Linux, the kernel's errno when it refused, or an
-/// [`std::io::ErrorKind::Other`] error when the process still reads as
-/// dumpable afterwards. Off Linux nothing is attempted and the answer is
-/// [`RuntimeSeal::unsealed`].
-pub fn seal_runtime() -> std::io::Result<RuntimeSeal> {
-    imp::seal_self().map(|sealed| RuntimeSeal { sealed })
 }
 
 /// The runtime's own uid.
@@ -1373,11 +1277,33 @@ mod imp {
         Pinned(PinnedExec),
     }
 
+    /// [`Isolation`] as the hook sees it: decided in the parent, and for a user
+    /// namespace, the helpers' argv built there too, so the child only reads.
+    enum Isolate {
+        Nothing,
+        NetnsThenDrop { uid: libc::uid_t, gid: libc::gid_t },
+        PidnsThenDrop { uid: libc::uid_t, gid: libc::gid_t },
+        UserNamespace(super::userns::UserNsMap),
+    }
+
+    impl Isolate {
+        fn prepare(isolation: Isolation) -> Self {
+            match isolation {
+                Isolation::None => Self::Nothing,
+                Isolation::NetnsThenDrop { uid, gid } => Self::NetnsThenDrop { uid, gid },
+                Isolation::PidnsThenDrop { uid, gid } => Self::PidnsThenDrop { uid, gid },
+                Isolation::UserNamespace(ids) => {
+                    Self::UserNamespace(super::userns::UserNsMap::prepare(ids))
+                }
+            }
+        }
+    }
+
     /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
     fn harden_child(
-        isolation: Isolation,
+        isolation: &Isolate,
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
         writes: &mut Landlock,
@@ -1386,8 +1312,10 @@ mod imp {
     ) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
         // scalars, a pointer to a fully-initialized local `rlimit`, or (the
-        // pinned `execveat`) pointers into buffers the parent built and the
-        // closure owns; none allocates or takes a lock, satisfying the
+        // pinned `execveat`, the id-map helpers' `execve`) pointers into
+        // buffers the parent built and the closure owns; `fork` here is taken
+        // from a single-threaded child and its helper only reads, formats and
+        // execs or `_exit`s; none allocates or takes a lock, satisfying the
         // `pre_exec` contract.
         unsafe {
             // A host service's own network namespace, entered while the
@@ -1396,18 +1324,18 @@ mod imp {
             // root to a non-root uid clears every capability set, ambient
             // included, because the hook never sets `SECBIT_KEEP_CAPS`.
             match isolation {
-                Isolation::None => {}
-                Isolation::NetnsThenDrop { uid, gid } => {
+                Isolate::Nothing | Isolate::UserNamespace(_) => {}
+                Isolate::NetnsThenDrop { uid, gid } => {
                     if libc::unshare(libc::CLONE_NEWNET) != 0
                         || libc::setgroups(0, std::ptr::null()) != 0
-                        || libc::setresgid(gid, gid, gid) != 0
-                        || libc::setresuid(uid, uid, uid) != 0
+                        || libc::setresgid(*gid, *gid, *gid) != 0
+                        || libc::setresuid(*uid, *uid, *uid) != 0
                     {
                         return Err(io::Error::last_os_error());
                     }
                 }
                 // Returns only in the workload, dropped (`pidns.rs`).
-                Isolation::PidnsThenDrop { uid, gid } => super::pidns::enter(uid, gid)?,
+                Isolate::PidnsThenDrop { uid, gid } => super::pidns::enter(*uid, *gid)?,
             }
             // Mark every fd from 3 up close-on-exec rather than closing it
             // HERE: std still owns a CLOEXEC status pipe in this window, used
@@ -1447,6 +1375,59 @@ mod imp {
                         }
                     }
                     _ => return Err(err),
+                }
+            }
+            // The separated bare tier (Program C, C2): after the sweep, so the
+            // setuid helpers inherit nothing the sweep closes; before
+            // `no_new_privs`, without which the helpers could not be setuid.
+            // The steps are `userns`'s; only `fork`, `execve`, `_exit`,
+            // `unshare` and the ambient clear are here.
+            match isolation {
+                Isolate::Nothing
+                | Isolate::NetnsThenDrop { uid: _, gid: _ }
+                | Isolate::PidnsThenDrop { uid: _, gid: _ } => {}
+                Isolate::UserNamespace(map) => {
+                    let mut go = super::userns::go_pipe()?;
+                    let mut helpers: [Option<libc::pid_t>; 2] = [None, None];
+                    for (slot, template) in map.argvs().iter().enumerate() {
+                        match libc::fork() {
+                            -1 => break,
+                            0 => {
+                                let mut digits = [0u8; 16];
+                                if go.wait()
+                                    && let Some(argv) =
+                                        super::userns::helper_argv(template, &mut digits)
+                                {
+                                    let envp = [0usize];
+                                    libc::execve(
+                                        argv[0] as *const libc::c_char,
+                                        argv.as_ptr().cast(),
+                                        envp.as_ptr().cast(),
+                                    );
+                                }
+                                libc::_exit(127);
+                            }
+                            pid => helpers[slot] = Some(pid),
+                        }
+                    }
+                    let unshared = if helpers.iter().all(Option::is_some)
+                        && libc::unshare(libc::CLONE_NEWUSER) == 0
+                    {
+                        Ok(())
+                    } else {
+                        Err(io::Error::last_os_error())
+                    };
+                    super::userns::finish(map, go, helpers, unshared)?;
+                    // Nothing ambient survives the exec (a kernel without
+                    // ambient capabilities answers EINVAL, and has none).
+                    libc::prctl(
+                        libc::PR_CAP_AMBIENT,
+                        libc::c_ulong::try_from(libc::PR_CAP_AMBIENT_CLEAR_ALL).unwrap_or(0),
+                        0,
+                        0,
+                        0,
+                    );
+                    super::userns::confirm(map)?;
                 }
             }
             // The bare tier stops here: descriptors swept, nothing else.
@@ -1490,13 +1471,15 @@ mod imp {
                     return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
                 }
                 // Its own `/proc` is a new procfs the parent's rule is not on.
-                (Landlock::Restrict(ruleset), Isolation::PidnsThenDrop { uid: _, gid: _ }) => {
+                (Landlock::Restrict(ruleset), Isolate::PidnsThenDrop { uid: _, gid: _ }) => {
                     ruleset.grant_own_proc()?;
                     ruleset.restrict_self()?;
                 }
                 (
                     Landlock::Restrict(ruleset),
-                    Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ },
+                    Isolate::Nothing
+                    | Isolate::NetnsThenDrop { uid: _, gid: _ }
+                    | Isolate::UserNamespace(_),
                 ) => ruleset.restrict_self()?,
             }
             // The write layer (#2907), a second Landlock domain over the
@@ -1564,6 +1547,7 @@ mod imp {
         syscalls: SeccompPolicy,
     ) -> Hook {
         let limits = hook_limits(rlimits);
+        let isolate = Isolate::prepare(isolation);
         let mut writes = write_layer(layer);
         let mut landlock = match filesystem {
             FilesystemConfinement::NotApplied | FilesystemConfinement::Waived { .. } => {
@@ -1600,7 +1584,7 @@ mod imp {
         };
         super::hook::pre_exec(cmd, move || {
             harden_child(
-                isolation,
+                &isolate,
                 &mut seccomp,
                 &mut landlock,
                 &mut writes,
@@ -1679,7 +1663,7 @@ mod imp {
         let mut writes = write_layer(layer);
         super::hook::pre_exec(cmd, move || {
             harden_child(
-                Isolation::None,
+                &Isolate::Nothing,
                 &mut Seccomp::NotRequested,
                 &mut Landlock::NotRequested,
                 &mut writes,
@@ -1754,7 +1738,8 @@ mod imp {
         let isolated = match isolation {
             Isolation::None => false,
             Isolation::NetnsThenDrop { uid: _, gid: _ }
-            | Isolation::PidnsThenDrop { uid: _, gid: _ } => true,
+            | Isolation::PidnsThenDrop { uid: _, gid: _ }
+            | Isolation::UserNamespace(_) => true,
         };
         match (filter, landlock_required || isolated) {
             (SyscallFilter::Unfiltered, false) => {}
@@ -1778,6 +1763,9 @@ mod tests {
     /// that is not about Landlock runs under.
     const LL: LandlockSupport = LandlockSupport::Abi(MIN_LANDLOCK_ABI);
     const NO: LandlockWaiver = LandlockWaiver::Absent;
+
+    /// The subordinate tier with the guest's PID namespace (`hardening/tests/`).
+    mod pid_namespace;
 
     /// An isolated host service (the egress proxy) is separated or refused:
     /// a non-root runtime cannot make the namespace or the drop, and a uid or

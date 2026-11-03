@@ -95,7 +95,8 @@ census! {
     #[cfg(feature = "local-driver")]
     tool_proxy_path => Structural, "operator path";
     #[cfg(feature = "local-driver")]
-    local_driver_opt_in => Structural, "decided once at startup from operator flags";
+    local_children => Contention,
+        "decided once at startup; a pod's subordinate ids show how many local pods were created before it";
     firecracker_path => Structural, "operator path";
     firecracker_pool => Contention,
         "bounded launch semaphore; blocks one pod's spawn on another's exit (cross-pod-view.md finding 2)";
@@ -173,18 +174,21 @@ fn every_node_state_field_has_a_cross_pod_class() {
 
     let count = |s: Surface| entries.iter().filter(|e| e.surface == s).count();
     // The cfg-gated fields are all `Structural` or `Contention`, so only those
-    // two counts move with the build.
+    // two counts move with the build. Of the three local-driver fields, one is
+    // `Contention` (Program C, C2: `local_children`, whose subordinate-id pool
+    // tells a pod how many local pods started before it).
     let local = if cfg!(feature = "local-driver") { 3 } else { 0 };
+    let local_contention = usize::from(cfg!(feature = "local-driver"));
     let linux = usize::from(cfg!(target_os = "linux"));
     // Pinned in both directions: a reclassification is an edit here, in the
     // open. `Unclassified` may only shrink.
-    assert_eq!(count(Surface::Structural), 33 + local);
+    assert_eq!(count(Surface::Structural), 33 + local - local_contention);
     assert_eq!(count(Surface::Secret), 4);
     assert_eq!(count(Surface::PerPod), 1);
     assert_eq!(count(Surface::LineageScoped), 2);
     assert_eq!(count(Surface::SelectorScoped), 2);
     assert_eq!(count(Surface::TenantShared), 1);
-    assert_eq!(count(Surface::Contention), 8 + linux);
+    assert_eq!(count(Surface::Contention), 8 + linux + local_contention);
     assert_eq!(count(Surface::Unclassified), 2);
     assert_eq!(entries.len(), 53 + local + linux);
 }
