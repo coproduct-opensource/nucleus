@@ -461,9 +461,25 @@ pub async fn serve_connection_with_timeout<S>(
     };
     tokio::select! {
         biased;
-        _ = revoked.wait_for(|revoked| *revoked) => {},
-        _ = serve_live_connection(stream, serving, deadline) => {},
+        () = until_revoked(&mut revoked) => {},
+        () = serve_live_connection(stream, serving, deadline) => {},
     }
+}
+
+/// Resolves once the pod's policy is revoked (or its sender is gone), holding
+/// nothing when it does.
+///
+/// `wait_for` returns a `Ref` that read-locks the watch, and `select!` drops the
+/// losing branch while the winner's output is still alive. Passed straight
+/// through, that `Ref` was held while the live connection was dropped, and the
+/// drop records the in-flight effect as interrupted under the policy lock
+/// (`Pending::drop`). A second revoke holding the policy lock then waited to
+/// write the watch, on this task, which waited on it: two threads parked in a
+/// futex, then every worker that touched the pod's policy. The Mac node stopped
+/// answering for 8 h 44 min on 2026-10-30 (gatehouse F-315). The lock order is
+/// the policy lock, then the watch (`PodPolicy::revoke_held`).
+async fn until_revoked(revoked: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = revoked.wait_for(|revoked| *revoked).await;
 }
 
 async fn serve_live_connection<S>(stream: S, serving: &BrokerServing<'_>, deadline: Duration)
