@@ -18,7 +18,7 @@ name: exemplar-scoreboard
 on:
   push:
     branches: [main]
-    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-baseline.json']
+    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-baseline.json', 'ci/egress-decisions.toml', 'ci/egress-proofs.json']
   # REQUIRED since 2026-10-02 (owner decision), so the pull_request trigger is
   # UNFILTERED and `merge_group:` is present. A required context must be
   # reported on every PR and on every queue group: a path filter here would
@@ -65,3 +65,9 @@ jobs:
       # its non-vacuity floor (fewer than three shared metrics is a red).
       - name: Measure, then ratchet against baseline (with anti-Goodhart guards)
         run: cargo run -q -p xtask -- scoreboard-ratchet --baseline scripts/exemplar-baseline.json
+      # The broker's egress decisions proved in Lean (docs/egress-as-olog.md): the count is
+      # re-derived from ci/egress-decisions.toml and held to ci/egress-proofs.json in both
+      # directions, and an obligation that is present but does not hold is refused. The
+      # ratchet above also carries it, as egress_proved / egress_decisions_GUARD.
+      - name: Egress decisions proved in Lean, against the committed count
+        run: cargo run -q -p xtask -- egress-proofs --check

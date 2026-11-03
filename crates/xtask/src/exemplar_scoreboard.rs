@@ -53,6 +53,26 @@ pub struct Scoreboard {
     pub formal_verification: FormalVerification,
     pub rust_craft: RustCraft,
     pub sandboxing: Sandboxing,
+    pub egress_proofs: EgressProofs,
+}
+
+/// `cargo xtask egress-proofs`, as two ratcheted numbers: the decisions
+/// proved may not fall, and the decision population may not fall either, so
+/// the share cannot be raised by deleting a decision that was never proved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressProofs {
+    pub egress_proved: usize,
+    #[serde(rename = "egress_decisions_GUARD")]
+    pub egress_decisions_guard: usize,
+}
+
+impl From<crate::egress_proofs::Count> for EgressProofs {
+    fn from(c: crate::egress_proofs::Count) -> Self {
+        Self {
+            egress_proved: c.proved,
+            egress_decisions_guard: c.decisions,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,6 +472,16 @@ pub fn test_only_files(files: &BTreeMap<String, String>) -> Result<BTreeSet<Stri
     Ok(test_only)
 }
 
+/// A vacuous Lean statement: `:= by trivial`, `: True :=`, `axiom … : True`.
+/// One regex, read by `vacuous_lean` here and by `egress-proofs`, which
+/// refuses a vacuous theorem as a proof (`egress_proofs.rs`): two copies
+/// would be two rulers (ADR 0007 G).
+pub static VACUOUS_LEAN: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r":=[[:space:]]*by[[:space:]]+trivial|:[[:space:]]*True[[:space:]]*:=|axiom[[:space:]].*:[[:space:]]*True",
+    )
+});
+
 static OUT_OF_LINE_MOD: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?m)^\s*(pub(\([^)]*\))?\s+)?mod\s+\w+\s*;"));
 
@@ -595,7 +625,10 @@ fn pct(part: usize, whole: usize) -> usize {
 
 /// Measure `tree`. Every metric is the script's; only the `nt` domain differs,
 /// by the files [`test_only_files`] returns.
-pub fn measure(tree: &Tree) -> Result<Scoreboard> {
+///
+/// `egress` is measured by `egress_proofs` over its own file domain (it reads
+/// `ci/`, which this tree does not) and is carried through unchanged.
+pub fn measure(tree: &Tree, egress: EgressProofs) -> Result<Scoreboard> {
     let test_only = test_only_files(&tree.files)?;
 
     // Formal verification
@@ -606,13 +639,7 @@ pub fn measure(tree: &Tree) -> Result<Scoreboard> {
     let handmodel = count_occurrences(tree, concat!("HandModel", "KernelChecked"));
     let sorry_admit = count_lines(tree, is_lean, &re(r"^[[:space:]]*(sorry|admit)"));
     let lean_theorems = count_lines(tree, is_lean, &re(r"^[[:space:]]*(theorem|lemma) "));
-    let vacuous_lean = count_lines(
-        tree,
-        is_lean,
-        &re(
-            r":=[[:space:]]*by[[:space:]]+trivial|:[[:space:]]*True[[:space:]]*:=|axiom[[:space:]].*:[[:space:]]*True",
-        ),
-    );
+    let vacuous_lean = count_lines(tree, is_lean, &VACUOUS_LEAN);
 
     // Rust craft
     let sigctx = re(r"(?i)sig|signature|vk|verifying|pubkey|public_key|ed25519");
@@ -718,6 +745,7 @@ pub fn measure(tree: &Tree) -> Result<Scoreboard> {
             disallow_sites: bypass_sites - mediation_drift,
             effect_stubs,
         },
+        egress_proofs: egress,
     })
 }
 
@@ -727,7 +755,8 @@ pub fn summary(s: &Scoreboard) -> String {
     format!(
         "  FV : extraction {}/{} | sorry/admit {} | vacuous-lean {} (of {} thm) | clean-axioms {}\n  \
          RUST: permissive .verify {} (of {}) | unsafe blocks {} | lints.workspace {}/{}\n  \
-         SANDBOX: mediation-drift {} (bypass {} / disallow {}) | effect-stubs {}",
+         SANDBOX: mediation-drift {} (bypass {} / disallow {}) | effect-stubs {}\n  \
+         EGRESS: decisions proved {}/{}",
         f.extracted_proofs,
         f.extracted_proofs + f.handmodel_proofs,
         f.sorry_admit,
@@ -743,13 +772,16 @@ pub fn summary(s: &Scoreboard) -> String {
         x.bypass_sites,
         x.disallow_sites,
         x.effect_stubs,
+        s.egress_proofs.egress_proved,
+        s.egress_proofs.egress_decisions_guard,
     )
 }
 
 /// Measure the tree at the current directory.
 pub fn measure_cwd() -> Result<Scoreboard> {
     let root = std::env::current_dir().context("reading the current directory")?;
-    let board = measure(&Tree::read(&root)?)?;
+    let egress = crate::egress_proofs::measure(&crate::egress_proofs::Tree::read(&root)?)?;
+    let board = measure(&Tree::read(&root)?, egress.into())?;
     let name = root
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -782,7 +814,14 @@ mod tests {
     }
 
     fn board(files: &[(&str, &str)]) -> Scoreboard {
-        measure(&tree(files)).unwrap()
+        measure(
+            &tree(files),
+            EgressProofs {
+                egress_proved: 0,
+                egress_decisions_guard: 0,
+            },
+        )
+        .unwrap()
     }
 
     fn cfg(s: &str) -> Cfg {
