@@ -2,6 +2,9 @@
 //!
 //! - `run-node [args...]` is the Linux container PID-1 entrypoint. It moves
 //!   itself into a cgroup leaf before replacing itself with nucleus-node.
+//! - `conform --envelope apple-container|metal [--kernel-release R] [--sign KEY]`
+//!   probes this host against the host contract for its envelope, prints the
+//!   probe record (signed when a key is given), and exits non-zero on a breach.
 //! - `probe` prints a JSON report of what this host provides and exits non-zero
 //!   when a microVM cannot launch here.
 //! - `seed <tree> <image> --owner UID:GID --jailer-uid UID --jailer-gid GID
@@ -36,6 +39,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use nucleus_microvm_host::contract::{self, HostContract};
 use nucleus_microvm_host::ext4::RootOwner;
 use nucleus_microvm_host::jail_user::{self, JailUser, NonRootUid};
 #[cfg(target_os = "linux")]
@@ -46,6 +50,7 @@ use nucleus_microvm_host::{relay, workspace};
 use serde::Serialize;
 
 mod public_key;
+mod signing_key;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -70,6 +75,19 @@ enum Command {
         /// Arguments passed unchanged to nucleus-node.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<std::ffi::OsString>,
+    },
+    /// Probe this host against the host contract for its envelope and print the
+    /// probe record; non-zero exit when the host breaches it.
+    Conform {
+        #[arg(long, value_enum)]
+        envelope: EnvelopeArg,
+        /// The kernel release a metal host's image pins. Required for `metal`;
+        /// refused for `apple-container`, whose kernel is the pinned L1 kernel.
+        #[arg(long)]
+        kernel_release: Option<String>,
+        /// An existing Ed25519 PKCS#8 key to sign the record with.
+        #[arg(long)]
+        sign: Option<PathBuf>,
     },
     /// Report what this host provides; non-zero exit when a microVM cannot launch.
     Probe {
@@ -124,6 +142,13 @@ enum Command {
     },
 }
 
+/// The envelope a host was launched in, as the operator names it.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum EnvelopeArg {
+    AppleContainer,
+    Metal,
+}
+
 /// One unmet requirement, as printed.
 #[cfg(target_os = "linux")]
 #[derive(Serialize)]
@@ -167,6 +192,11 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(&format!("preparing container node: {e}")),
         },
+        Command::Conform {
+            envelope,
+            kernel_release,
+            sign,
+        } => run_conform(envelope, kernel_release.as_deref(), sign.as_deref()),
         Command::Probe { network } => run_probe(network),
         Command::Seed {
             tree,
@@ -303,6 +333,75 @@ fn run_probe(_network: bool) -> ExitCode {
     ))
 }
 
+/// The contract for `envelope`. The Mac's kernel is pinned; metal's must be named.
+fn contract_for(
+    envelope: EnvelopeArg,
+    kernel_release: Option<&str>,
+) -> Result<HostContract, String> {
+    match (envelope, kernel_release) {
+        (EnvelopeArg::AppleContainer, None) => Ok(HostContract::apple_container()),
+        (EnvelopeArg::AppleContainer, Some(_)) => {
+            Err("apple-container runs the pinned L1 kernel; --kernel-release is for metal".into())
+        }
+        (EnvelopeArg::Metal, Some(release)) => HostContract::metal(release),
+        (EnvelopeArg::Metal, None) => {
+            Err("metal needs --kernel-release: the release its image pins".into())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_conform(
+    envelope: EnvelopeArg,
+    kernel_release: Option<&str>,
+    sign: Option<&std::path::Path>,
+) -> ExitCode {
+    let contract = match contract_for(envelope, kernel_release) {
+        Ok(c) => c,
+        Err(e) => return fail(&e),
+    };
+    let issued_at = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(e) => return fail(&format!("the clock is before 1970: {e}")),
+    };
+    let body = contract::ProbeBody::new(contract, contract::observe(), issued_at);
+    let conforms = body.breaches.is_empty();
+    let printed = match sign {
+        Some(path) => signing_key::read(path)
+            .and_then(|key| contract::sign(&body, &key).map_err(|e| e.to_string()))
+            .and_then(|signed| serde_json::to_string(&signed).map_err(|e| e.to_string())),
+        None => serde_json::to_string_pretty(&body).map_err(|e| e.to_string()),
+    };
+    match printed {
+        Ok(json) => println!("{json}"),
+        Err(e) => return fail(&format!("recording the probe: {e}")),
+    }
+    for breach in &body.breaches {
+        eprintln!("nucleus-hostctl: breach: {breach}");
+    }
+    if conforms {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The contract is observed on Linux only, as `probe` is.
+#[cfg(not(target_os = "linux"))]
+fn run_conform(
+    envelope: EnvelopeArg,
+    kernel_release: Option<&str>,
+    _sign: Option<&std::path::Path>,
+) -> ExitCode {
+    if let Err(e) = contract_for(envelope, kernel_release) {
+        return fail(&e);
+    }
+    fail(&format!(
+        "conform observes a Linux host; this is {}",
+        std::env::consts::OS
+    ))
+}
+
 /// `uid:gid`, both decimal.
 fn parse_owner(s: &str) -> Result<RootOwner, String> {
     let (uid, gid) = s
@@ -326,6 +425,14 @@ fn fail(msg: &str) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_envelope_decides_whether_a_kernel_release_may_be_named() {
+        assert!(contract_for(EnvelopeArg::AppleContainer, None).is_ok());
+        assert!(contract_for(EnvelopeArg::AppleContainer, Some("6.18.35")).is_err());
+        assert!(contract_for(EnvelopeArg::Metal, None).is_err());
+        assert!(contract_for(EnvelopeArg::Metal, Some("6.12.40")).is_ok());
+    }
 
     #[test]
     fn node_flags_are_forwarded_without_becoming_hostctl_options() {

@@ -10,6 +10,7 @@ members = [
     "crates/nucleus-cred-protocol", # CB4A: wire types only, safe for the guest to link
     "crates/nucleus-decision-protocol", # L-1 P7: the per-pod decision channel's one wire declaration (guest + host)
     "crates/nucleus-signed-decision", # Owner decisions an agent can verify: signed record, canonical bytes, the one verifier
+    "crates/nucleus-generation", # Generation certificates: the runtime and its judge release each other, each generation strictly improving
     "crates/nucleus-oci-rootfs",    # OCI image -> one verified, normalized, deterministic rootfs tar (local layouts/archives only)
     "crates/nucleus-jsonl",       # One atomic append per record for every line-oriented evidence log
     "crates/nucleus-yaml",        # The one YAML reader/writer: serde-saphyr with every setting pinned (G-1)

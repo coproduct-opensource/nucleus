@@ -20,6 +20,8 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+# The signed host probe (`contract`): its body and signature travel as base64.
+base64 = { workspace = true }
 clap = { workspace = true }
 ed25519-dalek = { workspace = true, features = ["pkcs8", "alloc"] }
 hex = { workspace = true }
@@ -35,6 +37,7 @@ sha2 = { workspace = true }
 tar = { version = "0.4", default-features = false }
 # The pinned mke2fs.conf and the probe's smoke build live in a temp dir.
 tempfile = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "fs"] }
 zeroize = "1"
 
