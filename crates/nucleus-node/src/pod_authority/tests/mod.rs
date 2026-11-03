@@ -840,7 +840,7 @@ async fn the_admitted_plan_carries_the_issued_authority_not_the_request() {
             &from_pod(parent),
             spec_with(greedy),
             child,
-            crate::host_decide::StartingLabel::Clean,
+            crate::host_decide::HostStart::unreviewed(crate::host_decide::StartingLabel::Clean),
             crate::delivered_spec::Delivery::AsAdmitted,
         )
         .await
@@ -869,7 +869,7 @@ async fn the_admitted_plan_carries_the_issued_authority_not_the_request() {
             &from_pod(parent),
             spec_with(lattice(500)),
             Uuid::new_v4(),
-            crate::host_decide::StartingLabel::Clean,
+            crate::host_decide::HostStart::unreviewed(crate::host_decide::StartingLabel::Clean),
             crate::delivered_spec::Delivery::AsAdmitted,
         )
         .await;

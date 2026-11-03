@@ -399,7 +399,7 @@ async fn a_spent_day_refuses_and_the_next_utc_day_admits() {
             &who,
             pod_spec(Vec::new(), 3),
             pod,
-            crate::host_decide::StartingLabel::Clean,
+            crate::host_decide::HostStart::unreviewed(crate::host_decide::StartingLabel::Clean),
             crate::delivered_spec::Delivery::AsAdmitted,
         )
         .await

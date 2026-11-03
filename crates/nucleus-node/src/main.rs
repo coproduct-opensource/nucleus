@@ -1408,8 +1408,9 @@ async fn create_pod_internal(
     // pod's owner is the issued root identity (ADR 0001: its tenant).
     // The host's label for the pod before its guest says anything: the join of what the host
     // puts into the cell, an eval cell untrusted whatever it carries (ADR 0014 §3).
-    let starting =
-        host_decide::StartingLabel::of(profile, &workspace_scan::sources(&spec, &state.driver));
+    // And what its operator declared about its workspace, refused where the workspace is a host
+    // directory the pod shares (ADR 0014 §10).
+    let starting = host_decide::HostStart::of(profile, &spec, &state.driver)?;
     // How this node's driver hands the guest its spec, decided once: the plan derives the
     // delivered bytes and the pod's manifest hash from the applied spec (`delivered_spec`, G-1).
     let delivery = delivered_spec::Delivery::for_driver(
