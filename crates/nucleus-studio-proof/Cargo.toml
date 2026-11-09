@@ -1,0 +1,31 @@
+[package]
+name = "nucleus-studio-proof"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Offline proof checking for bounded Studio app changes"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_jcs = "0.2"
+sha2 = "0.10"
+hex = "0.4"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+nanoda_lib = { git = "https://github.com/coproduct-opensource/nanoda", rev = "6ba649836ff52755d77bbe5bc732a129b7173486" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.release]
+overflow-checks = true
