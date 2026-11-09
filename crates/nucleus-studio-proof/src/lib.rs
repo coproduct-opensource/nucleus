@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 mod codec;
+pub mod definition;
 pub mod envelope;
 pub mod export;
 pub mod page;
@@ -60,6 +61,26 @@ pub fn check_studio_change(
 }
 
 pub const MAX_PACKET_BYTES: usize = 16 * 1024 * 1024;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn check_studio_definition(
+    base_gzip: &[u8],
+    certificate_json: &[u8],
+    expected_blueprint_sha256: &str,
+    expected_contract_sha256: &str,
+) -> Result<String, wasm_bindgen::JsValue> {
+    let checked = definition::verify_bytes(
+        base_gzip,
+        certificate_json,
+        definition::Expected {
+            blueprint_sha256: expected_blueprint_sha256,
+            contract_sha256: expected_contract_sha256,
+        },
+    )
+    .map_err(|e| wasm_bindgen::JsValue::from_str(&e))?;
+    serde_json::to_string(&checked).map_err(|e| wasm_bindgen::JsValue::from_str(&e.to_string()))
+}
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen]

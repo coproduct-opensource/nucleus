@@ -160,3 +160,22 @@ Attachment now imports an already-selected native file through the same handler;
 the delayed-load selection subsequently verifies offline. File readiness never
 stands in for required checker assets. All three browser defects are recorded
 as observation/framing laws in the corresponding Olog schema.
+# Definition-only certificates and Keep
+
+`definition::Certificate` has the explicit purpose
+`studio-app-definition-v1`. It independently rechecks compilation for an
+identity packet, matching its blueprint and stored-contract hashes against
+expectations supplied by the recipient. A Keep caller must take those hashes
+from the selected app in the reviewed Keep subject; copying expectations from
+the certificate itself would not bind it to that subject. The browser export
+is `check_studio_definition`.
+
+This purpose carries no passkey approval and makes no claim about earlier edits,
+migrations, ownership transfer, current authority or live records. It cannot
+be substituted for the version-2 approved-change envelope. The same definition
+evidence may remain applicable after Keep only when the blueprint and contract
+commitments still match. Storage correspondence and the caller's reviewed
+subject remain separate trust boundaries. The service producer and Keep UI
+wiring are not yet implemented for this purpose. Tests exercise the actual
+producer and independent kernel; disabling the reviewed-hash comparison admits
+a substituted blueprint and makes the regression fail.
