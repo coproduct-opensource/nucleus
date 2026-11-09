@@ -116,6 +116,16 @@ scope is unchanged. The same complete workspace/all-features/test compilation
 then passed (`public-workspace-compile-{diagnostic,restored}.log`). Compilation
 is not test execution or a successful prepush result.
 
+The next full test execution reached 1,214 passing node tests and four broker
+fixture failures: each refused before serving because the macOS default temp
+directory plus pod UUID and socket name exceeded SUN_LEN. Running one failing
+case from the exact workspace-built binary reproduced it in 0.11s. The fixture
+now uses a unique private short `/tmp/ncb-*` root. The same workspace/all-features
+broker selection passes five tests (one existing real-Docker case stays ignored).
+Peer-PID refusal, undeclared-upstream refusal, credential withholding and teardown
+assertions are unchanged. Production long-path admission still refuses; this
+fix makes the fixture reach the broker behavior it intends to test.
+
 Publication still requires the complete mandatory `cargo xtask prepush` result.
 These targeted results do not establish a green workspace or deployment. The
 certificate implementation still covers Equipment identity migrations only;
