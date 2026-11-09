@@ -74,6 +74,42 @@ source identity; it does not infer that a repository will stay public forever.
 The success message now names the enumerated public-source allowance rather
 than claiming that every dependency is crates.io or in-tree.
 
+## Existing embedded SDK prerequisite
+
+All-features tests also require the existing verifier SDK's generated package.
+A local wasm-pack 0.15/no-opt build did not match either accepted artifact;
+the pins were not changed. The documented canonical inputs reproduced both
+accepted CI bytes in an isolated Apple container: Rust 1.96.1 on cached
+`rust:1.96.1-bookworm` (image index
+`sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663`),
+official wasm-pack 0.13.1, source at `/home/runner/_work/nucleus/nucleus`,
+Cargo home `/home/runner/.cargo`, and the existing gate's x86 host-metadata
+normalization while the compiler executes on arm64. wasm-bindgen's official
+release and wasm-opt are selected by that pinned wasm-pack, as in the gate.
+The build completed in 34.20s, yielding:
+
+```
+55ec10a781572a9c0d75379dc1c4491063ac3a84b05e8da1677be522d051f825  nucleus_verifier_wasm_bg.wasm
+8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  nucleus_verifier_wasm.js
+```
+
+These digests were computed from generated files and compared with the existing
+pins; no new accepted digest was added. The temporary builder was stopped and
+deleted; the pre-existing builder inspected during discovery was returned to
+its stopped state. The cached `gatehouse-builder:2` image contains janitor tools,
+not Rust/gate-tools; its name was insufficient evidence to select a builder.
+The old documented public verifier domain did not resolve, so it supplied no
+artifact. Canonical source/build provenance, not an unverified download, supplied
+the accepted bytes. Evidence: `public-sdk-canonical-linux.log` and the generated
+ignored `sdks/verifier-js/pkg`.
+
+Workspace-wide prepush still exhausted this Mac's remaining disk during native
+test linking, despite debug info and incrementality already being off. A fresh
+task-only cache with native test symbols stripped is the next validation mode;
+it retains the same pinned compiler, features, test selection and SDK pins.
+Procedural macros remain unstripped for the measured host loader issue above.
+This is storage management, not a successful prepush result.
+
 Publication still requires the complete mandatory `cargo xtask prepush` result.
 These targeted results do not establish a green workspace or deployment. The
 certificate implementation still covers Equipment identity migrations only;
