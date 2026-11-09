@@ -1,11 +1,11 @@
 //! The bytes an MCP client reads from `nucleus-tool-proxy --mcp`.
 //!
 //! Every tool in `src/mcp.rs` answers with `CallToolResult::success` or
-//! `CallToolResult::error` over a single `ContentBlock::text`. rmcp 2.x renamed
-//! the 1.x `Content` to `ContentBlock`, and the rename is meant to be
-//! wire-compatible. This pins that: the JSON below is what rmcp 1.8's
-//! `Content::text` produced, so a dependency bump that adds a field or renames
-//! a tag reds here rather than in a client.
+//! `CallToolResult::error` over a single `ContentBlock::text`. Patched rmcp 3.9
+//! adds the complete-result discriminator while retaining content and isError.
+//! The earlier exact-shape test caught that additive change during the security
+//! upgrade. Pin the complete result explicitly; task/input-required results
+//! must not be mistaken for a completed tool operation.
 //!
 //! It lives outside `src/mcp.rs` because that file sits at its line ceiling.
 #![cfg(feature = "mcp")]
@@ -20,6 +20,7 @@ fn an_error_result_is_one_text_block_flagged_as_error() {
     assert_eq!(
         err,
         json!({
+            "resultType": "complete",
             "content": [{"type": "text", "text": "denied"}],
             "isError": true,
         })
@@ -33,6 +34,7 @@ fn a_success_result_is_one_text_block_not_flagged() {
     assert_eq!(
         ok,
         json!({
+            "resultType": "complete",
             "content": [{"type": "text", "text": "ok"}],
             "isError": false,
         })
