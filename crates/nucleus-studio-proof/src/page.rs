@@ -25,3 +25,22 @@ pub fn html(certificate_url: Option<&str>) -> String {
         .unwrap_or_default();
     include_str!("web.html").replace("{{CERTIFICATE_SOURCE}}", &source)
 }
+/// Expectations are operator/user inputs, never taken from the certificate.
+pub fn html_with_expectations(certificate_url: Option<&str>, origin: &str, rp_id: &str) -> String {
+    fn attribute(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+    html(certificate_url)
+        .replace(
+            "value=\"https://nucleus.coproduct.one\"",
+            &format!("value=\"{}\"", attribute(origin)),
+        )
+        .replace(
+            "value=\"nucleus.coproduct.one\"",
+            &format!("value=\"{}\"", attribute(rp_id)),
+        )
+}
