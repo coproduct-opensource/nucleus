@@ -144,6 +144,11 @@ nix = { version = "0.31.3", features = ["sched", "process", "signal", "poll"] }
 # Already in the tree (tempfile, cap-std), so no new crate.
 rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# The state-directory regression exercises umask in a separate Unix process.
+# Production libc remains Linux-only; macOS must also compile this test.
+libc = "0.2"
+
 [dev-dependencies]
 # The in-process replay ledger, so the request-proof adapters stay tested.
 nucleus-request-proof = { path = "../nucleus-request-proof", features = ["volatile-test-ledger"] }

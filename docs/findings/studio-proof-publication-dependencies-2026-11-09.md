@@ -108,7 +108,13 @@ test linking, despite debug info and incrementality already being off. A fresh
 task-only cache with native test symbols stripped is the next validation mode;
 it retains the same pinned compiler, features, test selection and SDK pins.
 Procedural macros remain unstripped for the measured host loader issue above.
-This is storage management, not a successful prepush result.
+This got past the disk failure and exposed a pre-existing macOS test compile
+error: `nucleus-node`'s Unix umask helper called libc, declared only as a Linux
+production dependency. It now has a Unix-only test dependency, and the helper
+and its mask constant are Unix-gated like its parent test. Production dependency
+scope is unchanged. The same complete workspace/all-features/test compilation
+then passed (`public-workspace-compile-{diagnostic,restored}.log`). Compilation
+is not test execution or a successful prepush result.
 
 Publication still requires the complete mandatory `cargo xtask prepush` result.
 These targeted results do not establish a green workspace or deployment. The

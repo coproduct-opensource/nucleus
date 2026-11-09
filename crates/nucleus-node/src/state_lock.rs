@@ -138,10 +138,12 @@ mod tests {
     }
 
     /// Set only on the child [`state_directory_is_owner_only_under_umask_002`] starts.
+    #[cfg(unix)]
     const UMASK_002_STATE: &str = "NUCLEUS_TEST_STATE_DIR_UMASK_002";
 
     /// The node's start-up, as a process of its own under umask 002: umask(2)
     /// is per process, so it is never changed in a process running other tests.
+    #[cfg(unix)]
     #[test]
     fn create_and_load_keys_under_umask_002() {
         let Some(dir) = std::env::var_os(UMASK_002_STATE) else {
