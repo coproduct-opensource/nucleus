@@ -1,9 +1,11 @@
 # Studio contract decisions
 
 This standalone crate rechecks a bounded Studio Equipment change through
-nanoda. It has no private-controller dependency, account, credential, network
-client or retained business records. It is an implementation checkpoint, not
-the complete Studio change certificate or a deployed verification page.
+nanoda. Its native checker needs no private controller, account, credential,
+network or retained business records. The optional Rust browser page preloads
+public assets and an explicitly shared certificate with credentials omitted;
+proof checking itself runs in a disposable offline worker. This is the first
+Equipment/identity-migration class, not all Studio families or a deployed page.
 
 The pinned semantic prefix exports the actual `StudioCertificate.checkTyped`,
 `typed_sound` and `typed_future_execution` declarations and their dependencies.
@@ -94,3 +96,67 @@ without invoking Lean. A second fresh offline browser context rechecked its
 The root prepush affected-crate selector does not include this standalone
 workspace. Run its explicit test and Clippy commands as well as the mandatory
 root prepush checks; a root green alone does not cover this checker.
+
+## Browser page checkpoint (2026-11-09)
+
+`web.rs` implements presentation, file selection and the worker protocol in Rust.
+The only JavaScript supplied by this source is wasm-bindgen's module-loader
+invocation; it contains no checking or authority policy. A fresh Blob worker
+loads its module/Wasm from already cached object URLs, receives bounded bytes,
+and returns the sealed checker's report. Success, refusal, trap and deadline all
+terminate the instance. A monotonic result-time check also refuses late results
+when browser scheduling delayed its ten-second timer.
+
+Selection/context edits invalidate previous results. Empty, oversized or failed
+file reads cannot reuse previous certificate bytes. Resource readers bound
+decoded Fetch stream bytes and cancel on excess; they do not assume that HTTP
+Content-Length exists or counts decoded data. CSP permits only same-origin
+assets and local Blob loading. No cookies or authenticated requests are needed.
+
+For local acceptance with Rust and wasm-bindgen CLI 0.2.129 installed:
+
+```sh
+cargo build --release --target wasm32-unknown-unknown --lib --manifest-path crates/nucleus-studio-proof/Cargo.toml
+wasm-bindgen --target web --out-dir crates/nucleus-studio-proof/pkg crates/nucleus-studio-proof/target/wasm32-unknown-unknown/release/nucleus_studio_proof.wasm
+cargo run --release --manifest-path crates/nucleus-studio-proof/Cargo.toml --bin studio-proof-preview -- "$PWD/crates/nucleus-studio-proof"
+```
+
+Open `/proof/verify` at the printed loopback address, set the expected origin to
+`https://studio.example` and RP ID to `studio.example`, then choose
+`fixtures/equipment.signed.json`. This fictional example uses a deterministic
+software test signer, not an enrolled human or live account. The native test
+pins the entire fixture to its producer. Disconnect networking before Verify.
+Adding `--encoded` to the preview command exercises HTTP gzip without a length
+header. This preview helper exposes only a fixed asset list at exact loopback
+Host; it never opens application state or accepts writes.
+
+Fresh Playwright contexts verified the signed packet offline in 2,293 ms and
+the gzip/no-length variant in 2,328 ms (5,538 declarations). Packet substitution
+refused; a false proof trapped, was discarded, and a new valid check recovered.
+A deliberately stalled worker timed out (10,401 ms including UI automation),
+then recovered with zero live workers. A simulated late monotonic observation
+refused before its timer fired. Desktop and 390px mobile screenshots show no
+horizontal overflow. Oversized selection reuse and missing-length loading were
+each first reproduced red, then checked after correction. An oversized streamed
+resource now refuses without starting a worker. Native tests pass five cases in
+8.76s; native and Wasm warnings-denied Clippy and the standalone audit pass.
+
+Issuing real app certificate snapshots, serving these assets in the host,
+Keep integration, all nine families and additional migration classes remain
+unfinished. Expected origin/RP come from the verifier/user, never the capsule.
+See `ENVELOPE.md` for the distinction between independently rechecked clauses
+and trusted host/storage/enrollment/time claims.
+
+Playwright CLI 1.63.0 also passed the complete auto-loaded fictional example at
+`/proof/example` in WebKit, at desktop and iPhone 13 sizes. Its HAR contains only
+GETs for public loopback fixture assets/certificate and local Blob resources;
+no account or stored browser state was supplied. This is a WebKit compatibility
+check, separate from the Chromium network-disabled checks above. It is not a
+real production capability: the preview's all-zero fixture path serves only the
+public deterministic example and never opens tenant state.
+
+A delayed-Wasm browser test also reproduced early file selection being ignored.
+Attachment now imports an already-selected native file through the same handler;
+the delayed-load selection subsequently verifies offline. File readiness never
+stands in for required checker assets. All three browser defects are recorded
+as observation/framing laws in the corresponding Olog schema.

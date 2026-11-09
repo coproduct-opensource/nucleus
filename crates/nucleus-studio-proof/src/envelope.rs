@@ -54,6 +54,7 @@ pub struct Envelope {
 }
 
 /// Expected first-party values supplied by the verifier, not the certificate.
+#[derive(Clone, Copy)]
 pub struct Context<'a> {
     pub origin: &'a str,
     pub rp_id: &'a str,
@@ -82,6 +83,8 @@ struct Tiers {
 /// kernel checking. This result is not an execution or publication right.
 #[derive(Debug, Serialize)]
 pub struct VerifiedEnvelope {
+    checked_origin: String,
+    checked_rp_id: String,
     subject_sha256: String,
     contract: VerifiedContract,
     signature_kid: String,
@@ -236,6 +239,8 @@ pub fn verify(
     let bound = bind(envelope, context)?;
     let contract = crate::verify_compressed(base_gzip, &envelope.delta_gzip, &bound.packet)?;
     Ok(VerifiedEnvelope {
+        checked_origin: context.origin.into(),
+        checked_rp_id: context.rp_id.into(),
         subject_sha256: envelope.subject_sha256.clone(),
         contract,
         signature_kid: envelope.approval.credential.kid.clone(),

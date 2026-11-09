@@ -90,6 +90,14 @@ fn exact_signed_packet_rechecks_and_substitutions_refuse() {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let original = fixture();
+            let stored: serde_json::Value =
+                serde_json::from_slice(include_bytes!("../../fixtures/equipment.signed.json"))
+                    .unwrap();
+            assert_eq!(
+                serde_json::to_value(&original).unwrap(),
+                stored,
+                "public browser fixture drifted"
+            );
             let checked = verify(
                 include_bytes!("../../fixtures/base.ndjson.gz"),
                 &original,

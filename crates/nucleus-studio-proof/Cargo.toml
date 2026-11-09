@@ -27,6 +27,9 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pem"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Url", "Window", "Document", "HtmlInputElement", "HtmlElement", "File", "FileList", "Response", "MessageEvent", "Worker", "WorkerOptions", "WorkerType", "DedicatedWorkerGlobalScope", "ErrorEvent", "Event", "EventTarget", "Element", "Node", "Request", "RequestInit", "RequestCredentials", "RequestRedirect", "Performance", "ReadableStream", "ReadableStreamDefaultReader"] }
 
 [profile.dev]
 debug = 0

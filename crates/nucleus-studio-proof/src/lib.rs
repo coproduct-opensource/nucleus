@@ -8,9 +8,12 @@ use serde_json::{Value, json};
 mod codec;
 pub mod envelope;
 pub mod export;
+pub mod page;
 pub mod producer;
 #[cfg(test)]
 mod tests;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 /// Compressed transport bounds do not enlarge the 16 MiB app packet limit.
 /// Malformed proof terms may trap in nanoda: browser callers must discard the
