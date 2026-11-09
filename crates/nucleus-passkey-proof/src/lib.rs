@@ -192,7 +192,7 @@ pub fn verify_assertion(
         .try_into()
         .map_err(|_| short())?;
     let sign_count = u32::from_be_bytes(counter);
-    let pk = VerifyingKey::from_public_key_pem(key.public_key)
+    let pk: ::p256::ecdsa::VerifyingKey = VerifyingKey::from_public_key_pem(key.public_key)
         .map_err(|e| Refusal::Malformed(format!("approver key: {e}")))?;
     let signature = decode("signature", &a.signature)?;
     let signature =

@@ -25,6 +25,12 @@
 //! parse ([`test_only_files`]): resolve `mod x;` to `x.rs` / `x/mod.rs`, honour
 //! `#[path]`, and evaluate the `cfg` predicate ([`Cfg::requires_test`]).
 //!
+//! Explicit, immutable, unshadowed `::p256::ecdsa::VerifyingKey` receivers are
+//! classified separately: ECDSA has no Ed25519 `verify_strict` alternative.
+//! Unknown types, aliases and opaque binding macros remain counted. This is a
+//! conservative syntax heuristic, not compiler type checking or a crypto proof.
+//! The call-conservation guard still counts these P-256 calls.
+//!
 //! Everything else is a faithful port, including the line filter's known
 //! coarseness (a line containing `//` anywhere is dropped; the inline stripper
 //! counts braces in string literals). Those are the script's semantics and the
@@ -45,6 +51,9 @@ use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{Attribute, Item, Token};
+
+#[path = "exemplar_crypto.rs"]
+mod crypto;
 
 // ── The scoreboard.json schema (unchanged from the shell script) ─────────────
 
@@ -616,9 +625,30 @@ pub fn measure(tree: &Tree) -> Result<Scoreboard> {
 
     // Rust craft
     let sigctx = re(r"(?i)sig|signature|vk|verifying|pubkey|public_key|ed25519");
+    let p256: BTreeMap<_, _> = tree
+        .files
+        .iter()
+        .map(|(path, source)| (path.as_str(), crypto::explicit_p256(source)))
+        .collect();
+    let receiver = re(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\.verify\(");
     let permissive_verify = nt(tree, &test_only, &re(r"\.verify\("))
         .iter()
         .filter(|r| !r.contains("verify_strict") && sigctx.is_match(r))
+        .filter(|r| {
+            let mut parts = r.splitn(3, ':');
+            let path = parts.next().unwrap_or_default();
+            let _line_number = parts.next();
+            let line = parts.next().unwrap_or_default();
+            let known_p256 = line.matches(".verify(").count() == 1
+                && receiver
+                    .captures(line)
+                    .and_then(|capture| capture.get(1))
+                    .is_some_and(|name| {
+                        p256.get(path)
+                            .is_some_and(|names| names.contains(name.as_str()))
+                    });
+            !known_p256
+        })
         .count();
     let verify_calls = nt(tree, &test_only, &re(r"\.verify(_strict)?\("))
         .iter()
@@ -1090,6 +1120,27 @@ mod tests {
         // A `/tests/` path is never production.
         let b = board(&[("crates/n/tests/it.rs", "fn f() { unsafe { x() } }\n")]);
         assert_eq!(b.rust_craft.unsafe_blocks, 0);
+    }
+
+    #[test]
+    fn p256_classification_preserves_the_call_guard_and_unknowns() {
+        let p256 = "fn f(pk: ::p256::ecdsa::VerifyingKey) {\n    pk.verify(m, signature);\n}\n";
+        let b = board(&[("crates/n/src/lib.rs", p256)]);
+        assert_eq!(b.rust_craft.permissive_verify, 0);
+        assert_eq!(b.rust_craft.verify_calls_guard, 1);
+        for source in [
+            p256.replace(
+                "::p256::ecdsa::VerifyingKey",
+                "::ed25519_dalek::VerifyingKey",
+            ),
+            p256.replace("pk: ", "mut pk: "),
+            p256.replace("    pk.verify", "    let pk = other;\n    pk.verify"),
+            p256.replace("    pk.verify", "    opaque!();\n    pk.verify"),
+        ] {
+            let b = board(&[("crates/n/src/lib.rs", &source)]);
+            assert_eq!(b.rust_craft.permissive_verify, 1);
+            assert_eq!(b.rust_craft.verify_calls_guard, 1);
+        }
     }
 
     #[test]
