@@ -19,6 +19,11 @@ sha2 = "0.10"
 hex = "0.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 nanoda_lib = { git = "https://github.com/coproduct-opensource/nanoda", rev = "6ba649836ff52755d77bbe5bc732a129b7173486" }
+nucleus-passkey-proof = { path = "../nucleus-passkey-proof" }
+base64 = "0.23"
+
+[dev-dependencies]
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pem"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"

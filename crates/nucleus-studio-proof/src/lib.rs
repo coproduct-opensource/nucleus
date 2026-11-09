@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 mod codec;
+pub mod envelope;
 pub mod export;
 pub mod producer;
 #[cfg(test)]
@@ -57,9 +58,29 @@ pub fn check_studio_change(
 
 pub const MAX_PACKET_BYTES: usize = 16 * 1024 * 1024;
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn check_signed_studio_change(
+    base_gzip: &[u8],
+    envelope_json: &[u8],
+    expected_origin: &str,
+    expected_rp_id: &str,
+) -> Result<String, wasm_bindgen::JsValue> {
+    let checked = envelope::verify_bytes(
+        base_gzip,
+        envelope_json,
+        envelope::Context {
+            origin: expected_origin,
+            rp_id: expected_rp_id,
+        },
+    )
+    .map_err(|e| wasm_bindgen::JsValue::from_str(&e))?;
+    serde_json::to_string(&checked).map_err(|e| wasm_bindgen::JsValue::from_str(&e.to_string()))
+}
+
 /// Public contracts and captured authority hashes; never business records.
 /// Literal decoding is a wire boundary; Lean checks visible recipe meaning.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Packet {
     pub old_recipe: Value,
@@ -75,7 +96,39 @@ pub fn canonical_packet(bytes: &[u8]) -> Result<String, String> {
         return Err("packet exceeds 16 MiB".into());
     }
     let packet: Packet = serde_json::from_slice(bytes).map_err(|e| format!("packet: {e}"))?;
-    serde_jcs::to_string(&packet).map_err(|e| format!("canonical packet: {e}"))
+    let value = serde_json::to_value(&packet).map_err(|e| format!("packet: {e}"))?;
+    String::from_utf8(canonical_bytes(&value)?).map_err(|e| format!("canonical packet: {e}"))
+}
+
+/// This protocol's numeric fields are natural safe integers. Reject values
+/// before JCS can round them into a different contract or signed subject.
+pub fn canonical_bytes(value: &Value) -> Result<Vec<u8>, String> {
+    fn check(value: &Value) -> Result<(), String> {
+        match value {
+            Value::Number(n) => {
+                let n = n
+                    .as_u64()
+                    .ok_or("natural integer required for canonical commitment")?;
+                if n > 9_007_199_254_740_991 {
+                    return Err("integer exceeds canonical commitment range".into());
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    check(value)?;
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values() {
+                    check(value)?;
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::String(_) => {}
+        }
+        Ok(())
+    }
+    check(value)?;
+    serde_jcs::to_vec(value).map_err(|e| format!("canonical commitment: {e}"))
 }
 
 fn lean_string(text: &str) -> String {

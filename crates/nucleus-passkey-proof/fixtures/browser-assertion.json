@@ -1,0 +1,18 @@
+{
+  "key": {
+    "public_key": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE0UVd80xCmq64dyy2vuYyOLv3dfrD\nn3Q08qt6z2Hde9CdfzRsXC1ywrPVafXXgcigizZKnM02VA4M9tl1EzN5bg==\n-----END PUBLIC KEY-----\n",
+    "rp_id": "localhost",
+    "origin": "http://localhost:4040",
+    "credential_id": "_5i-T9M1xuVmgDuTabalRAv-C_FuOCPKvxISEMiW0-E"
+  },
+  "challenge_hex": "32bf65c3a197b13a7f37a8a2c1f5d7a3af00b770b084e41a9355b8bbdc4ebb96",
+  "assertion": {
+    "credential_id": "_5i-T9M1xuVmgDuTabalRAv-C_FuOCPKvxISEMiW0-E",
+    "authenticator_data": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAg",
+    "client_data_json": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiTXI5bHc2R1hzVHBfTjZpaXdmWFhvNjhBdDNDd2hPUWFrMVc0dTl4T3U1WSIsIm9yaWdpbiI6Imh0dHA6Ly9sb2NhbGhvc3Q6NDA0MCIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+    "signature": "MEUCICrqt3fJAbSJKwxvhPGTNfwiY989kH7xyJOJ_oSyl7OcAiEAinuzmPLhfgQtNh8HhAwuPpgAHyVuoukkA7XC_3lzxPM",
+    "user_handle": "PZebDNqVSTWIlOCVkNbpdg"
+  },
+  "sign_count": 2,
+  "kid": "aa7741504ab58770"
+}
