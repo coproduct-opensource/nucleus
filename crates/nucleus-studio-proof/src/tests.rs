@@ -99,6 +99,12 @@ fn wire_shape_refuses_unknown_fields_and_lean_source_injection_is_quoted() {
         .as_object_mut()
         .unwrap()
         .remove("unreadPolicy");
+    packet["newRecipe"]["unreadPolicy"] = serde_json::json!("allow");
+    assert!(crate::witness_source(&serde_json::to_vec(&packet).unwrap()).is_err());
+    packet["newRecipe"]
+        .as_object_mut()
+        .unwrap()
+        .remove("unreadPolicy");
     packet["authorityBefore"] = serde_json::json!("\"\naxiom forged : False\n");
     let source = crate::witness_source(&serde_json::to_vec(&packet).unwrap()).unwrap();
     assert_eq!(

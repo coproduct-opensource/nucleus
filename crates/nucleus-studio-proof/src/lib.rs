@@ -108,7 +108,32 @@ pub fn witness_source(packet: &[u8]) -> Result<String, String> {
     ))
 }
 
+fn only_keys(value: &Value, allowed: &[&str]) -> Result<(), String> {
+    let object = value.as_object().ok_or("object required")?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err("unknown recipe field".into());
+    }
+    Ok(())
+}
+
 fn visible(recipe: &Value) -> Result<Value, String> {
+    only_keys(
+        recipe,
+        &[
+            "slug",
+            "title",
+            "category",
+            "description",
+            "record_name",
+            "prefix",
+            "pattern",
+            "fields",
+            "stages",
+            "checks",
+            "accent",
+            "sample",
+        ],
+    )?;
     if recipe["pattern"] != "equipment"
         || recipe["stages"] != json!(["available", "checked_out"])
         || recipe["checks"] != json!([])
@@ -124,6 +149,15 @@ fn visible(recipe: &Value) -> Result<Value, String> {
     let mut names = std::collections::BTreeSet::new();
     let mut typed = vec![];
     for field in fields {
+        only_keys(field, &["key", "label", "kind", "help"])?;
+        only_keys(
+            &field["kind"],
+            if field["kind"]["type"] == "choice" {
+                &["type", "options"]
+            } else {
+                &["type"]
+            },
+        )?;
         let key = field["key"].as_str().ok_or("field key required")?;
         let label = field["label"].as_str().ok_or("field label required")?;
         let kind = field["kind"]["type"]
