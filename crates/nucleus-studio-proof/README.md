@@ -176,6 +176,15 @@ be substituted for the version-2 approved-change envelope. The same definition
 evidence may remain applicable after Keep only when the blueprint and contract
 commitments still match. Storage correspondence and the caller's reviewed
 subject remain separate trust boundaries. The service producer and Keep UI
-wiring are not yet implemented for this purpose. Tests exercise the actual
+wiring are not yet implemented for this purpose. The pinned child now accepts
+`studio-proof-certify --definition BLUEPRINT_SHA256 CONTRACT_SHA256`, reads an
+unproved definition certificate on bounded stdin, and returns
+`{certificate, checked}` only after producing and independently rechecking its
+proof. Existing `ORIGIN RP_ID` mode still requires a signed change envelope.
+The process regression checks exact retained input, independently rechecks the
+returned proof, and refuses wrong blueprint/contract commitments, an already
+proved input, and definition-only input presented as an approved change.
+The release process regression passes in 3.73 seconds, including the second
+independent verification. Tests exercise the actual
 producer and independent kernel; disabling the reviewed-hash comparison admits
 a substituted blueprint and makes the regression fail.
