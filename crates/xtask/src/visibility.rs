@@ -71,6 +71,9 @@ const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const DECLARED_SATELLITES: &[&str] = &[
     "crates/nucleus-decision-protocol/fuzz",
     "crates/nucleus-egress-proxy/fuzz",
+    // Offline native/Wasm checking must build without the runtime workspace.
+    "crates/nucleus-passkey-proof",
+    "crates/nucleus-studio-proof",
     "crates/portcullis-zkvm-guest",
     "examples/a2a-server",
     "examples/marketplace-live",
@@ -119,9 +122,34 @@ const PUBLIC_GIT_UPSTREAMS: &[(&str, &str)] = &[
     // there is no crates.io form of this dependency to move to. Each of the eight
     // `tools/nucleus-*-lint` satellites pins the same rev.
     ("clippy_utils", "https://github.com/rust-lang/rust-clippy"),
+    // Public independent Lean kernel, immutable rev in the checker manifest.
+    (
+        "nanoda_lib",
+        "https://github.com/coproduct-opensource/nanoda",
+    ),
+    // Pinned upstream permits patched libsqlite3-sys; released SQLx 0.9 does not.
+    ("sqlx", SQLX),
+    ("sqlx-core", SQLX),
+    ("sqlx-macros", SQLX),
+    ("sqlx-macros-core", SQLX),
+    ("sqlx-mysql", SQLX),
+    ("sqlx-postgres", SQLX),
+    ("sqlx-sqlite", SQLX),
 ];
 
 const DELEGATION_CALC: &str = "https://github.com/coproduct-opensource/delegation_calc.git";
+const SQLX: &str = "https://github.com/launchbadge/sqlx";
+
+fn public_git_source(name: &str, source: &str) -> bool {
+    source
+        .strip_prefix("git+")
+        .and_then(|u| u.split(['?', '#']).next())
+        .is_some_and(|u| {
+            PUBLIC_GIT_UPSTREAMS
+                .iter()
+                .any(|(n, url)| *n == name && *url == u)
+        })
+}
 
 /// Why one dependency declaration is refused.
 #[derive(Debug, PartialEq, Eq)]
@@ -346,12 +374,7 @@ pub fn check(root: &Path) -> Result<()> {
             None | Some(CRATES_IO) => {}
             // The same enumerated public upstreams the manifest sweep allows. Matched on the
             // URL cargo records, which carries the `?rev=` and `#sha` the manifest pinned.
-            Some(g)
-                if g.strip_prefix("git+").is_some_and(|u| {
-                    PUBLIC_GIT_UPSTREAMS
-                        .iter()
-                        .any(|(n, url)| n == name && u.starts_with(url))
-                }) => {}
+            Some(g) if public_git_source(name, g) => {}
             Some(other) => {
                 println!("  FAIL  {name} resolves to {other}");
                 println!(
@@ -400,8 +423,8 @@ pub fn check(root: &Path) -> Result<()> {
         bail!("{failures} dependency declaration(s) reach outside the public world");
     }
     println!(
-        "ok: {} package(s) resolved, all crates.io or in-tree; {} manifest(s) across {} \
-         workspace(s) declare no git, alternate-registry or escaping-path dependency",
+        "ok: {} resolved package(s) use crates.io, in-tree or enumerated public sources; \
+         {} manifest(s) across {} workspace(s) declare no unlisted source or escaping path",
         sources.len(),
         all.len(),
         found.len() + 1
@@ -470,6 +493,23 @@ mod tests {
     fn an_alternate_registry_is_refused() {
         let r = refuse("[dependencies]\nfoo = { version = \"1\", registry = \"internal\" }\n");
         assert!(matches!(r[0].1, Verdict::Registry(_)), "{r:?}");
+    }
+
+    #[test]
+    fn public_git_graph_requires_the_exact_repository_not_a_prefix() {
+        for (name, url) in PUBLIC_GIT_UPSTREAMS {
+            assert!(public_git_source(name, &format!("git+{url}?rev=abc#abc")));
+            for suffix in ["-private", "/private", ".attacker.invalid"] {
+                assert!(!public_git_source(
+                    name,
+                    &format!("git+{url}{suffix}?rev=abc#abc")
+                ));
+            }
+            assert!(!public_git_source(
+                "another-crate",
+                &format!("git+{url}?rev=abc#abc")
+            ));
+        }
     }
 
     #[test]

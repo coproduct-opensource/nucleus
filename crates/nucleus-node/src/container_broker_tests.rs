@@ -173,7 +173,12 @@ mod live {
     /// A container node with one upstream in its registry, whose credential is
     /// in the node's environment under `var`.
     fn node(upstream: &MockServer, var: &str) -> (tempfile::TempDir, crate::NodeState) {
-        let dir = tempfile::tempdir().expect("tempdir");
+        // The fixture appends a pod UUID and broker socket name. Keep its
+        // private root short enough for the Unix socket path bound on macOS.
+        let dir = tempfile::Builder::new()
+            .prefix("ncb-")
+            .tempdir_in("/tmp")
+            .expect("short private tempdir");
         let registry = dir.path().join("upstreams.toml");
         std::fs::write(
             &registry,
