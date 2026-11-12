@@ -125,10 +125,10 @@ def exposure.should_gate
     else ok false
 
 /-- [nucleus_ifc_kernel::exposure::decide_pure]:
-    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 209:0-226:1
+    Source: 'crates/nucleus-ifc-kernel/src/exposure.rs', lines 214:0-231:1
     Visibility: public -/
 def exposure.decide_pure
-  (level : capability_level.CapabilityLevel) (exposure : exposure.ExposureSet)
+  (level : capability_level.CapabilityLevel) (current : exposure.ExposureSet)
   (op : ifc_ops.Operation) :
   Result exposure.PureVerdict
   := do
@@ -144,7 +144,7 @@ def exposure.decide_pure
     if b1
     then ok exposure.PureVerdict.RequiresApproval
     else
-      let b2 ← exposure.should_gate exposure op
+      let b2 ← exposure.should_gate current op
       if b2
       then ok exposure.PureVerdict.GateExfil
       else ok exposure.PureVerdict.Allow
