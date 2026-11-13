@@ -72,7 +72,8 @@ impl Fixture {
         let environment = EnvironmentIdentity::of(&launched);
         let digest = "a".repeat(64);
         let claim = ExecutionClaim {
-            schema: ExecutionSchema::V1,
+            schema: ExecutionSchema::V2,
+            namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
             pod_id: POD.into(),
             source_commit: String::new(),
             source_tree: String::new(),
@@ -116,6 +117,7 @@ impl Fixture {
     /// without the field when `runtime` is `None`.
     fn admission(&self, runtime: Option<BTreeMap<String, String>>) -> serde_json::Value {
         let mut admission = serde_json::json!({
+            "namespace": {"kind": "runtime"},
             "pod_id": POD,
             "created_at_unix": now() / 1_000_000 - 60,
             "source_commit": "",
@@ -236,4 +238,17 @@ fn restating_an_injected_value_is_refused_by_name() {
     let out = fx.prepare(&fx.admission(Some(injected())), &restated);
     assert!(!out.status.success());
     assert!(stderr(&out).contains(UPSTREAM), "{}", stderr(&out));
+}
+
+/// An admission record from before `nucleus.execution.v2` has no `namespace`.
+/// It is refused by name rather than read as runtime placement, because a v2
+/// receipt binds the namespace against what this record says.
+#[test]
+fn an_admission_record_without_a_namespace_is_refused_by_name() {
+    let fx = Fixture::new();
+    let mut admission = fx.admission(Some(injected()));
+    admission.as_object_mut().unwrap().remove("namespace");
+    let out = fx.prepare(&admission, &declared());
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("namespace"), "{}", stderr(&out));
 }

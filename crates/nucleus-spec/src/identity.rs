@@ -244,6 +244,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn namespace_setup_is_part_of_the_declared_program() {
+        let mut spec = pinned(r#", "workload": {"command":"true"}"#);
+        let runtime = program_digest(&spec).unwrap();
+        spec.spec.workload.as_mut().unwrap().namespace =
+            crate::WorkloadNamespace::PrivateUserNetwork {
+                inner_uid: 0,
+                loopback: true,
+            };
+        let private_root = program_digest(&spec).unwrap();
+        assert_ne!(runtime, private_root);
+        spec.spec.workload.as_mut().unwrap().namespace =
+            crate::WorkloadNamespace::PrivateUserNetwork {
+                inner_uid: 0,
+                loopback: false,
+            };
+        assert_ne!(private_root, program_digest(&spec).unwrap());
+        spec.spec.workload.as_mut().unwrap().namespace =
+            crate::WorkloadNamespace::PrivateUserNetwork {
+                inner_uid: 1000,
+                loopback: true,
+            };
+        assert_ne!(private_root, program_digest(&spec).unwrap());
+    }
+
+    #[test]
     fn exported_artifact_paths_are_part_of_the_program_identity() {
         let mut spec =
             pinned(r#", "workload": {"command":"cargo", "artifacts":{"binary":"target/a"}}"#);

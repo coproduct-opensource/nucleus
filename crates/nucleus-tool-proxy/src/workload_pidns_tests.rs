@@ -26,6 +26,7 @@ fn admitted_with(
         command: "/bin/sh".into(),
         artifacts: Default::default(),
         args: vec!["-c".into(), script.into()],
+        namespace: nucleus_spec::WorkloadNamespace::Runtime {},
         uid: None,
         companion: None,
         // The shell's own error text is matched below.

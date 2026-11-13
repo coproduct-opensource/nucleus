@@ -113,6 +113,7 @@ pub(super) fn workload(
         );
     }
     Ok(WorkloadSpec {
+        namespace: nucleus_spec::WorkloadNamespace::Runtime {},
         command,
         args,
         env: BTreeMap::new(),

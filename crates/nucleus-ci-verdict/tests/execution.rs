@@ -110,7 +110,8 @@ fn artifact_bytes_names_paths_and_consumption_deadline_are_checked() {
 
 fn claim() -> ExecutionClaim {
     ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1".into(),
         source_commit: "commit-1".into(),
         source_tree: "tree-1".into(),
@@ -267,6 +268,7 @@ fn sign(claim: &ExecutionClaim, key: &SigningKey) -> Receipt {
 
 fn expected(key: &[u8; 32]) -> ExpectedExecution<'_> {
     ExpectedExecution {
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1",
         source_commit: "commit-1",
         source_tree: "tree-1",
@@ -281,6 +283,199 @@ fn expected(key: &[u8; 32]) -> ExpectedExecution<'_> {
         issued_not_before_micros: 100,
         issued_not_after_micros: 200,
     }
+}
+
+#[test]
+fn signed_namespace_setup_must_match_independent_expectation() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut expected = expected(&public);
+    expected.namespace = NamespaceSetup::PrivateUserNetwork {
+        outer_uid: 65534,
+        inner_uid: 1000,
+        loopback: true,
+    };
+    let mut c = claim();
+    c.namespace = expected.namespace;
+    assert!(verify_execution(&sign(&c, &key), &expected).is_ok());
+    for namespace in [
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 1000,
+            loopback: false,
+        },
+        NamespaceSetup::Runtime {},
+        NamespaceSetup::PrivateNetwork {},
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65533,
+            inner_uid: 1000,
+            loopback: true,
+        },
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 0,
+            loopback: true,
+        },
+        NamespaceSetup::Unrecorded {},
+    ] {
+        c.namespace = namespace;
+        assert_eq!(
+            verify_execution(&sign(&c, &key), &expected).unwrap_err(),
+            ExecutionError::Binding("namespace")
+        );
+    }
+    expected.namespace = NamespaceSetup::Unrecorded {};
+    c.namespace = NamespaceSetup::Unrecorded {};
+    assert_eq!(
+        verify_execution(&sign(&c, &key), &expected).unwrap_err(),
+        ExecutionError::Binding("namespace")
+    );
+}
+
+#[test]
+fn legacy_or_missing_namespace_evidence_cannot_satisfy_current_acceptance() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut legacy = claim();
+    legacy.schema = ExecutionSchema::V1;
+    assert_eq!(
+        verify_execution(&sign(&legacy, &key), &expected(&public)).unwrap_err(),
+        ExecutionError::Binding("schema")
+    );
+    let mut body = serde_json::to_value(claim()).unwrap();
+    body.as_object_mut().unwrap().remove("namespace");
+    let parsed: ExecutionClaim = serde_json::from_value(body.clone()).unwrap();
+    assert_eq!(parsed.namespace, NamespaceSetup::Unrecorded {});
+    assert_eq!(
+        verify_execution(&sign_body(body, &key, 150), &expected(&public)).unwrap_err(),
+        ExecutionError::Binding("namespace")
+    );
+}
+
+/// The namespace is inside the signature: a signed `runtime` receipt edited to
+/// claim any other setup (or with the field removed) no longer authenticates,
+/// even when the expectation is edited to match.
+#[test]
+fn a_tampered_namespace_fails_authentication() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let signed = sign(&claim(), &key);
+    assert!(verify_execution(&signed, &expected(&public)).is_ok());
+    for forged in [
+        NamespaceSetup::PrivateNetwork {},
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 0,
+            loopback: false,
+        },
+        NamespaceSetup::Unrecorded {},
+    ] {
+        let mut body = serde_json::to_value(claim()).unwrap();
+        body["namespace"] = serde_json::to_value(forged).unwrap();
+        let mut receipt = signed.clone();
+        receipt.projections = vec![Projection::Ci(body)];
+        let mut wanted = expected(&public);
+        wanted.namespace = forged;
+        assert!(
+            matches!(
+                verify_execution(&receipt, &wanted),
+                Err(ExecutionError::Authentication(_))
+            ),
+            "{forged:?}"
+        );
+    }
+    let mut body = serde_json::to_value(claim()).unwrap();
+    body.as_object_mut().unwrap().remove("namespace");
+    let mut receipt = signed.clone();
+    receipt.projections = vec![Projection::Ci(body)];
+    assert!(matches!(
+        verify_execution(&receipt, &expected(&public)),
+        Err(ExecutionError::Authentication(_))
+    ));
+}
+
+/// The sandbox tier is decided before the schema and namespace bindings: a
+/// shared-UID run is refused as that, whether its body is v1 or v2.
+#[test]
+fn the_tier_is_refused_ahead_of_the_schema_and_namespace() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    for schema in [ExecutionSchema::V1, ExecutionSchema::V2] {
+        for namespace in [NamespaceSetup::Runtime {}, NamespaceSetup::Unrecorded {}] {
+            let mut insecure = claim();
+            insecure.schema = schema;
+            insecure.namespace = namespace;
+            insecure.sandbox_tier = SandboxTier::InsecureSharedUid;
+            assert_eq!(
+                verify_execution(&sign(&insecure, &key), &expected(&public)).unwrap_err(),
+                ExecutionError::InsecureSharedUid,
+                "{schema:?} {namespace:?}"
+            );
+        }
+    }
+}
+
+/// A v1 body exactly as a node before this schema signed it: no `namespace`
+/// key. It verifies as before for a relying party that states no namespace
+/// expectation, and then reports `unrecorded`, never `runtime`. Against any
+/// recorded expectation it is refused by schema. A v1 body that does carry a
+/// recorded namespace is not one any v1 node signed, and is refused.
+#[test]
+fn a_v1_receipt_verifies_only_without_a_namespace_expectation_and_says_nothing() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut body = serde_json::to_value(claim()).unwrap();
+    body["schema"] = serde_json::json!("nucleus.execution.v1");
+    body.as_object_mut().unwrap().remove("namespace");
+    let v1 = sign_body(body.clone(), &key, 150);
+    let mut unstated = expected(&public);
+    unstated.namespace = NamespaceSetup::Unrecorded {};
+    let verified = verify_execution(&v1, &unstated).unwrap();
+    assert_eq!(verified.claim().schema, ExecutionSchema::V1);
+    assert_eq!(verified.claim().namespace, NamespaceSetup::Unrecorded {});
+    for recorded in [
+        NamespaceSetup::Runtime {},
+        NamespaceSetup::PrivateNetwork {},
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 0,
+            loopback: true,
+        },
+    ] {
+        let mut wanted = expected(&public);
+        wanted.namespace = recorded;
+        assert_eq!(
+            verify_execution(&v1, &wanted).unwrap_err(),
+            ExecutionError::Binding("schema"),
+            "{recorded:?}"
+        );
+    }
+    body["namespace"] = serde_json::json!({"kind": "runtime"});
+    assert_eq!(
+        verify_execution(&sign_body(body, &key, 150), &unstated).unwrap_err(),
+        ExecutionError::Binding("namespace")
+    );
+}
+
+/// A v2 receipt needs a recorded expectation: one that states no namespace
+/// requirement cannot accept it, whatever it carries.
+#[test]
+fn a_v2_receipt_needs_a_recorded_namespace_expectation() {
+    use nucleus_ci_verdict::execution::NamespaceSetup;
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut unstated = expected(&public);
+    unstated.namespace = NamespaceSetup::Unrecorded {};
+    assert_eq!(
+        verify_execution(&sign(&claim(), &key), &unstated).unwrap_err(),
+        ExecutionError::Binding("namespace")
+    );
+    assert!(verify_execution(&sign(&claim(), &key), &expected(&public)).is_ok());
 }
 
 #[test]
