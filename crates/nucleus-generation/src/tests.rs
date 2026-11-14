@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use nucleus_ci_verdict::execution::{
-    ArtifactIdentity, Backend, ExecutionClaim, ExecutionSchema, NodePlatform, RecordedExecution,
-    SandboxTier,
+    ArtifactIdentity, Backend, ExecutionClaim, ExecutionSchema, NamespaceSetup, NodePlatform,
+    RecordedExecution, SandboxTier,
 };
 use nucleus_receipt::{Projection, Receipt, Session};
 use nucleus_signed_decision::{
@@ -93,6 +93,9 @@ fn claim(gate: &str, commit: &str, tree: &str, exit: Option<i32>) -> ExecutionCl
         architecture: "x86_64".into(),
         backend: Backend::Firecracker,
         uid_isolated: true,
+        // A v1 body predates the field and reads as `unrecorded`; it verifies only against an
+        // expectation that is `unrecorded` too (nucleus-ci-verdict `namespace_binding`).
+        namespace: NamespaceSetup::Unrecorded {},
         exit_code: exit,
         stdout_sha256: DIGEST.into(),
         stderr_sha256: DIGEST.into(),
@@ -110,6 +113,7 @@ fn claim(gate: &str, commit: &str, tree: &str, exit: Option<i32>) -> ExecutionCl
 
 fn expectation(c: &ExecutionClaim, key: &SigningKey) -> RecordedExecution {
     RecordedExecution {
+        namespace: NamespaceSetup::Unrecorded {},
         pod_id: c.pod_id.clone(),
         source_commit: c.source_commit.clone(),
         source_tree: c.source_tree.clone(),
