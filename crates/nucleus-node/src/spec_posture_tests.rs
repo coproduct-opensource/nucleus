@@ -413,6 +413,32 @@ fn a_spec_cannot_choose_its_own_mediation() {
         .expect("network label is admitted here");
 }
 
+/// The wire type names a private user+network namespace, but this runtime performs no trusted
+/// namespace setup. A spec asking for one is refused at create, naming the field; it is never
+/// admitted and run in the runtime's namespaces. Omission and an explicit `runtime` are admitted.
+#[test]
+fn a_workload_namespace_this_runtime_cannot_enforce_is_refused() {
+    let workload = |namespace: &str| {
+        spec(&format!(
+            r#"{{"workload":{{"command":"/bin/true"{namespace}}}}}"#
+        ))
+    };
+    for request in [
+        r#","namespace":{"kind":"private_user_network","inner_uid":0,"loopback":false}"#,
+        r#","namespace":{"kind":"private_user_network","inner_uid":1000,"loopback":true}"#,
+    ] {
+        let e = refused(&workload(request));
+        assert!(
+            matches!(e, PostureRefused::WorkloadNamespace(_)),
+            "{request}: {e:?}"
+        );
+        let msg = ApiError::from(e).to_string();
+        assert!(msg.contains("workload.namespace"), "names the field: {msg}");
+    }
+    admitted(&workload("")).expect("omitted namespace is runtime placement");
+    admitted(&workload(r#","namespace":{"kind":"runtime"}"#)).expect("explicit runtime placement");
+}
+
 /// A spec with none of these fields is admitted unchanged: the default is not a refusal.
 #[test]
 fn a_minimal_spec_is_admitted() {
@@ -455,6 +481,23 @@ async fn create_refuses_a_hostile_posture_before_anything_is_spawned() {
         panic!("a pod larger than the node's ceiling must be refused at create");
     };
     assert!(msg.contains("resources.memory_mib 1048576"), "{msg}");
+    assert!(st.pods.lock().await.is_empty(), "nothing was registered");
+
+    // A namespace placement this runtime cannot enforce, through the same create path.
+    let private = spec(
+        r#"{"workload":{"command":"/bin/true","namespace":{"kind":"private_user_network","inner_uid":1000,"loopback":true}}}"#,
+    );
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let Err(ApiError::InvalidSpec(msg)) =
+        crate::create_pod_internal(&st, private, None, None, root).await
+    else {
+        panic!("a private namespace request must be refused at create");
+    };
+    assert!(msg.contains("workload.namespace"), "{msg}");
     assert!(st.pods.lock().await.is_empty(), "nothing was registered");
 }
 

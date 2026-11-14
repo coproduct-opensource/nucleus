@@ -204,6 +204,8 @@ pub(crate) struct AdmittedWorkloadPlan {
     /// Whether the spawn asks for the child's own PID namespace (#3344),
     /// decided with the confinement from the same containment.
     pids: nucleus::PidNamespace,
+    /// The namespace placement the admission decided (`WorkloadNamespace::admit`).
+    namespace: nucleus_spec::AdmittedNamespace,
     /// The exact env that will cross, already admitted. Paired with `classified`
     /// so the receipt reports the same set the admission checked.
     env: BTreeMap<String, String>,
@@ -308,6 +310,9 @@ pub(crate) struct WorkloadLaunch {
     args: Vec<String>,
     work_dir: std::path::PathBuf,
     uid: Option<u32>,
+    /// The requested placement, decided by `admit`: only runtime placement is
+    /// admitted until this runtime performs trusted namespace setup.
+    namespace: nucleus_spec::WorkloadNamespace,
     env: BTreeMap<String, String>,
     classified: Vec<ClassifiedEntry>,
     /// The child's default `HOME`, created and handed to its uid at spawn.
@@ -361,6 +366,7 @@ impl WorkloadLaunch {
             args: spec.args.clone(),
             work_dir: work_dir.to_path_buf(),
             uid: spec.uid,
+            namespace: spec.namespace,
             env,
             classified,
             home: workload_home(work_dir),
@@ -401,6 +407,8 @@ impl WorkloadLaunch {
             args: spec.args.clone(),
             work_dir: work_dir.to_path_buf(),
             uid: Some(spec.uid),
+            // A companion has no namespace request; it runs where the runtime does.
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             env,
             classified,
             home,
@@ -445,6 +453,11 @@ impl WorkloadLaunch {
         let confinement =
             nucleus::ChildConfinement::workload(containment, self.uid, opt_in, landlock)
                 .map_err(|e| Refused(e.to_string()))?;
+        // The node refuses a namespace request it cannot enforce at create;
+        // this is the same decider where the workload is actually launched, so
+        // a spec that reached the proxy another way is refused here too. The
+        // witness is what the receipt records: never the request.
+        let namespace = self.namespace.admit().map_err(|e| Refused(e.to_string()))?;
 
         // Reserved-namespace fail-safe — closes the `_ => OrdinaryData`
         // fallthrough in `env_classifier`. A `NUCLEUS_*` key the classifier does
@@ -515,6 +528,7 @@ impl WorkloadLaunch {
             work_dir: self.work_dir,
             confinement,
             pids: nucleus::PidNamespace::for_workload(containment),
+            namespace,
             env: self.env,
             classified: self.classified,
             home: self.home,
@@ -762,6 +776,11 @@ pub(crate) struct LaunchReceipt {
     /// Commit the resolved values actually passed to env_clear/env, separately
     /// from the authority inventory. Never expose those values in the receipt.
     pub(crate) environment: nucleus_spec::workload_result::EnvironmentIdentity,
+    /// The namespace setup the admission decided, read off the plan's
+    /// [`nucleus_spec::AdmittedNamespace`]. Not in the hashed preimage: the
+    /// signed execution claim (`nucleus.execution.v2`) carries it directly,
+    /// and this runtime admits only runtime placement.
+    pub(crate) namespace: nucleus_spec::NamespaceSetup,
 }
 
 /// How the workload's filesystem was held (#2696 P3c). Three values for the
@@ -913,6 +932,7 @@ impl LaunchReceipt {
             child_pid,
             hash,
             environment: nucleus_spec::workload_result::EnvironmentIdentity::of(&plan.env),
+            namespace: plan.namespace.setup(),
         }
     }
 }
@@ -1331,10 +1351,41 @@ mod tests {
             args: vec!["--flag".into()],
             uid: None,
             companion: None,
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             env: env
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+        }
+    }
+
+    /// This runtime performs no trusted namespace setup, so the launch admits
+    /// only runtime placement and records `Runtime` off the admission witness.
+    /// A private namespace request is refused by name where the workload is
+    /// launched, not run in the runtime's namespaces.
+    #[test]
+    fn launch_admits_only_runtime_namespace_placement() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
+            .admit(HARNESS, OPTED_IN, NO_WAIVER)
+            .expect("runtime placement is admitted");
+        assert_eq!(
+            runtime.namespace.setup(),
+            nucleus_spec::NamespaceSetup::Runtime {}
+        );
+        for (inner_uid, loopback) in [(0, false), (1000, true)] {
+            let mut spec = spec_with(&[]);
+            spec.namespace = nucleus_spec::WorkloadNamespace::PrivateUserNetwork {
+                inner_uid,
+                loopback,
+            };
+            let refused = WorkloadLaunch::build(&spec, "u", dir.path(), &[])
+                .admit(HARNESS, OPTED_IN, NO_WAIVER)
+                .expect_err("a private namespace this runtime cannot set up");
+            assert!(
+                refused.0.contains("workload namespace") && refused.0.contains("refused"),
+                "refused by name: {refused}"
+            );
         }
     }
 
@@ -1817,6 +1868,7 @@ mod tests {
             command: "/bin/sh".into(),
             artifacts: Default::default(),
             args: vec!["-c".into(), script],
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             uid: None,
             env: std::collections::BTreeMap::new(),
             companion: None,
@@ -2255,6 +2307,7 @@ mod companion_tests {
             args: vec![],
             env: BTreeMap::new(),
             artifacts: BTreeMap::new(),
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             uid: Some(WORKLOAD_UID),
             companion: Some(companion(COMPANION_UID)),
         }
