@@ -148,6 +148,11 @@ pub(crate) enum PostureRefused {
          own network (`{node}`), never a different one such as `host`"
     )]
     ContainerNetwork { value: String, node: String },
+    /// A workload namespace placement this runtime cannot enforce. Refused
+    /// rather than run in the runtime's namespaces under a receipt naming the
+    /// requested one.
+    #[error("workload.namespace is refused: {0}")]
+    WorkloadNamespace(#[from] nucleus_spec::NamespaceRefused),
     /// A size above the node's per-pod ceilings, or a cgroup setting above the node's limit.
     #[error(transparent)]
     Resources(#[from] ResourceRefused),
@@ -182,6 +187,12 @@ pub(crate) fn admit(
         }
     }
     let inner = &spec.spec;
+    if let Some(workload) = &inner.workload {
+        // The witness is dropped: the node only refuses here. The supervisor
+        // admits again where the workload is launched, and the claim is
+        // checked against the same decider before it is signed.
+        let _ = workload.namespace.admit()?;
+    }
     let audit = sinks.resolve_for(spec)?;
     if let Some(vsock) = &inner.vsock
         && vsock.guest_cid != GUEST_CID

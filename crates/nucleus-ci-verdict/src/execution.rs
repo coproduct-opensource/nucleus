@@ -8,6 +8,9 @@ use nucleus_receipt::{Projection, RECEIPT_VERSION, Receipt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod namespace;
+pub use namespace::NamespaceSetup;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIdentity {
@@ -20,6 +23,8 @@ pub struct ArtifactIdentity {
 pub enum ExecutionSchema {
     #[serde(rename = "nucleus.execution.v1")]
     V1,
+    #[serde(rename = "nucleus.execution.v2")]
+    V2,
 }
 
 /// Taken from the host's spawned driver, never from pod labels.
@@ -46,6 +51,10 @@ pub struct ExecutionClaim {
     pub architecture: String,
     pub backend: Backend,
     pub uid_isolated: bool,
+    /// Namespace setup the runtime recorded for the launch (v2). A v1 body has
+    /// no such key and reads as `unrecorded`, never as `runtime`.
+    #[serde(default = "NamespaceSetup::not_recorded")]
+    pub namespace: NamespaceSetup,
     pub exit_code: Option<i32>,
     pub stdout_sha256: String,
     pub stderr_sha256: String,
@@ -161,6 +170,11 @@ impl ExecutionClaim {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionExpectation<S, A, K> {
+    /// The setup the relying party requires, from its own record of what it
+    /// asked for. Omitted reads as `unrecorded`: no namespace requirement,
+    /// which only a v1 receipt satisfies (see `verify_execution`).
+    #[serde(default = "NamespaceSetup::not_recorded")]
+    pub namespace: NamespaceSetup,
     pub pod_id: S,
     pub source_commit: S,
     pub source_tree: S,
@@ -184,6 +198,7 @@ pub type RecordedExecution = ExecutionExpectation<String, BTreeMap<String, Strin
 impl RecordedExecution {
     pub fn as_expected(&self) -> ExpectedExecution<'_> {
         let Self {
+            namespace,
             pod_id,
             source_commit,
             source_tree,
@@ -199,6 +214,7 @@ impl RecordedExecution {
             issued_not_after_micros,
         } = self;
         ExpectedExecution {
+            namespace: *namespace,
             pod_id,
             source_commit,
             source_tree,
@@ -320,13 +336,53 @@ impl std::fmt::Display for ExecutionError {
 
 impl std::error::Error for ExecutionError {}
 
+/// What a signed body says about namespace setup, against what the relying
+/// party independently expects. One decider, exhaustive over both, no `_` arm.
+///
+/// - `nucleus.execution.v2` must carry a recorded setup equal to a recorded
+///   expectation. `unrecorded` on either side refuses.
+/// - `nucleus.execution.v1` predates the field. It verifies, as it did before
+///   v2 existed, only for a relying party that states no namespace expectation
+///   (`unrecorded`, the value an expectation without the field reads as), and
+///   the verified claim then reports `unrecorded`: it says nothing about where
+///   the workload ran. Against any recorded expectation, `runtime` included,
+///   it is refused by schema, so absence is never read as runtime placement.
+fn namespace_binding(
+    schema: ExecutionSchema,
+    signed: NamespaceSetup,
+    expected: NamespaceSetup,
+) -> Result<(), ExecutionError> {
+    let recorded = |setup: NamespaceSetup| match setup {
+        NamespaceSetup::Unrecorded {} => false,
+        NamespaceSetup::Runtime {}
+        | NamespaceSetup::PrivateNetwork {}
+        | NamespaceSetup::PrivateUserNetwork {
+            outer_uid: _,
+            inner_uid: _,
+            loopback: _,
+        } => true,
+    };
+    match (schema, recorded(expected)) {
+        (ExecutionSchema::V1, false) if !recorded(signed) => Ok(()),
+        (ExecutionSchema::V1, false) => Err(ExecutionError::Binding("namespace")),
+        (ExecutionSchema::V1, true) => Err(ExecutionError::Binding("schema")),
+        (ExecutionSchema::V2, false) => Err(ExecutionError::Binding("namespace")),
+        (ExecutionSchema::V2, true) if signed == expected => Ok(()),
+        (ExecutionSchema::V2, true) => Err(ExecutionError::Binding("namespace")),
+    }
+}
+
 /// Authenticate first, then require exact run and actual protected microVM
 /// execution. This does not turn an observed exit into a complete build verdict.
+///
+/// Order after authentication: the sandbox tier, then the schema and namespace
+/// binding (`namespace_binding`), then the remaining field bindings.
 pub fn verify_execution(
     receipt: &Receipt,
     expected: &ExpectedExecution<'_>,
 ) -> Result<VerifiedExecution, ExecutionError> {
     let ExpectedExecution {
+        namespace: expected_namespace,
         pod_id,
         source_commit,
         source_tree,
@@ -391,7 +447,7 @@ pub fn verify_execution(
     // Every field must be considered here when the wire body grows. Exit is
     // observed data, deliberately not a condition for authenticating a failure.
     let ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema,
         pod_id: actual_pod,
         source_commit: actual_source_commit,
         source_tree: actual_source_tree,
@@ -400,6 +456,7 @@ pub fn verify_execution(
         architecture: actual_arch,
         backend,
         uid_isolated,
+        namespace,
         exit_code: _,
         stdout_sha256,
         stderr_sha256,
@@ -410,10 +467,13 @@ pub fn verify_execution(
         node_platform,
         sandbox_tier,
     } = &claim;
+    // The tier is checked first: a shared-UID run is refused for what it is,
+    // whatever schema or namespace it claims.
     match sandbox_tier {
         SandboxTier::Driver => {}
         SandboxTier::InsecureSharedUid => return Err(ExecutionError::InsecureSharedUid),
     }
+    namespace_binding(*schema, *namespace, *expected_namespace)?;
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),
         ("program_digest", actual_program.as_str(), *program_digest),
