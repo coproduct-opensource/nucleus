@@ -52,6 +52,13 @@ pub(super) async fn get(
         &door.to_string(),
     );
     Ok(Json(WorkloadAdmission {
+        // Read off the admission decider, never off the request: a spec this
+        // runtime cannot enforce has no admission record to publish.
+        namespace: workload
+            .namespace
+            .admit()
+            .map_err(|e| ApiError::InvalidSpec(e.to_string()))?
+            .setup(),
         pod_id: id.to_string(),
         created_at_unix: pod.created_at,
         source_commit: label("build.source.commit"),

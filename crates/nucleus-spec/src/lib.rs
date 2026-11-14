@@ -1307,6 +1307,11 @@ impl CredentialedEgressSpec {
     }
 }
 
+mod workload_namespace;
+pub use workload_namespace::{
+    AdmittedNamespace, NamespaceRefused, NamespaceSetup, WorkloadNamespace,
+};
+
 /// A process the pod runs under its own mediation.
 ///
 /// # Why the runtime starts it, rather than the image
@@ -1366,6 +1371,16 @@ pub struct WorkloadSpec {
     /// uid. See [`CompanionSpec`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion: Option<CompanionSpec>,
+    /// Namespace placement requested for the workload. Absent means
+    /// [`WorkloadNamespace::Runtime`], and the wire shape of such a spec is
+    /// unchanged. This runtime admits only `Runtime`: any other request is
+    /// refused at admission (see [`WorkloadNamespace::admit`]) until trusted
+    /// namespace setup exists to enforce it.
+    #[serde(
+        default = "WorkloadNamespace::runtime",
+        skip_serializing_if = "WorkloadNamespace::is_runtime"
+    )]
+    pub namespace: WorkloadNamespace,
 }
 
 /// Errors resolving policies.
