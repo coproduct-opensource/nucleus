@@ -201,3 +201,59 @@ past it to show the hook alone refuses (below).
 - Nothing proves the absence of a path from inner uid 0 back to outer authority beyond the steps
   above; the read-backs show the state the hook leaves, not a confinement theorem.
 - The signed claim does not state the PID namespace (above).
+
+## Validation, 2026-11-14
+
+Two throwaway VMs, both x86_64, rust 1.96.1:
+
+| VM | kernel | LSMs | user namespaces |
+|---|---|---|---|
+| Debian 12 | `6.1.0-54-cloud-amd64` (Debian 6.1.190-1) | `lockdown,capability,landlock,yama,apparmor,tomoyo,bpf` | `max_user_namespaces` 256932, `unprivileged_userns_clone` 1 |
+| Ubuntu 24.04.5 | `7.0.0-1017-gcp` | `lockdown,capability,landlock,yama,apparmor,bpf,ima,evm` | `max_user_namespaces` 238430, `unprivileged_userns_clone` 1, `apparmor_restrict_unprivileged_userns` 1 |
+
+On Debian, as root, a placed workload read back exactly this, for each inner uid and loopback
+state (`child_seccomp`):
+
+```
+inner 0, loopback false:  pid=2;uid=0,0,0,0;gid=0,0,0,0;uid_map=0,65534,1;gid_map=0,65534,1;setgroups=deny;caps=0…0/0…0/0…0/0…0;securebits=3
+inner 1001, loopback true: pid=2;uid=1001,1001,1001,1001;gid=1001,1001,1001,1001;uid_map=1001,65534,1;gid_map=1001,65534,1;setgroups=deny;caps=0…0/0…0/0…0/0…0;securebits=3
+```
+
+TCP on its own loopback worked when `loopback` was true. When it was false it failed with
+`ENETUNREACH`, the same errno #3528 measured. The runtime's own loopback listener was out of reach
+either way. A derived `web_fetch: never` still answered `EPERM`, and a further user namespace was
+`EPERM`. Through `spawn_admitted`, a guest workload placed this way was pid 2 and could not signal
+the runtime. Its launch receipt (schema 6) recorded the placement, and four placements gave four
+hashes, none equal to runtime placement's.
+
+On Ubuntu 24.04 the probe names `kernel.apparmor_restrict_unprivileged_userns is 1`. Each
+placement test asserts that refusal instead of the placement. Forced past the probe, the hook
+refused the spawn with `EPERM`, and no child ran.
+
+**Driven red first (A-19).** Each check below was broken on purpose, and the named test failed.
+Restoring the check made it pass again.
+
+| broken | red |
+|---|---|
+| `admit` accepts a private placement on a runtime-only site | `a_private_placement_is_refused_where_it_is_not_enforced` |
+| `admit` accepts an outer uid of 0 | `an_unstated_or_unmappable_identity_is_refused` |
+| `user_network_base` accepts a shared PID namespace | `every_other_placement_is_refused_by_name` |
+| `Isolation::namespace` reports `runtime` for the user-network isolation | `the_receipt_reads_both_namespaces_off_the_isolation_the_hook_runs` |
+| the init's owner check removed | `the_init_refuses_to_map_a_namespace_the_outer_uid_does_not_own` (root) |
+| the workload's read-back (maps and `setgroups`) removed | `a_grant_without_a_map_is_refused_by_the_read_back` |
+| `MSG_NOSIGNAL` removed | `a_closed_channel_is_refused_as_epipe_not_killed_by_sigpipe` |
+| the capability shed removed | the `child_seccomp` placement test: inner 0 exec'd with permitted and effective `000001ffffffffff` |
+| `lo` raised whatever was asked | the same test: `tcp` was `ok` with `loopback: false` |
+| `ns=` dropped from the launch preimage | `a_guest_workload_in_a_private_namespace_is_mapped_and_recorded`: two placements, one hash |
+| the node's claim check removed | both `the_node_signs_*` tests |
+
+**Two corrected assumptions.**
+
+- *The map read-back was one check.* Disabling only the `uid_map`/`gid_map` comparison did not
+  turn its test red. In an unmapped user namespace `/proc/self/setgroups` reads `allow`, so the
+  `setgroups` read-back alone refuses a grant with no map behind it. The red run above disables
+  both. Each of them refuses independently.
+- *The test peer could stand in for the init as written.* The first closed-channel test hung. The
+  fork copied the peer's socket end into the child, so the child never read EOF on a channel the
+  peer had closed. The production path does not have this: the workload closes the init's end
+  right after the fork. The test now closes it the same way.

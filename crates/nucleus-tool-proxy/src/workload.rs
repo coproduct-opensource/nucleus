@@ -202,10 +202,10 @@ pub(crate) struct AdmittedWorkloadPlan {
     /// line of code that could express it.
     confinement: nucleus::ChildConfinement,
     /// Whether the spawn asks for the child's own PID namespace (#3344),
-    /// decided with the confinement from the same containment.
+    /// decided with the confinement from the same containment. A private user
+    /// and network namespace (#3528) is part of `confinement`, placed there by
+    /// the admission, and needs this to be `Own`.
     pids: nucleus::PidNamespace,
-    /// The namespace placement the admission decided (`WorkloadNamespace::admit`).
-    namespace: nucleus_spec::AdmittedNamespace,
     /// The exact env that will cross, already admitted. Paired with `classified`
     /// so the receipt reports the same set the admission checked.
     env: BTreeMap<String, String>,
@@ -310,8 +310,8 @@ pub(crate) struct WorkloadLaunch {
     args: Vec<String>,
     work_dir: std::path::PathBuf,
     uid: Option<u32>,
-    /// The requested placement, decided by `admit`: only runtime placement is
-    /// admitted until this runtime performs trusted namespace setup.
+    /// The requested placement, decided by `admit` against what this
+    /// runtime's confinement can make true.
     namespace: nucleus_spec::WorkloadNamespace,
     env: BTreeMap<String, String>,
     classified: Vec<ClassifiedEntry>,
@@ -453,11 +453,21 @@ impl WorkloadLaunch {
         let confinement =
             nucleus::ChildConfinement::workload(containment, self.uid, opt_in, landlock)
                 .map_err(|e| Refused(e.to_string()))?;
-        // The node refuses a namespace request it cannot enforce at create;
-        // this is the same decider where the workload is actually launched, so
-        // a spec that reached the proxy another way is refused here too. The
-        // witness is what the receipt records: never the request.
-        let namespace = self.namespace.admit().map_err(|e| Refused(e.to_string()))?;
+        // The namespace placement (#3528), decided by the same decider the
+        // node used at create, but against what THIS runtime can make true:
+        // a private user and network namespace only on a dropped, filtered
+        // posture whose spawn makes the workload's own PID namespace, on a
+        // kernel that offers user namespaces. The admitted placement is then
+        // put into the confinement the spawn applies, so the receipt records
+        // what the hook did, never the request.
+        let pids = nucleus::PidNamespace::for_workload(containment);
+        let namespace = self
+            .namespace
+            .admit(self.uid, confinement.namespace_enforcement(pids))
+            .map_err(|e| Refused(e.to_string()))?;
+        let confinement = confinement
+            .placed(namespace, pids)
+            .map_err(|e| Refused(e.to_string()))?;
 
         // Reserved-namespace fail-safe — closes the `_ => OrdinaryData`
         // fallthrough in `env_classifier`. A `NUCLEUS_*` key the classifier does
@@ -527,8 +537,7 @@ impl WorkloadLaunch {
             args: self.args,
             work_dir: self.work_dir,
             confinement,
-            pids: nucleus::PidNamespace::for_workload(containment),
-            namespace,
+            pids,
             env: self.env,
             classified: self.classified,
             home: self.home,
@@ -537,7 +546,8 @@ impl WorkloadLaunch {
     }
 }
 
-/// OS assumptions: KB-GUEST-WORKLOAD-PIDNS and KB-LINUX-CHILD-ISOLATION;
+/// OS assumptions: KB-GUEST-WORKLOAD-PIDNS, KB-GUEST-WORKLOAD-USERNS and
+/// KB-LINUX-CHILD-ISOLATION;
 /// see docs/assumptions/kernel-behaviour.md.
 ///
 /// Spawn an admitted plan. **The only `Command::new` in the crate** — the
@@ -776,10 +786,11 @@ pub(crate) struct LaunchReceipt {
     /// Commit the resolved values actually passed to env_clear/env, separately
     /// from the authority inventory. Never expose those values in the receipt.
     pub(crate) environment: nucleus_spec::workload_result::EnvironmentIdentity,
-    /// The namespace setup the admission decided, read off the plan's
-    /// [`nucleus_spec::AdmittedNamespace`]. Not in the hashed preimage: the
-    /// signed execution claim (`nucleus.execution.v2`) carries it directly,
-    /// and this runtime admits only runtime placement.
+    /// What the hook did to the workload's user and network namespaces
+    /// (#3528), read off `hardening`, the record `apply` minted from the
+    /// isolation the hook runs. In the hashed preimage (`ns=`), and the
+    /// supervisor reports it to the node, which signs it in
+    /// `nucleus.execution.v2` only if it equals what the spec was admitted for.
     pub(crate) namespace: nucleus_spec::NamespaceSetup,
 }
 
@@ -860,7 +871,9 @@ impl LaunchReceipt {
     /// 4: the preimage gained `ws=`, how the hook holds the workspace: the
     /// Landlock write layer under `write_files: never` (#2907).
     /// 5: the preimage gained `pids=`, the child's own PID namespace (#3344).
-    const SCHEMA_VERSION: u32 = 5;
+    /// 6: the preimage gained `ns=`, the child's user and network namespaces
+    /// (#3528).
+    const SCHEMA_VERSION: u32 = 6;
 
     fn from_admitted(
         plan: &AdmittedWorkloadPlan,
@@ -899,16 +912,20 @@ impl LaunchReceipt {
             nucleus::SpawnHardening::Unhardened(_) => nucleus::PidNamespace::Shared,
         }
         .canonical();
+        // Read off `hardening` too (#3528): `runtime` unless the hook moved
+        // the child.
+        let namespace = hardening.namespace();
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|ws={workspace}|pids={pids}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|ws={workspace}|pids={pids}|ns={}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
             uid_boundary.as_str(),
             filesystem.preimage(),
+            namespace.canonical(),
         );
         for e in &env {
             preimage.push_str(&format!(
@@ -932,7 +949,7 @@ impl LaunchReceipt {
             child_pid,
             hash,
             environment: nucleus_spec::workload_result::EnvironmentIdentity::of(&plan.env),
-            namespace: plan.namespace.setup(),
+            namespace,
         }
     }
 }
@@ -1359,33 +1376,41 @@ mod tests {
         }
     }
 
-    /// This runtime performs no trusted namespace setup, so the launch admits
-    /// only runtime placement and records `Runtime` off the admission witness.
-    /// A private namespace request is refused by name where the workload is
-    /// launched, not run in the runtime's namespaces.
+    /// Where the launch cannot make a private user and network namespace (the
+    /// bare tier has no filter, `HostHardened` no PID namespace of its own),
+    /// the request is refused by name where the workload is launched, not run
+    /// in the runtime's namespaces. Runtime placement is admitted there as
+    /// before. The guest case, where it is made, is in
+    /// `workload_pidns_tests.rs`.
     #[test]
-    fn launch_admits_only_runtime_namespace_placement() {
+    fn launch_refuses_a_private_namespace_it_cannot_make() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let runtime = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
+        let _runtime = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .expect("runtime placement is admitted");
-        assert_eq!(
-            runtime.namespace.setup(),
-            nucleus_spec::NamespaceSetup::Runtime {}
-        );
-        for (inner_uid, loopback) in [(0, false), (1000, true)] {
-            let mut spec = spec_with(&[]);
-            spec.namespace = nucleus_spec::WorkloadNamespace::PrivateUserNetwork {
-                inner_uid,
-                loopback,
-            };
-            let refused = WorkloadLaunch::build(&spec, "u", dir.path(), &[])
-                .admit(HARNESS, OPTED_IN, NO_WAIVER)
-                .expect_err("a private namespace this runtime cannot set up");
-            assert!(
-                refused.0.contains("workload namespace") && refused.0.contains("refused"),
-                "refused by name: {refused}"
-            );
+        let modes: &[nucleus::ContainmentMode] = if nix_getuid() == 0 {
+            &[HARNESS, nucleus::ContainmentMode::HostHardened]
+        } else {
+            &[HARNESS]
+        };
+        for &mode in modes {
+            for (inner_uid, loopback) in [(0, false), (1000, true)] {
+                let mut spec = spec_with(&[]);
+                // Stated where the runtime can drop; a non-root harness is
+                // the bare tier, which takes no explicit uid.
+                spec.uid = (nix_getuid() == 0).then_some(nucleus::DEFAULT_CHILD_UID);
+                spec.namespace = nucleus_spec::WorkloadNamespace::PrivateUserNetwork {
+                    inner_uid,
+                    loopback,
+                };
+                let refused = WorkloadLaunch::build(&spec, "u", dir.path(), &[])
+                    .admit(mode, OPTED_IN, NO_WAIVER)
+                    .expect_err("a private namespace this runtime cannot set up");
+                assert!(
+                    refused.0.contains("workload namespace") && refused.0.contains("refused"),
+                    "{mode:?} refused by name: {refused}"
+                );
+            }
         }
     }
 

@@ -181,11 +181,35 @@
 //! layer would grant it. A non-root container image is unchanged: it refuses
 //! every child already (`UnsandboxedNotOptedIn`).
 //!
+//! # A private user and network namespace (#3528)
+//!
+//! A workload whose spec asks for `private_user_network { inner_uid, loopback }`
+//! is placed by [`ChildConfinement::placed`], the one place that posture is
+//! made, and only on top of a dropped, denylist-filtered posture whose spawn
+//! makes the workload's own PID namespace ([`PidNamespace::Own`], the guest):
+//!
+//! | base posture | PID namespace | kernel offers user namespaces | `private_user_network` |
+//! |---|---|---|---|
+//! | `DropTo`, workload denylist | own | yes | **placed** |
+//! | `DropTo`, workload denylist | own | no | refused ([`NucleusError::WorkloadNamespaceUnavailable`]) |
+//! | `DropTo`, workload denylist | shared (host tiers) | any | refused |
+//! | any other (bare tier, `Restricted`, `Isolated`) | any | any | refused |
+//!
+//! The PID and mount namespaces come first, made by root; the user and network
+//! namespaces last, made by the workload once dropped, and mapped by the
+//! namespace's init (`hardening/pidns.rs`, `hardening/pidns/user_network.rs`).
+//! The receipt's [`Hardened::namespace`] is read off the same [`Isolation`]
+//! the hook runs. Why this order, and what each receipt then claims, is
+//! `docs/findings/workload-user-network-namespace.md`.
+//!
 //! [`apply`]: ChildConfinement::apply
 
 use std::path::Path;
 
+use nucleus_spec::{AdmittedNamespace, NamespaceEnforcement};
 use portcullis::SeccompPolicy;
+
+pub use nucleus_spec::NamespaceSetup;
 
 use crate::command::ContainmentMode;
 use crate::error::{NucleusError, Result};
@@ -242,6 +266,16 @@ enum Posture {
     Restricted(SyscallFilter),
     /// Drop to this uid (and gid), then self-restrict.
     DropTo(u32, SyscallFilter, FilesystemConfinement),
+    /// A `DropTo` under the workload denylist whose spawn makes a PID
+    /// namespace, with a private user and network namespace inside it:
+    /// `inner_uid` mapped onto `uid`, `lo` raised iff `loopback`. Made only by
+    /// [`ChildConfinement::placed`] (module docs).
+    DropToUserNetwork {
+        uid: u32,
+        filesystem: FilesystemConfinement,
+        inner_uid: u32,
+        loopback: bool,
+    },
     /// A host service the runtime starts for one pod (the egress proxy, ADR
     /// 0015 §7): enter a fresh, empty network namespace, THEN drop to `uid`
     /// and `gid`, then self-restrict under the workload denylist. The drop is
@@ -262,6 +296,112 @@ enum Isolation {
     NetnsThenDrop { uid: u32, gid: u32 },
     /// The workload's own PID namespace, then the drop (#3344, `pidns.rs`).
     PidnsThenDrop { uid: u32, gid: u32 },
+    /// The workload's own PID namespace, the drop, and only then a private
+    /// user and network namespace mapping `inner_uid` onto `uid`, mapped by
+    /// the namespace's init (`pidns/user_network.rs`). The one isolation that
+    /// carries a map, and it has no shared-PID form.
+    PidnsThenUserNetwork {
+        uid: u32,
+        gid: u32,
+        inner_uid: u32,
+        loopback: bool,
+    },
+}
+
+impl Isolation {
+    /// What the hook does to the child's PID namespace: the launch receipt's
+    /// `pids=`.
+    fn pids(self) -> PidNamespace {
+        match self {
+            Self::PidnsThenDrop { uid: _, gid: _ }
+            | Self::PidnsThenUserNetwork {
+                uid: _,
+                gid: _,
+                inner_uid: _,
+                loopback: _,
+            } => PidNamespace::Own,
+            Self::None | Self::NetnsThenDrop { uid: _, gid: _ } => PidNamespace::Shared,
+        }
+    }
+
+    /// What the hook does to the child's user and network namespaces: the
+    /// launch receipt's `ns=` and the signed claim's `namespace`. Read off
+    /// the value the hook runs, so the record and the effect are one fact
+    /// (ADR 0007 G-1).
+    fn namespace(self) -> NamespaceSetup {
+        match self {
+            Self::None | Self::PidnsThenDrop { uid: _, gid: _ } => NamespaceSetup::Runtime {},
+            Self::NetnsThenDrop { uid: _, gid: _ } => NamespaceSetup::PrivateNetwork {},
+            Self::PidnsThenUserNetwork {
+                uid,
+                gid: _,
+                inner_uid,
+                loopback,
+            } => NamespaceSetup::PrivateUserNetwork {
+                outer_uid: uid,
+                inner_uid,
+                loopback,
+            },
+        }
+    }
+}
+
+/// Whether this kernel lets an unprivileged process make a user namespace, as
+/// far as its sysctls say (#3528). Read before a spawn so the common refusal
+/// is named at admission; the hook is still the control, and an LSM that
+/// refuses later (Ubuntu's `apparmor_restrict_unprivileged_userns`) fails the
+/// spawn there.
+///
+/// Two named cases, not a `bool` (ADR 0007 A), and no `Default` (B-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserNamespaces {
+    /// `user.max_user_namespaces` is above 0, and no distribution switch
+    /// turns unprivileged ones off.
+    Available,
+    /// Why not.
+    Unavailable {
+        /// What the probe read.
+        reason: &'static str,
+    },
+}
+
+impl UserNamespaces {
+    /// Read this kernel's answer.
+    #[must_use]
+    pub fn probe() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            let read = |path: &str| std::fs::read_to_string(path).map(|s| s.trim().to_owned());
+            match read("/proc/sys/user/max_user_namespaces").as_deref() {
+                Err(_) => Self::Unavailable {
+                    reason: "no /proc/sys/user/max_user_namespaces: a kernel without user namespaces",
+                },
+                Ok(limit) if !limit.parse::<u64>().is_ok_and(|n| n > 0) => Self::Unavailable {
+                    reason: "user.max_user_namespaces is 0 or unreadable",
+                },
+                Ok(_) => match (
+                    read("/proc/sys/kernel/unprivileged_userns_clone").as_deref(),
+                    read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").as_deref(),
+                ) {
+                    (Ok("0"), _) => Self::Unavailable {
+                        reason: "kernel.unprivileged_userns_clone is 0",
+                    },
+                    // The `unshare` succeeds, and AppArmor then denies the
+                    // new namespace the capabilities its setup needs.
+                    (_, Ok("1")) => Self::Unavailable {
+                        reason: "kernel.apparmor_restrict_unprivileged_userns is 1",
+                    },
+                    (Ok(_) | Err(_), Ok(_) | Err(_)) => Self::Available,
+                },
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self::Unavailable {
+                reason: "user namespaces exist only on Linux",
+            }
+        }
+    }
 }
 
 /// How a confined child's filesystem is held (#2696 P3c). Decided per
@@ -645,11 +785,130 @@ impl ChildConfinement {
         }
     }
 
+    /// Which namespace placements a workload under this confinement, spawned
+    /// with `pids`, can be given: what the tool-proxy hands
+    /// `WorkloadNamespace::admit`. Decided by the same rule
+    /// [`Self::placed`] applies (ADR 0007 G-1).
+    #[must_use]
+    pub fn namespace_enforcement(&self, pids: PidNamespace) -> NamespaceEnforcement {
+        match self.user_network_base(pids, UserNamespaces::probe()) {
+            Ok(_) => NamespaceEnforcement::PrivateUserNetwork,
+            Err(_) => NamespaceEnforcement::RuntimeOnly,
+        }
+    }
+
+    /// Place a workload where its admission said (#3528): unchanged for
+    /// runtime placement, or a private user and network namespace inside the
+    /// workload's own PID namespace. The one constructor of that posture.
+    ///
+    /// # Errors
+    /// [`NucleusError::WorkloadNamespaceUnavailable`] when this confinement
+    /// cannot make the admitted placement true (module docs' table), or when
+    /// the admitted outer uid is not the uid this workload drops to.
+    pub fn placed(self, admitted: AdmittedNamespace, pids: PidNamespace) -> Result<Self> {
+        self.place(admitted.setup(), pids, UserNamespaces::probe())
+    }
+
+    /// [`Self::placed`], with the kernel's answer as an input so every row is
+    /// testable anywhere.
+    pub(crate) fn place(
+        self,
+        setup: NamespaceSetup,
+        pids: PidNamespace,
+        userns: UserNamespaces,
+    ) -> Result<Self> {
+        match setup {
+            NamespaceSetup::Runtime {} => Ok(self),
+            NamespaceSetup::PrivateUserNetwork {
+                outer_uid,
+                inner_uid,
+                loopback,
+            } => {
+                let (uid, filesystem) = self.user_network_base(pids, userns)?;
+                if uid != outer_uid {
+                    return Err(NucleusError::WorkloadNamespaceUnavailable {
+                        reason: format!(
+                            "the admitted outer uid {outer_uid} is not the uid this workload \
+                             drops to ({uid})"
+                        ),
+                    });
+                }
+                Ok(Self {
+                    posture: Posture::DropToUserNetwork {
+                        uid,
+                        filesystem,
+                        inner_uid,
+                        loopback,
+                    },
+                    kernel: self.kernel,
+                })
+            }
+            NamespaceSetup::Unrecorded {} | NamespaceSetup::PrivateNetwork {} => {
+                Err(NucleusError::WorkloadNamespaceUnavailable {
+                    reason: format!("{setup:?} is not a workload placement"),
+                })
+            }
+        }
+    }
+
+    /// The ONE rule for "can this workload get a private user and network
+    /// namespace": a dropped posture under the workload denylist, spawned in
+    /// its own PID namespace, on a kernel that offers user namespaces.
+    /// Exhaustive over postures, no `_` arm (ADR 0007 B-3).
+    fn user_network_base(
+        &self,
+        pids: PidNamespace,
+        userns: UserNamespaces,
+    ) -> Result<(u32, FilesystemConfinement)> {
+        let refused = |reason: &str| NucleusError::WorkloadNamespaceUnavailable {
+            reason: reason.to_owned(),
+        };
+        let (uid, filesystem) = match self.posture {
+            Posture::DropTo(uid, SyscallFilter::WorkloadDenylist, filesystem) => (uid, filesystem),
+            Posture::DropTo(_, SyscallFilter::Unfiltered, _) | Posture::Unsandboxed => {
+                return Err(refused(
+                    "the bare tier installs no syscall filter, so nothing would keep the \
+                     workload from making namespaces of its own",
+                ));
+            }
+            Posture::Restricted(_) => {
+                return Err(refused(
+                    "a workload that keeps the runtime's uid cannot be given a user namespace \
+                     of its own",
+                ));
+            }
+            Posture::Isolated { uid: _, gid: _ } => {
+                return Err(refused("a host service is not a workload"));
+            }
+            Posture::DropToUserNetwork {
+                uid: _,
+                filesystem: _,
+                inner_uid: _,
+                loopback: _,
+            } => return Err(refused("the workload is already placed")),
+        };
+        match (pids, userns) {
+            (PidNamespace::Own, UserNamespaces::Available) => Ok((uid, filesystem)),
+            (PidNamespace::Shared, _) => Err(refused(
+                "the workload does not get its own PID namespace here, and its namespace's init \
+                 is what writes the map",
+            )),
+            (PidNamespace::Own, UserNamespaces::Unavailable { reason }) => Err(refused(reason)),
+        }
+    }
+
     /// Who the child runs as, relative to the runtime.
     #[must_use]
     pub fn child_uid(&self) -> ChildUid {
         match self.posture {
-            Posture::DropTo(uid, ..) | Posture::Isolated { uid, gid: _ } => ChildUid::Distinct(uid),
+            Posture::DropTo(uid, ..)
+            | Posture::Isolated { uid, gid: _ }
+            | Posture::DropToUserNetwork {
+                uid,
+                filesystem: _,
+                inner_uid: _,
+                loopback: _,
+            } => ChildUid::Distinct(uid),
             Posture::Unsandboxed | Posture::Restricted(_) => ChildUid::SharedWithRuntime,
         }
     }
@@ -660,7 +919,13 @@ impl ChildConfinement {
         match self.posture {
             Posture::Unsandboxed => SyscallFilter::Unfiltered,
             Posture::Restricted(filter) | Posture::DropTo(_, filter, _) => filter,
-            Posture::Isolated { uid: _, gid: _ } => SyscallFilter::WorkloadDenylist,
+            Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork {
+                uid: _,
+                filesystem: _,
+                inner_uid: _,
+                loopback: _,
+            } => SyscallFilter::WorkloadDenylist,
         }
     }
 
@@ -668,7 +933,13 @@ impl ChildConfinement {
     #[must_use]
     pub fn filesystem(&self) -> FilesystemConfinement {
         match self.posture {
-            Posture::DropTo(_, _, fs) => fs,
+            Posture::DropTo(_, _, fs)
+            | Posture::DropToUserNetwork {
+                uid: _,
+                filesystem: fs,
+                inner_uid: _,
+                loopback: _,
+            } => fs,
             Posture::Unsandboxed
             | Posture::Restricted(_)
             | Posture::Isolated { uid: _, gid: _ } => FilesystemConfinement::NotApplied,
@@ -760,9 +1031,10 @@ impl ChildConfinement {
     pub fn is_unsandboxed(&self) -> bool {
         match self.posture {
             Posture::Unsandboxed => true,
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                false
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork { .. } => false,
         }
     }
 
@@ -770,9 +1042,10 @@ impl ChildConfinement {
     #[must_use]
     pub fn restricts(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork { .. } => true,
             Posture::Unsandboxed => false,
         }
     }
@@ -783,9 +1056,10 @@ impl ChildConfinement {
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork { .. } => true,
             Posture::Unsandboxed => cfg!(target_os = "linux"),
         }
     }
@@ -916,6 +1190,38 @@ impl ChildConfinement {
                 rlimits,
                 syscalls,
             ),
+            // `placed` made this posture only for a spawn in its own PID
+            // namespace, whose init writes the map: there is no shared-PID
+            // form, so a caller that asks for one is refused, not degraded.
+            Posture::DropToUserNetwork {
+                uid,
+                filesystem,
+                inner_uid,
+                loopback,
+            } => match pids {
+                PidNamespace::Own => Self::restrict(
+                    cmd,
+                    Isolation::PidnsThenUserNetwork {
+                        uid,
+                        gid: uid,
+                        inner_uid,
+                        loopback,
+                    },
+                    SyscallFilter::WorkloadDenylist,
+                    filesystem,
+                    layer,
+                    rlimits,
+                    syscalls,
+                ),
+                PidNamespace::Shared => {
+                    tracing::error!(
+                        "refusing the spawn: a private user and network namespace is made only \
+                         inside the workload's own PID namespace"
+                    );
+                    refuse(cmd);
+                    SpawnHardening::Unhardened(Unhardened::Refused)
+                }
+            },
         }
     }
 
@@ -939,16 +1245,16 @@ impl ChildConfinement {
             SyscallFilter::Unfiltered => InstalledFilter::Unfiltered,
         };
         let workspace = layer.hold();
-        let pids = match isolation {
-            Isolation::PidnsThenDrop { uid: _, gid: _ } => PidNamespace::Own,
-            Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ } => PidNamespace::Shared,
-        };
+        // Both read off the `isolation` the hook runs (ADR 0007 G-1).
+        let pids = isolation.pids();
+        let namespace = isolation.namespace();
         match imp::install(cmd, isolation, filter, filesystem, layer, rlimits, syscalls) {
             Hook::Installed => SpawnHardening::Hardened(Hardened {
                 rlimits,
                 syscalls: installed,
                 workspace,
                 pids,
+                namespace,
             }),
             Hook::NoneOnThisPlatform => {
                 SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
@@ -1018,6 +1324,23 @@ impl SpawnHardening {
             Self::Unhardened(Unhardened::Refused) => "refused".to_string(),
         }
     }
+
+    /// What the spawn does to the child's user and network namespaces, read
+    /// off what [`ChildConfinement::apply`] installed (#3528). Without a hook
+    /// nothing moves the child, so it keeps the runtime's; `Refused` never
+    /// starts a child, so never reaches a receipt.
+    #[must_use]
+    pub fn namespace(&self) -> NamespaceSetup {
+        match self {
+            Self::Hardened(h) => h.namespace,
+            Self::Unhardened(
+                Unhardened::DeclaredBareTier
+                | Unhardened::NoHookOnThisPlatform
+                | Unhardened::BareTierWorkspaceReadOnly { abi: _ }
+                | Unhardened::Refused,
+            ) => NamespaceSetup::Runtime {},
+        }
+    }
 }
 
 /// The evidence that the confinement hook was installed, with which limits
@@ -1031,9 +1354,19 @@ pub struct Hardened {
     workspace: WorkspaceHold,
     /// Whether the hook made the child a PID namespace (#3344).
     pids: PidNamespace,
+    /// What the hook did to the child's user and network namespaces (#3528).
+    namespace: NamespaceSetup,
 }
 
 impl Hardened {
+    /// What the hook does to the child's user and network namespaces
+    /// (#3528): the launch receipt's `ns=` and, through the supervisor's
+    /// observation, the signed claim's `namespace`.
+    #[must_use]
+    pub fn namespace(&self) -> NamespaceSetup {
+        self.namespace
+    }
+
     /// How the hook holds the child's workspace (#2907).
     #[must_use]
     pub fn workspace(&self) -> WorkspaceHold {
@@ -1272,6 +1605,7 @@ mod imp {
 
     use super::exec_pin::PinnedExec;
     use super::landlock::Ruleset;
+    use super::pidns::Mapping;
     use super::seccomp::Program;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
     use super::{
@@ -1308,6 +1642,10 @@ mod imp {
     ///   with anything else running as that uid.
     /// * A `Restricted` child (`HostHardened`, non-root runtime) keeps the
     ///   runtime's uid, so the count includes every process of that user.
+    /// * A workload placed in a private user namespace (#3528) is counted in
+    ///   that namespace, which is new and holds only the workload, so the
+    ///   bound is that workload's alone. The runtime made the namespace; the
+    ///   filter still refuses the workload a further one.
     fn hook_limits(applied: AppliedRlimits) -> HookLimits {
         let RlimitVector {
             nproc,
@@ -1363,6 +1701,46 @@ mod imp {
         SweepOnly,
     }
 
+    /// The isolation as the hook runs it: decided in the parent, with any map
+    /// line formatted there (`pidns::Mapping::new`), so the child neither
+    /// decides nor allocates.
+    enum Entry {
+        None,
+        NetnsThenDrop {
+            uid: u32,
+            gid: u32,
+        },
+        PidnsThenDrop {
+            uid: u32,
+            gid: u32,
+        },
+        PidnsThenUserNetwork {
+            uid: u32,
+            gid: u32,
+            mapping: Mapping,
+        },
+    }
+
+    impl Entry {
+        fn of(isolation: Isolation) -> Self {
+            match isolation {
+                Isolation::None => Self::None,
+                Isolation::NetnsThenDrop { uid, gid } => Self::NetnsThenDrop { uid, gid },
+                Isolation::PidnsThenDrop { uid, gid } => Self::PidnsThenDrop { uid, gid },
+                Isolation::PidnsThenUserNetwork {
+                    uid,
+                    gid,
+                    inner_uid,
+                    loopback,
+                } => Self::PidnsThenUserNetwork {
+                    uid,
+                    gid,
+                    mapping: Mapping::new(uid, inner_uid, loopback),
+                },
+            }
+        }
+    }
+
     /// Who execs the child once the hook is done (#2907). Two named cases
     /// rather than an `Option` (ADR 0007 B-2).
     enum Start {
@@ -1377,7 +1755,7 @@ mod imp {
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
     fn harden_child(
-        isolation: Isolation,
+        entry: &Entry,
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
         writes: &mut Landlock,
@@ -1395,9 +1773,9 @@ mod imp {
             // `Isolated` declares no uid on the command). `setresuid` from
             // root to a non-root uid clears every capability set, ambient
             // included, because the hook never sets `SECBIT_KEEP_CAPS`.
-            match isolation {
-                Isolation::None => {}
-                Isolation::NetnsThenDrop { uid, gid } => {
+            match *entry {
+                Entry::None => {}
+                Entry::NetnsThenDrop { uid, gid } => {
                     if libc::unshare(libc::CLONE_NEWNET) != 0
                         || libc::setgroups(0, std::ptr::null()) != 0
                         || libc::setresgid(gid, gid, gid) != 0
@@ -1407,7 +1785,18 @@ mod imp {
                     }
                 }
                 // Returns only in the workload, dropped (`pidns.rs`).
-                Isolation::PidnsThenDrop { uid, gid } => super::pidns::enter(uid, gid)?,
+                Entry::PidnsThenDrop { uid, gid } => {
+                    super::pidns::enter(uid, gid, super::pidns::Runtime)?;
+                }
+                // The same, then the workload's own user and network
+                // namespace: unshared, mapped by the init and read back, and
+                // every capability shed, each step consuming the one before
+                // (`pidns/user_network.rs`, ADR 0007 D-1).
+                Entry::PidnsThenUserNetwork { uid, gid, mapping } => {
+                    let _placed: super::pidns::Placed = super::pidns::enter(uid, gid, mapping)?
+                        .map()?
+                        .shed_capabilities()?;
+                }
             }
             // Mark every fd from 3 up close-on-exec rather than closing it
             // HERE: std still owns a CLOEXEC status pipe in this window, used
@@ -1484,19 +1873,27 @@ mod imp {
             // unprivileged `landlock_restrict_self` is `EPERM`) and before the
             // syscall filter, so the filter can never stand between the
             // child and its own restriction.
-            match (landlock, isolation) {
+            match (landlock, entry) {
                 (Landlock::NotRequested, _) => {}
                 (Landlock::Refuse, _) => {
                     return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
                 }
                 // Its own `/proc` is a new procfs the parent's rule is not on.
-                (Landlock::Restrict(ruleset), Isolation::PidnsThenDrop { uid: _, gid: _ }) => {
+                (
+                    Landlock::Restrict(ruleset),
+                    Entry::PidnsThenDrop { uid: _, gid: _ }
+                    | Entry::PidnsThenUserNetwork {
+                        uid: _,
+                        gid: _,
+                        mapping: _,
+                    },
+                ) => {
                     ruleset.grant_own_proc()?;
                     ruleset.restrict_self()?;
                 }
                 (
                     Landlock::Restrict(ruleset),
-                    Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ },
+                    Entry::None | Entry::NetnsThenDrop { uid: _, gid: _ },
                 ) => ruleset.restrict_self()?,
             }
             // The write layer (#2907), a second Landlock domain over the
@@ -1598,9 +1995,10 @@ mod imp {
                 }
             }
         };
+        let entry = Entry::of(isolation);
         super::hook::pre_exec(cmd, move || {
             harden_child(
-                isolation,
+                &entry,
                 &mut seccomp,
                 &mut landlock,
                 &mut writes,
@@ -1679,7 +2077,7 @@ mod imp {
         let mut writes = write_layer(layer);
         super::hook::pre_exec(cmd, move || {
             harden_child(
-                Isolation::None,
+                &Entry::None,
                 &mut Seccomp::NotRequested,
                 &mut Landlock::NotRequested,
                 &mut writes,
@@ -1754,7 +2152,13 @@ mod imp {
         let isolated = match isolation {
             Isolation::None => false,
             Isolation::NetnsThenDrop { uid: _, gid: _ }
-            | Isolation::PidnsThenDrop { uid: _, gid: _ } => true,
+            | Isolation::PidnsThenDrop { uid: _, gid: _ }
+            | Isolation::PidnsThenUserNetwork {
+                uid: _,
+                gid: _,
+                inner_uid: _,
+                loopback: _,
+            } => true,
         };
         match (filter, landlock_required || isolated) {
             (SyscallFilter::Unfiltered, false) => {}
@@ -2485,5 +2889,262 @@ mod tests {
                 SpawnHardening::Unhardened(why) => panic!("{why:?}"),
             }
         }
+    }
+
+    // ── #3528: a private user and network namespace ─────────────────────────
+
+    const OWN: PidNamespace = PidNamespace::Own;
+    const KERNEL_HAS_USERNS: UserNamespaces = UserNamespaces::Available;
+
+    fn private(outer_uid: u32, inner_uid: u32, loopback: bool) -> NamespaceSetup {
+        NamespaceSetup::PrivateUserNetwork {
+            outer_uid,
+            inner_uid,
+            loopback,
+        }
+    }
+
+    /// The guest's workload under a root runtime: a filtered drop to 65534,
+    /// with the guest layout's Landlock ruleset.
+    fn guest_workload() -> ChildConfinement {
+        ChildConfinement::decide_workload(
+            ContainmentMode::MicroVM,
+            Some(DEFAULT_CHILD_UID),
+            0,
+            UnsandboxedOptIn::Absent,
+            LL,
+            NO,
+        )
+        .expect("a root guest runtime drops its workload")
+    }
+
+    /// The one row that places it: a dropped, filtered workload in its own
+    /// PID namespace on a kernel with user namespaces. The placed workload
+    /// keeps every property of the base it was placed on (uid, filter,
+    /// Landlock), and runtime placement leaves the base unchanged.
+    #[test]
+    fn a_private_namespace_is_placed_on_a_filtered_drop_in_its_own_pid_namespace() {
+        let base = guest_workload();
+        for (inner, loopback) in [(0, false), (0, true), (1001, false), (1001, true)] {
+            let placed = base
+                .place(
+                    private(DEFAULT_CHILD_UID, inner, loopback),
+                    OWN,
+                    KERNEL_HAS_USERNS,
+                )
+                .expect("placed");
+            assert_ne!(placed, base);
+            assert_eq!(placed.child_uid(), ChildUid::Distinct(DEFAULT_CHILD_UID));
+            assert_eq!(placed.syscall_filter(), SyscallFilter::WorkloadDenylist);
+            assert_eq!(placed.filesystem(), base.filesystem());
+            assert!(
+                placed.restricts() && placed.closes_inherited_fds() && !placed.is_unsandboxed()
+            );
+            assert_eq!(
+                base.user_network_base(OWN, KERNEL_HAS_USERNS)
+                    .map(|(uid, _)| uid)
+                    .ok(),
+                Some(DEFAULT_CHILD_UID)
+            );
+        }
+        assert_eq!(
+            base.place(NamespaceSetup::Runtime {}, OWN, KERNEL_HAS_USERNS)
+                .unwrap(),
+            base
+        );
+    }
+
+    /// Every other row is a named refusal: no PID namespace of its own (a
+    /// host tier), no user namespaces in the kernel, an unfiltered or
+    /// same-uid base, a host service, a second placement, an outer uid other
+    /// than the drop, or a setup that is not a workload placement.
+    #[test]
+    fn every_other_placement_is_refused_by_name() {
+        let refused = |got: Result<ChildConfinement>, why: &str| match got {
+            Err(NucleusError::WorkloadNamespaceUnavailable { reason }) => reason,
+            other => panic!("{why}: expected a named refusal, got {other:?}"),
+        };
+        let base = guest_workload();
+        let want = private(DEFAULT_CHILD_UID, 0, true);
+        refused(
+            base.place(want, PidNamespace::Shared, KERNEL_HAS_USERNS),
+            "shared PID namespace",
+        );
+        let reason = refused(
+            base.place(
+                want,
+                OWN,
+                UserNamespaces::Unavailable {
+                    reason: "user.max_user_namespaces is 0 or unreadable",
+                },
+            ),
+            "no user namespaces",
+        );
+        assert!(reason.contains("max_user_namespaces"), "{reason}");
+        refused(
+            base.place(private(4242, 0, true), OWN, KERNEL_HAS_USERNS),
+            "outer uid is not the drop",
+        );
+        for setup in [
+            NamespaceSetup::Unrecorded {},
+            NamespaceSetup::PrivateNetwork {},
+        ] {
+            refused(base.place(setup, OWN, KERNEL_HAS_USERNS), "not a placement");
+        }
+        let placed = base.place(want, OWN, KERNEL_HAS_USERNS).unwrap();
+        refused(placed.place(want, OWN, KERNEL_HAS_USERNS), "placed twice");
+        let root_bare = ChildConfinement::decide_workload(
+            ContainmentMode::Unsandboxed,
+            Some(DEFAULT_CHILD_UID),
+            0,
+            UnsandboxedOptIn::Absent,
+            LL,
+            NO,
+        )
+        .unwrap();
+        refused(
+            root_bare.place(want, OWN, KERNEL_HAS_USERNS),
+            "unfiltered drop",
+        );
+        let non_root_bare = ChildConfinement::decide_workload(
+            ContainmentMode::Unsandboxed,
+            None,
+            1000,
+            UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
+        )
+        .unwrap();
+        refused(
+            non_root_bare.place(want, OWN, KERNEL_HAS_USERNS),
+            "bare tier",
+        );
+        let restricted = ChildConfinement::decide(
+            ContainmentMode::HostHardened,
+            1000,
+            UnsandboxedOptIn::Absent,
+            LL,
+            NO,
+        )
+        .unwrap();
+        refused(restricted.place(want, OWN, KERNEL_HAS_USERNS), "same uid");
+        let service = ChildConfinement::decide_isolated(0, 4242, 4242, LL).unwrap();
+        refused(
+            service.place(private(4242, 0, true), OWN, KERNEL_HAS_USERNS),
+            "host service",
+        );
+        // What the tool-proxy hands `admit` follows the same rule: no PID
+        // namespace of its own, no private placement, whatever the kernel.
+        assert_eq!(
+            base.namespace_enforcement(PidNamespace::Shared),
+            NamespaceEnforcement::RuntimeOnly
+        );
+    }
+
+    /// The receipt's `pids=` and `ns=` are read off the isolation the hook
+    /// runs, and only the user-network isolation records a private user
+    /// namespace (with its own PID namespace).
+    #[test]
+    fn the_receipt_reads_both_namespaces_off_the_isolation_the_hook_runs() {
+        let rows = [
+            (
+                Isolation::None,
+                PidNamespace::Shared,
+                NamespaceSetup::Runtime {},
+            ),
+            (
+                Isolation::NetnsThenDrop { uid: 7, gid: 7 },
+                PidNamespace::Shared,
+                NamespaceSetup::PrivateNetwork {},
+            ),
+            (
+                Isolation::PidnsThenDrop { uid: 7, gid: 7 },
+                PidNamespace::Own,
+                NamespaceSetup::Runtime {},
+            ),
+            (
+                Isolation::PidnsThenUserNetwork {
+                    uid: 65534,
+                    gid: 65534,
+                    inner_uid: 1001,
+                    loopback: false,
+                },
+                PidNamespace::Own,
+                private(65534, 1001, false),
+            ),
+        ];
+        for (isolation, pids, namespace) in rows {
+            assert_eq!(isolation.pids(), pids, "{isolation:?}");
+            assert_eq!(isolation.namespace(), namespace, "{isolation:?}");
+        }
+    }
+
+    /// The probe is not the control; the hook is. Forced past the probe (the
+    /// placement made as if the kernel offered user namespaces), a root
+    /// runtime's spawn either runs in the namespace, where the kernel does
+    /// offer it, or fails, where it does not. It never runs without it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn past_the_probe_the_hook_runs_in_the_namespace_or_refuses_the_spawn() {
+        if runtime_uid() != 0 {
+            eprintln!("skipped: the placement needs a root runtime");
+            return;
+        }
+        let forced = guest_workload()
+            .place(private(DEFAULT_CHILD_UID, 0, true), OWN, KERNEL_HAS_USERNS)
+            .unwrap();
+        let mut cmd = std::process::Command::new("/bin/true");
+        cmd.current_dir("/");
+        let hardening = forced.apply_with_pids(
+            &mut cmd,
+            RlimitPolicy::node_ceiling().at_ceiling(),
+            SeccompPolicy::derive(
+                &portcullis::PermissionLattice::permissive(),
+                portcullis::NetworkEgress::Declared,
+            ),
+            &WorkspaceWrites::Writable,
+            OWN,
+        );
+        assert_eq!(
+            hardening.namespace(),
+            private(DEFAULT_CHILD_UID, 0, true),
+            "the record is the placement"
+        );
+        let got = cmd.status();
+        match UserNamespaces::probe() {
+            UserNamespaces::Available => {
+                assert!(got.expect("this kernel offers it").success());
+            }
+            UserNamespaces::Unavailable { reason } => {
+                let refused = got.expect_err("must not run without the namespace");
+                eprintln!("{reason}: the spawn was refused: {refused}");
+            }
+        }
+    }
+
+    /// A placed workload has no shared-PID form: asked to spawn without its
+    /// own PID namespace, the hook refuses the spawn rather than run it in
+    /// the runtime's user and network namespaces.
+    #[test]
+    fn a_placed_workload_is_refused_without_its_own_pid_namespace() {
+        let placed = guest_workload()
+            .place(private(DEFAULT_CHILD_UID, 0, true), OWN, KERNEL_HAS_USERNS)
+            .unwrap();
+        let mut cmd = std::process::Command::new("/usr/bin/true");
+        let got = placed.apply_with_pids(
+            &mut cmd,
+            RlimitPolicy::node_ceiling().at_ceiling(),
+            SeccompPolicy::derive(
+                &portcullis::PermissionLattice::permissive(),
+                portcullis::NetworkEgress::Declared,
+            ),
+            &WorkspaceWrites::Writable,
+            PidNamespace::Shared,
+        );
+        assert_eq!(got, SpawnHardening::Unhardened(Unhardened::Refused));
+        assert_eq!(
+            cmd.status().map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EOPNOTSUPP))
+        );
     }
 }

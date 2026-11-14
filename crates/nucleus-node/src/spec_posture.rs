@@ -189,9 +189,12 @@ pub(crate) fn admit(
     let inner = &spec.spec;
     if let Some(workload) = &inner.workload {
         // The witness is dropped: the node only refuses here. The supervisor
-        // admits again where the workload is launched, and the claim is
-        // checked against the same decider before it is signed.
-        let _ = workload.namespace.admit()?;
+        // admits again where the workload is launched, against its own
+        // kernel, and the claim is checked against the same decider before it
+        // is signed.
+        let _ = workload
+            .namespace
+            .admit(workload.uid, namespace_enforcement(backend_of(driver)))?;
     }
     let audit = sinks.resolve_for(spec)?;
     if let Some(vsock) = &inner.vsock
@@ -219,6 +222,41 @@ pub(crate) fn admit(
         return Err(PostureRefused::WritableRootfs);
     }
     Ok(audit)
+}
+
+/// Which workload namespace placements a pod on `backend` can have made true (#3528): the one
+/// decider on the node, for create, the admission record and the signed claim. Exhaustive, no `_`
+/// arm (ADR 0007 B-3).
+///
+/// Only a Firecracker guest runs its workload under a root runtime that makes the workload's own
+/// PID namespace, whose init maps a private user namespace for it. The guest's tool-proxy decides
+/// again against its own kernel, and refuses by name where that kernel cannot; the node signs only
+/// a hook record that equals the admitted placement.
+pub(crate) fn namespace_enforcement(
+    backend: Option<nucleus_ci_verdict::execution::Backend>,
+) -> nucleus_spec::NamespaceEnforcement {
+    use nucleus_ci_verdict::execution::Backend;
+    use nucleus_spec::NamespaceEnforcement;
+    match backend {
+        Some(Backend::Firecracker) => NamespaceEnforcement::PrivateUserNetwork,
+        Some(Backend::Local | Backend::Container) | None => NamespaceEnforcement::RuntimeOnly,
+    }
+}
+
+/// The backend a driver spawns pods on, where it has one an execution claim can name. Apple VZ
+/// has none yet. Exhaustive over drivers, no `_` arm (ADR 0007 B-3).
+fn backend_of(
+    driver: &crate::driver::DriverKind,
+) -> Option<nucleus_ci_verdict::execution::Backend> {
+    use crate::driver::DriverKind;
+    use nucleus_ci_verdict::execution::Backend;
+    match driver {
+        DriverKind::Firecracker => Some(Backend::Firecracker),
+        DriverKind::Container => Some(Backend::Container),
+        DriverKind::AppleVz => None,
+        #[cfg(feature = "local-driver")]
+        DriverKind::Local => Some(Backend::Local),
+    }
 }
 
 /// The container driver delivers no credential value (#2906). Exhaustive over drivers, no `_`

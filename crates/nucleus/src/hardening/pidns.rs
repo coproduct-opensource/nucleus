@@ -49,6 +49,27 @@
 //! The forks are raw `clone(SIGCHLD)`, not `fork(3)`: the waiter is a fork of a
 //! multithreaded runtime, and libc's `fork` takes locks another thread of the
 //! runtime may have held when it was copied.
+//!
+//! # A private user and network namespace inside it
+//!
+//! A workload that asks for `private_user_network` gets one more layer, made
+//! LAST, by the workload itself once dropped, and mapped by the init
+//! (`user_network.rs`; the order and why it is this one are in
+//! `docs/findings/workload-user-network-namespace.md`):
+//!
+//! * the init makes a `socketpair` before it forks the workload and keeps one
+//!   end; it serves exactly one request on it before it starts reaping;
+//! * the workload, dropped, unshares a user and a network namespace, raises
+//!   `lo` only if asked, and asks the init for its map;
+//! * the init checks the new user namespace is owned by the outer uid, writes
+//!   `uid_map`, `setgroups` = `deny` and `gid_map` (the one line `inner outer
+//!   1`, formatted in the parent), and answers granted or refused;
+//! * the workload reads its map back from the kernel and sheds every
+//!   capability before the rest of the hook runs.
+//!
+//! The PID and mount namespaces are made by root, so they belong to the initial
+//! user namespace, and nothing the workload holds in its own user namespace
+//! reaches them.
 
 use crate::command::ContainmentMode;
 
@@ -110,9 +131,98 @@ const PROC_OPTIONS: &std::ffi::CStr = c"hidepid=invisible";
 #[cfg(target_os = "linux")]
 const INIT_NAME: &std::ffi::CStr = c"nucleus-init";
 
+/// The workload's private user and network namespace, made inside this PID
+/// namespace and mapped by its init.
+#[cfg(target_os = "linux")]
+mod user_network;
+#[cfg(target_os = "linux")]
+pub(super) use user_network::Mapping;
+
+/// What goes inside the PID namespace besides the drop: the runtime's user and
+/// network namespaces ([`Runtime`], entered as `()`), or a private pair mapped
+/// by the init ([`Mapping`], entered as [`Unshared`]). Sealed, so what
+/// [`enter`] returns is tied by type to what it was asked to make (ADR 0007
+/// D-1).
+#[cfg(target_os = "linux")]
+pub(super) trait Inside: sealed::Sealed + Copy {
+    /// What the workload holds when [`enter`] returns in it.
+    type Entered;
+    /// The mapping the init serves, when there is one.
+    fn mapping(&self) -> Option<&Mapping>;
+    /// The return value, from the workload's end of the init's channel.
+    fn entered(self, channel: Option<std::os::fd::OwnedFd>) -> std::io::Result<Self::Entered>;
+}
+
+#[cfg(target_os = "linux")]
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Runtime {}
+    impl Sealed for super::Mapping {}
+}
+
+/// The runtime's user and network namespaces: only the PID and mount
+/// namespaces are the workload's own.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Runtime;
+
+#[cfg(target_os = "linux")]
+impl Inside for Runtime {
+    type Entered = ();
+    fn mapping(&self) -> Option<&Mapping> {
+        None
+    }
+    fn entered(self, channel: Option<std::os::fd::OwnedFd>) -> std::io::Result<()> {
+        match channel {
+            None => Ok(()),
+            Some(_) => Err(std::io::Error::from_raw_os_error(libc::EINVAL)),
+        }
+    }
+}
+
+/// The workload, dropped to its outer uid, in its own PID namespace and in a
+/// fresh user and network namespace that is not mapped yet, holding its end
+/// of the init's channel. Only [`enter`]'s workload branch mints one; the next
+/// step is `Unshared::map` (`user_network.rs`).
+#[cfg(target_os = "linux")]
+#[must_use = "an unshared workload that is never mapped must fail its spawn, not exec"]
+pub(super) struct Unshared {
+    channel: std::os::fd::OwnedFd,
+    mapping: Mapping,
+}
+
+/// The workload, mapped exactly `inner outer 1` for uid and gid with
+/// `setgroups` denied, as it read back from the kernel. Only `Unshared::map`
+/// mints one; the next step is `Mapped::shed_capabilities`.
+#[cfg(target_os = "linux")]
+#[must_use = "a mapped workload still holds every capability in its user namespace"]
+pub(super) struct Mapped {
+    _sealed: (),
+}
+
+/// The workload, mapped and holding no capability, with `SECBIT_NOROOT`
+/// locked. Only `Mapped::shed_capabilities` mints one. The rest of the hook
+/// (sweep, `no_new_privs`, rlimits, Landlock, the filter) follows.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub(super) struct Placed {
+    _sealed: (),
+}
+
+/// `SIOC[GS]IFFLAGS` as `ioctl` takes them: `c_ulong` on glibc, `c_int` on
+/// musl (the guest).
+#[cfg(target_os = "linux")]
+#[allow(clippy::unnecessary_cast, reason = "c_ulong on glibc, c_int on musl")]
+const SIOCGIFFLAGS: libc::Ioctl = libc::SIOCGIFFLAGS as libc::Ioctl;
+#[cfg(target_os = "linux")]
+#[allow(clippy::unnecessary_cast, reason = "c_ulong on glibc, c_int on musl")]
+const SIOCSIFFLAGS: libc::Ioctl = libc::SIOCSIFFLAGS as libc::Ioctl;
+
 /// Run the waiter and the init (module docs). Returns only in the workload,
-/// dropped to `uid`/`gid` and in its own PID and mount namespaces, or with the
-/// error that stopped it before the init's fork.
+/// dropped to `uid`/`gid`, in its own PID and mount namespaces and, when
+/// `inside` is a [`Mapping`], in a fresh user and network namespace awaiting
+/// its map ([`Unshared`]); or with the error that stopped it before the init's
+/// fork.
 ///
 /// One `unsafe` block, like `imp::harden_child`'s: the helpers are closures
 /// inside it, so the audited surface is this function.
@@ -126,11 +236,19 @@ const INIT_NAME: &std::ffi::CStr = c"nucleus-init";
     unsafe_code,
     reason = "#3344: the namespace setup is raw syscalls in a pre_exec hook; audited with imp"
 )]
-pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
+pub(super) unsafe fn enter<I: Inside>(
+    uid: u32,
+    gid: u32,
+    inside: I,
+) -> std::io::Result<I::Entered> {
     use std::io;
+    use std::os::fd::FromRawFd;
+    let mapping = inside.mapping();
     // SAFETY: scalar and static-string arguments, and pointers to live
     // locals, to async-signal-safe syscalls in a single-threaded forked
-    // child; no allocation, no lock.
+    // child; no allocation, no lock. The one adopted descriptor is the
+    // workload's end of a socketpair this function made and nothing else
+    // holds in the workload.
     unsafe {
         // `clone(SIGCHLD)`: fork's semantics without libc's locks. No stack
         // and no tid pointers: the child continues on a copy of this stack.
@@ -150,19 +268,27 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
                     .map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))
             }
         };
-        // Every descriptor this process holds: std's status pipe and the
-        // copies of the workload's stdio, which a process that never execs
-        // would otherwise hold open for as long as it lives. Without
-        // close_range (pre-5.9), close up to the limit the hook sets.
-        let close_everything = || {
-            if libc::syscall(
-                libc::SYS_close_range,
-                0 as libc::c_long,
-                libc::c_uint::MAX as libc::c_long,
-                0 as libc::c_long,
-            ) != 0
-            {
-                for fd in 0..65_536 {
+        // Every descriptor this process holds but `keep` (-1: none): std's
+        // status pipe and the copies of the workload's stdio, which a process
+        // that never execs would otherwise hold open for as long as it lives.
+        // Without close_range (pre-5.9), close up to the limit the hook sets.
+        let close_except = |keep: libc::c_int| {
+            let range = |low: libc::c_int, high: libc::c_uint| {
+                libc::syscall(
+                    libc::SYS_close_range,
+                    libc::c_long::from(low),
+                    high as libc::c_long,
+                    0 as libc::c_long,
+                ) == 0
+            };
+            let closed = if keep < 0 {
+                range(0, libc::c_uint::MAX)
+            } else {
+                (keep == 0 || range(0, keep.unsigned_abs() - 1))
+                    && range(keep + 1, libc::c_uint::MAX)
+            };
+            if !closed {
+                for fd in (0..65_536).filter(|&fd| fd != keep) {
                     libc::close(fd);
                 }
             }
@@ -181,6 +307,104 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
                 }
             }
         };
+        // The init's half of the map exchange: the workload's user namespace
+        // must be owned by the outer uid (made by the workload once dropped),
+        // and then the one line `inner outer 1` is written for uid and gid,
+        // `setgroups` denied first. `/proc/<pid>` is this namespace's procfs,
+        // and `workload` is the init's own unreaped child, so the number
+        // cannot name another process.
+        let write_map = |workload: libc::pid_t, mapping: &Mapping| -> bool {
+            let mut path = [0u8; 24];
+            path[..6].copy_from_slice(b"/proc/");
+            let mut digits = [0u8; 10];
+            let mut rest = u32::try_from(workload).unwrap_or(0);
+            let mut len = 0;
+            loop {
+                digits[len] = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+                len += 1;
+                rest /= 10;
+                if rest == 0 {
+                    break;
+                }
+            }
+            for i in 0..len {
+                path[6 + i] = digits[len - 1 - i];
+            }
+            let dir = libc::open(
+                path.as_ptr().cast(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            );
+            if dir < 0 {
+                return false;
+            }
+            let mut owner: libc::uid_t = libc::uid_t::MAX;
+            let ns = libc::openat(dir, c"ns/user".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+            let mut granted = ns >= 0
+                && libc::ioctl(ns, libc::NS_GET_OWNER_UID, &raw mut owner) == 0
+                && owner == mapping.outer();
+            if ns >= 0 {
+                libc::close(ns);
+            }
+            for (leaf, bytes) in [
+                (c"uid_map", mapping.line()),
+                (c"setgroups", &b"deny\n"[..]),
+                (c"gid_map", mapping.line()),
+            ] {
+                if !granted {
+                    break;
+                }
+                let file = libc::openat(dir, leaf.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                granted = file >= 0
+                    && usize::try_from(libc::write(file, bytes.as_ptr().cast(), bytes.len()))
+                        == Ok(bytes.len());
+                if file >= 0 && libc::close(file) != 0 {
+                    granted = false;
+                }
+            }
+            libc::close(dir);
+            granted
+        };
+        // Serve exactly one request, then close. No request (the workload
+        // failed before it asked) is no answer: the workload is gone.
+        let serve = |channel: libc::c_int, workload: libc::pid_t, mapping: &Mapping| {
+            let mut request = [0u8; 1];
+            let read = loop {
+                let n = libc::read(channel, request.as_mut_ptr().cast(), 1);
+                if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                break n;
+            };
+            if read == 1 && request[0] == user_network::REQUEST {
+                let answer = [if write_map(workload, mapping) {
+                    user_network::GRANTED
+                } else {
+                    user_network::REFUSED
+                }];
+                // A workload that died meanwhile must not take the init with
+                // it: no SIGPIPE.
+                libc::send(channel, answer.as_ptr().cast(), 1, libc::MSG_NOSIGNAL);
+            }
+            libc::close(channel);
+        };
+        // `lo` up in the workload's fresh network namespace: the only
+        // interface it has, down until this runs.
+        let loopback_up = || -> io::Result<()> {
+            let socket = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+            if socket < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut request: libc::ifreq = std::mem::zeroed();
+            std::ptr::copy_nonoverlapping(c"lo".as_ptr(), request.ifr_name.as_mut_ptr(), 3);
+            let mut result = libc::ioctl(socket, SIOCGIFFLAGS, &raw mut request);
+            if result == 0 {
+                request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+                result = libc::ioctl(socket, SIOCSIFFLAGS, &raw const request);
+            }
+            let failure = (result != 0).then(io::Error::last_os_error);
+            libc::close(socket);
+            failure.map_or(Ok(()), Err)
+        };
 
         if libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) != 0 {
             return Err(io::Error::last_os_error());
@@ -190,7 +414,7 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
             // The waiter: leave with the init's status, a signal death as
             // the same signal, so the runtime reads what it would have read
             // off the init.
-            close_everything();
+            close_except(-1);
             let status = wait_for(init, init);
             if libc::WIFSIGNALED(status) {
                 let sig = libc::WTERMSIG(status);
@@ -232,18 +456,38 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
         {
             return Err(io::Error::last_os_error());
         }
+        // The channel to the workload, made here so it serves this spawn
+        // and no other: [the init's end, the workload's end].
+        let mut channel: [libc::c_int; 2] = [-1, -1];
+        if mapping.is_some()
+            && libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+                0,
+                channel.as_mut_ptr(),
+            ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
         let workload = fork_raw()?;
         if workload > 0 {
-            // The init: reap every child (an orphan is reparented here)
-            // until the workload exits, then leave with its status; the
+            // The init: answer the workload's one map request, if it has
+            // one, and only then reap every child (an orphan is reparented
+            // here) until the workload exits; leave with its status, and the
             // kernel kills what is left in the namespace.
             libc::prctl(libc::PR_SET_NAME, INIT_NAME.as_ptr(), 0, 0, 0);
-            close_everything();
+            close_except(channel[0]);
+            if let Some(mapping) = mapping {
+                serve(channel[0], workload, mapping);
+            }
             let status = wait_for(-1, workload);
             if libc::WIFSIGNALED(status) {
                 libc::_exit(128 + libc::WTERMSIG(status));
             }
             libc::_exit(libc::WEXITSTATUS(status));
+        }
+        if channel[0] >= 0 {
+            libc::close(channel[0]);
         }
         // The workload: drop here, now the privileged steps are done.
         // `setresuid` from root clears every capability set.
@@ -253,8 +497,23 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
         {
             return Err(io::Error::last_os_error());
         }
+        // Dropped: now, and only now, a user namespace of its own (owned by
+        // `uid`, which the init checks) and a network namespace inside it.
+        // Non-dumpable first, so nothing of the same outer uid can open this
+        // process's `/proc` files while it holds capabilities there.
+        if let Some(mapping) = mapping {
+            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
+                || libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if mapping.loopback() {
+                loopback_up()?;
+            }
+        }
+        let channel = (channel[1] >= 0).then(|| std::os::fd::OwnedFd::from_raw_fd(channel[1]));
+        inside.entered(channel)
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -282,5 +541,185 @@ mod tests {
         }
         assert_eq!(PidNamespace::Own.canonical(), "own");
         assert_eq!(PidNamespace::Shared.canonical(), "shared");
+    }
+}
+
+/// The map exchange (#3528), driven on real namespaces: the init's owner
+/// check, the workload's read-back, and the closed-channel refusal. Each is
+/// a check the success path cannot show, so each test is built to pass only
+/// because that one check is there.
+#[cfg(all(test, target_os = "linux"))]
+#[allow(
+    unsafe_code,
+    reason = "test hooks: pre_exec closures over the production steps"
+)]
+mod exchange_tests {
+    use std::io::{self, Read, Write};
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use std::os::unix::net::UnixStream;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+
+    use super::user_network::{GRANTED, REQUEST};
+    use super::{Mapping, Unshared, enter};
+    use crate::hardening::UserNamespaces;
+
+    /// What stands in for the init.
+    enum Peer {
+        /// Answers granted and writes no map.
+        GrantsWithoutMapping,
+        /// Reads the request and closes without answering.
+        ClosesAfterTheRequest,
+        /// Is gone before the request is sent.
+        ClosedBeforeTheRequest,
+    }
+
+    /// Whether this process may make a user namespace at all; the tests
+    /// below report and return where it may not.
+    fn userns() -> bool {
+        match UserNamespaces::probe() {
+            UserNamespaces::Available => true,
+            UserNamespaces::Unavailable { reason } => {
+                eprintln!("skipped: {reason}");
+                false
+            }
+        }
+    }
+
+    /// Spawn `/bin/true` behind a hook that makes an (unprivileged) user
+    /// namespace and runs the workload's half of the exchange against `peer`
+    /// instead of the init. The inner uid is 65534, which is also the
+    /// overflow id an UNMAPPED process reports, so the id check alone passes
+    /// without any map: only the read-back of `uid_map` can refuse.
+    fn against(peer: Peer) -> io::Result<std::process::ExitStatus> {
+        let (mut ours, theirs) = UnixStream::pair()?;
+        // The fork copies the peer's end into the child too, as the init's
+        // end would be in the workload; the child closes it, as the workload
+        // does, or it never reads the end of a closed channel.
+        let peer_end = ours.as_raw_fd();
+        let mapping = Mapping::new(rustix::process::getuid().as_raw(), 65534, false);
+        let serving = match peer {
+            Peer::ClosedBeforeTheRequest => {
+                drop(ours);
+                None
+            }
+            Peer::GrantsWithoutMapping | Peer::ClosesAfterTheRequest => {
+                Some(std::thread::spawn(move || {
+                    let mut request = [0u8; 1];
+                    if ours.read_exact(&mut request).is_ok()
+                        && request[0] == REQUEST
+                        && matches!(peer, Peer::GrantsWithoutMapping)
+                    {
+                        let _ = ours.write_all(&[GRANTED]);
+                    }
+                }))
+            }
+        };
+        let open_peer = serving.is_some();
+        let mut channel = Some(OwnedFd::from(theirs));
+        let mut cmd = Command::new("/bin/true");
+        cmd.current_dir("/");
+        // SAFETY: a raw `close` of the peer's copied end and a raw `unshare`,
+        // then the production exchange, which is async-signal-safe; in the
+        // single-threaded forked child.
+        unsafe {
+            cmd.pre_exec(move || {
+                if open_peer {
+                    libc::close(peer_end);
+                }
+                if libc::unshare(libc::CLONE_NEWUSER) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let channel = channel
+                    .take()
+                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+                Unshared { channel, mapping }.map().map(drop)
+            });
+        }
+        let status = cmd.status();
+        drop(cmd);
+        if let Some(serving) = serving {
+            serving.join().expect("the peer");
+        }
+        status
+    }
+
+    fn errno(got: io::Result<std::process::ExitStatus>) -> Option<i32> {
+        match got {
+            Ok(status) => panic!("the child must not exec; it ran: {status:?}"),
+            Err(e) => e.raw_os_error(),
+        }
+    }
+
+    /// "Granted" with no map behind it is refused by the read-back: the
+    /// workload believes the kernel, not the answer.
+    #[test]
+    fn a_grant_without_a_map_is_refused_by_the_read_back() {
+        if !userns() {
+            return;
+        }
+        assert_eq!(
+            errno(against(Peer::GrantsWithoutMapping)),
+            Some(libc::EACCES)
+        );
+    }
+
+    /// A channel closed with no answer is `EPIPE` (507f0c042's closed-mapper
+    /// refusal), and so is one closed before the request is even sent: an
+    /// error through std's status pipe, not a `SIGPIPE` that kills the child
+    /// before it can report.
+    #[test]
+    fn a_closed_channel_is_refused_as_epipe_not_killed_by_sigpipe() {
+        if !userns() {
+            return;
+        }
+        assert_eq!(
+            errno(against(Peer::ClosesAfterTheRequest)),
+            Some(libc::EPIPE)
+        );
+        assert_eq!(
+            errno(against(Peer::ClosedBeforeTheRequest)),
+            Some(libc::EPIPE)
+        );
+    }
+
+    /// The init maps a namespace only if the outer uid owns it. Here the
+    /// workload drops to 65534 and the map was prepared for 4242, inner
+    /// 65534: the kernel would accept the write (the init is root), the
+    /// read-back would match it, and an unmapped 65534 would pass the id
+    /// check, so the owner check is the one thing that refuses. The control
+    /// is the same exchange with the map prepared for 65534.
+    #[test]
+    fn the_init_refuses_to_map_a_namespace_the_outer_uid_does_not_own() {
+        if rustix::process::getuid().as_raw() != 0 {
+            eprintln!("skipped: the init's half needs a root runtime");
+            return;
+        }
+        if !userns() {
+            return;
+        }
+        let run = |mapping: Mapping| {
+            let mut cmd = Command::new("/bin/true");
+            cmd.current_dir("/");
+            // SAFETY: the production hook steps, as root, in the forked child.
+            unsafe {
+                cmd.pre_exec(move || {
+                    enter(65534, 65534, mapping)?
+                        .map()?
+                        .shed_capabilities()
+                        .map(drop)
+                });
+            }
+            cmd.status()
+        };
+        assert!(
+            run(Mapping::new(65534, 65534, false))
+                .expect("control: the outer uid's own namespace is mapped")
+                .success()
+        );
+        assert_eq!(
+            errno(run(Mapping::new(4242, 65534, false))),
+            Some(libc::EACCES)
+        );
     }
 }
