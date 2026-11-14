@@ -42,6 +42,68 @@ use std::path::{Path, PathBuf};
 fn main() {
     let crate_dir =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
+    embed_migrations(&crate_dir);
+    check_wasm_pins(&crate_dir);
+}
+
+/// Write `$OUT_DIR/migrations.rs`: one `Migration` per file in `migrations/`,
+/// in version order, read from the file names rather than restated in
+/// `src/db.rs`. Names follow `<version>_<description>.sql`, the form the
+/// databases already deployed were migrated from (`sqlx::migrate!`), and the
+/// description is stored with `_` read as a space, as it stored it.
+fn embed_migrations(crate_dir: &Path) {
+    let dir = crate_dir.join("migrations");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut entries: Vec<(i64, String, PathBuf)> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+        .map(|entry| {
+            let path = entry
+                .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+                .path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_else(|| panic!("{}: non-UTF-8 file name", path.display()));
+            let stem = name
+                .strip_suffix(".sql")
+                .unwrap_or_else(|| panic!("{}: a migration must end in .sql", path.display()));
+            let (version, description) = stem.split_once('_').unwrap_or_else(|| {
+                panic!("{}: expected <version>_<description>.sql", path.display())
+            });
+            let version: i64 = version
+                .parse()
+                .unwrap_or_else(|e| panic!("{}: version {version:?}: {e}", path.display()));
+            (version, description.replace('_', " "), path)
+        })
+        .collect();
+    entries.sort_by_key(|(version, _, _)| *version);
+    assert!(
+        !entries.is_empty(),
+        "{} holds no migrations; the schema would be empty",
+        dir.display()
+    );
+    for pair in entries.windows(2) {
+        assert!(
+            pair[0].0 != pair[1].0,
+            "two migrations share version {}",
+            pair[0].0
+        );
+    }
+
+    let mut out = String::from("&[\n");
+    for (version, description, path) in &entries {
+        out.push_str(&format!(
+            "    Migration {{ version: {version}, description: {description:?}, sql: include_str!({:?}) }},\n",
+            path.display().to_string()
+        ));
+    }
+    out.push_str("]\n");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
+    let target = out_dir.join("migrations.rs");
+    std::fs::write(&target, out).unwrap_or_else(|e| panic!("writing {}: {e}", target.display()));
+}
+
+fn check_wasm_pins(crate_dir: &Path) {
     let repo_root = crate_dir
         .parent()
         .and_then(Path::parent)
