@@ -231,6 +231,7 @@ impl ApiError {
             ApiError::Nucleus(NucleusError::IsolationNotConfigured)
             | ApiError::Nucleus(NucleusError::IsolationInsufficient { .. })
             | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. })
+            | ApiError::Nucleus(NucleusError::WorkloadNamespaceUnavailable { reason: _ })
             | ApiError::Nucleus(NucleusError::ChildSeparationUnavailable { .. })
             | ApiError::Nucleus(NucleusError::ChildSharesRuntimeUid { .. })
             | ApiError::Nucleus(NucleusError::UnsandboxedNotOptedIn { .. })

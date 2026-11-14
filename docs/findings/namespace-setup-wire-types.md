@@ -68,3 +68,12 @@ Drove each new check red first (A-19), on macOS:
 - `namespace_binding` skipping the v2 equality: two verifier tests failed.
 - `namespace_binding` accepting v1 against a recorded expectation: two verifier tests failed.
 - The namespace binding moved ahead of the tier check: the tier-order test failed.
+
+## 2026-11-14: the runtime half
+
+The deferred half is `docs/findings/workload-user-network-namespace.md`. It changes two
+statements above. `WorkloadNamespace::admit` now admits `private_user_network` where the
+deciding site's runtime makes it (a Firecracker guest whose workload has its own PID namespace,
+on a kernel with user namespaces), with `workload.uid` stated. And the claim's `namespace` is
+read off the hook's record, which the node signs only if it equals the admitted setup. "Every v2
+receipt this runtime signs says `runtime`" was true at #3534 and is not after the runtime half.

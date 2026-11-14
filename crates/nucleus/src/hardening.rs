@@ -181,11 +181,35 @@
 //! layer would grant it. A non-root container image is unchanged: it refuses
 //! every child already (`UnsandboxedNotOptedIn`).
 //!
+//! # A private user and network namespace (#3528)
+//!
+//! A workload whose spec asks for `private_user_network { inner_uid, loopback }`
+//! is placed by [`ChildConfinement::placed`], the one place that posture is
+//! made, and only on top of a dropped, denylist-filtered posture whose spawn
+//! makes the workload's own PID namespace ([`PidNamespace::Own`], the guest):
+//!
+//! | base posture | PID namespace | kernel offers user namespaces | `private_user_network` |
+//! |---|---|---|---|
+//! | `DropTo`, workload denylist | own | yes | **placed** |
+//! | `DropTo`, workload denylist | own | no | refused ([`NucleusError::WorkloadNamespaceUnavailable`]) |
+//! | `DropTo`, workload denylist | shared (host tiers) | any | refused |
+//! | any other (bare tier, `Restricted`, `Isolated`) | any | any | refused |
+//!
+//! The PID and mount namespaces come first, made by root; the user and network
+//! namespaces last, made by the workload once dropped, and mapped by the
+//! namespace's init (`hardening/pidns.rs`, `hardening/pidns/user_network.rs`).
+//! The receipt's [`Hardened::namespace`] is read off the same [`Isolation`]
+//! the hook runs. Why this order, and what each receipt then claims, is
+//! `docs/findings/workload-user-network-namespace.md`.
+//!
 //! [`apply`]: ChildConfinement::apply
 
 use std::path::Path;
 
+use nucleus_spec::{AdmittedNamespace, NamespaceEnforcement};
 use portcullis::SeccompPolicy;
+
+pub use nucleus_spec::NamespaceSetup;
 
 use crate::command::ContainmentMode;
 use crate::error::{NucleusError, Result};
@@ -242,6 +266,16 @@ enum Posture {
     Restricted(SyscallFilter),
     /// Drop to this uid (and gid), then self-restrict.
     DropTo(u32, SyscallFilter, FilesystemConfinement),
+    /// A `DropTo` under the workload denylist whose spawn makes a PID
+    /// namespace, with a private user and network namespace inside it:
+    /// `inner_uid` mapped onto `uid`, `lo` raised iff `loopback`. Made only by
+    /// [`ChildConfinement::placed`] (module docs).
+    DropToUserNetwork {
+        uid: u32,
+        filesystem: FilesystemConfinement,
+        inner_uid: u32,
+        loopback: bool,
+    },
     /// A host service the runtime starts for one pod (the egress proxy, ADR
     /// 0015 §7): enter a fresh, empty network namespace, THEN drop to `uid`
     /// and `gid`, then self-restrict under the workload denylist. The drop is
@@ -262,6 +296,112 @@ enum Isolation {
     NetnsThenDrop { uid: u32, gid: u32 },
     /// The workload's own PID namespace, then the drop (#3344, `pidns.rs`).
     PidnsThenDrop { uid: u32, gid: u32 },
+    /// The workload's own PID namespace, the drop, and only then a private
+    /// user and network namespace mapping `inner_uid` onto `uid`, mapped by
+    /// the namespace's init (`pidns/user_network.rs`). The one isolation that
+    /// carries a map, and it has no shared-PID form.
+    PidnsThenUserNetwork {
+        uid: u32,
+        gid: u32,
+        inner_uid: u32,
+        loopback: bool,
+    },
+}
+
+impl Isolation {
+    /// What the hook does to the child's PID namespace: the launch receipt's
+    /// `pids=`.
+    fn pids(self) -> PidNamespace {
+        match self {
+            Self::PidnsThenDrop { uid: _, gid: _ }
+            | Self::PidnsThenUserNetwork {
+                uid: _,
+                gid: _,
+                inner_uid: _,
+                loopback: _,
+            } => PidNamespace::Own,
+            Self::None | Self::NetnsThenDrop { uid: _, gid: _ } => PidNamespace::Shared,
+        }
+    }
+
+    /// What the hook does to the child's user and network namespaces: the
+    /// launch receipt's `ns=` and the signed claim's `namespace`. Read off
+    /// the value the hook runs, so the record and the effect are one fact
+    /// (ADR 0007 G-1).
+    fn namespace(self) -> NamespaceSetup {
+        match self {
+            Self::None | Self::PidnsThenDrop { uid: _, gid: _ } => NamespaceSetup::Runtime {},
+            Self::NetnsThenDrop { uid: _, gid: _ } => NamespaceSetup::PrivateNetwork {},
+            Self::PidnsThenUserNetwork {
+                uid,
+                gid: _,
+                inner_uid,
+                loopback,
+            } => NamespaceSetup::PrivateUserNetwork {
+                outer_uid: uid,
+                inner_uid,
+                loopback,
+            },
+        }
+    }
+}
+
+/// Whether this kernel lets an unprivileged process make a user namespace, as
+/// far as its sysctls say (#3528). Read before a spawn so the common refusal
+/// is named at admission; the hook is still the control, and an LSM that
+/// refuses later (Ubuntu's `apparmor_restrict_unprivileged_userns`) fails the
+/// spawn there.
+///
+/// Two named cases, not a `bool` (ADR 0007 A), and no `Default` (B-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserNamespaces {
+    /// `user.max_user_namespaces` is above 0, and no distribution switch
+    /// turns unprivileged ones off.
+    Available,
+    /// Why not.
+    Unavailable {
+        /// What the probe read.
+        reason: &'static str,
+    },
+}
+
+impl UserNamespaces {
+    /// Read this kernel's answer.
+    #[must_use]
+    pub fn probe() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            let read = |path: &str| std::fs::read_to_string(path).map(|s| s.trim().to_owned());
+            match read("/proc/sys/user/max_user_namespaces").as_deref() {
+                Err(_) => Self::Unavailable {
+                    reason: "no /proc/sys/user/max_user_namespaces: a kernel without user namespaces",
+                },
+                Ok(limit) if !limit.parse::<u64>().is_ok_and(|n| n > 0) => Self::Unavailable {
+                    reason: "user.max_user_namespaces is 0 or unreadable",
+                },
+                Ok(_) => match (
+                    read("/proc/sys/kernel/unprivileged_userns_clone").as_deref(),
+                    read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").as_deref(),
+                ) {
+                    (Ok("0"), _) => Self::Unavailable {
+                        reason: "kernel.unprivileged_userns_clone is 0",
+                    },
+                    // The `unshare` succeeds, and AppArmor then denies the
+                    // new namespace the capabilities its setup needs.
+                    (_, Ok("1")) => Self::Unavailable {
+                        reason: "kernel.apparmor_restrict_unprivileged_userns is 1",
+                    },
+                    (Ok(_) | Err(_), Ok(_) | Err(_)) => Self::Available,
+                },
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Self::Unavailable {
+                reason: "user namespaces exist only on Linux",
+            }
+        }
+    }
 }
 
 /// How a confined child's filesystem is held (#2696 P3c). Decided per
@@ -645,11 +785,130 @@ impl ChildConfinement {
         }
     }
 
+    /// Which namespace placements a workload under this confinement, spawned
+    /// with `pids`, can be given: what the tool-proxy hands
+    /// `WorkloadNamespace::admit`. Decided by the same rule
+    /// [`Self::placed`] applies (ADR 0007 G-1).
+    #[must_use]
+    pub fn namespace_enforcement(&self, pids: PidNamespace) -> NamespaceEnforcement {
+        match self.user_network_base(pids, UserNamespaces::probe()) {
+            Ok(_) => NamespaceEnforcement::PrivateUserNetwork,
+            Err(_) => NamespaceEnforcement::RuntimeOnly,
+        }
+    }
+
+    /// Place a workload where its admission said (#3528): unchanged for
+    /// runtime placement, or a private user and network namespace inside the
+    /// workload's own PID namespace. The one constructor of that posture.
+    ///
+    /// # Errors
+    /// [`NucleusError::WorkloadNamespaceUnavailable`] when this confinement
+    /// cannot make the admitted placement true (module docs' table), or when
+    /// the admitted outer uid is not the uid this workload drops to.
+    pub fn placed(self, admitted: AdmittedNamespace, pids: PidNamespace) -> Result<Self> {
+        self.place(admitted.setup(), pids, UserNamespaces::probe())
+    }
+
+    /// [`Self::placed`], with the kernel's answer as an input so every row is
+    /// testable anywhere.
+    pub(crate) fn place(
+        self,
+        setup: NamespaceSetup,
+        pids: PidNamespace,
+        userns: UserNamespaces,
+    ) -> Result<Self> {
+        match setup {
+            NamespaceSetup::Runtime {} => Ok(self),
+            NamespaceSetup::PrivateUserNetwork {
+                outer_uid,
+                inner_uid,
+                loopback,
+            } => {
+                let (uid, filesystem) = self.user_network_base(pids, userns)?;
+                if uid != outer_uid {
+                    return Err(NucleusError::WorkloadNamespaceUnavailable {
+                        reason: format!(
+                            "the admitted outer uid {outer_uid} is not the uid this workload \
+                             drops to ({uid})"
+                        ),
+                    });
+                }
+                Ok(Self {
+                    posture: Posture::DropToUserNetwork {
+                        uid,
+                        filesystem,
+                        inner_uid,
+                        loopback,
+                    },
+                    kernel: self.kernel,
+                })
+            }
+            NamespaceSetup::Unrecorded {} | NamespaceSetup::PrivateNetwork {} => {
+                Err(NucleusError::WorkloadNamespaceUnavailable {
+                    reason: format!("{setup:?} is not a workload placement"),
+                })
+            }
+        }
+    }
+
+    /// The ONE rule for "can this workload get a private user and network
+    /// namespace": a dropped posture under the workload denylist, spawned in
+    /// its own PID namespace, on a kernel that offers user namespaces.
+    /// Exhaustive over postures, no `_` arm (ADR 0007 B-3).
+    fn user_network_base(
+        &self,
+        pids: PidNamespace,
+        userns: UserNamespaces,
+    ) -> Result<(u32, FilesystemConfinement)> {
+        let refused = |reason: &str| NucleusError::WorkloadNamespaceUnavailable {
+            reason: reason.to_owned(),
+        };
+        let (uid, filesystem) = match self.posture {
+            Posture::DropTo(uid, SyscallFilter::WorkloadDenylist, filesystem) => (uid, filesystem),
+            Posture::DropTo(_, SyscallFilter::Unfiltered, _) | Posture::Unsandboxed => {
+                return Err(refused(
+                    "the bare tier installs no syscall filter, so nothing would keep the \
+                     workload from making namespaces of its own",
+                ));
+            }
+            Posture::Restricted(_) => {
+                return Err(refused(
+                    "a workload that keeps the runtime's uid cannot be given a user namespace \
+                     of its own",
+                ));
+            }
+            Posture::Isolated { uid: _, gid: _ } => {
+                return Err(refused("a host service is not a workload"));
+            }
+            Posture::DropToUserNetwork {
+                uid: _,
+                filesystem: _,
+                inner_uid: _,
+                loopback: _,
+            } => return Err(refused("the workload is already placed")),
+        };
+        match (pids, userns) {
+            (PidNamespace::Own, UserNamespaces::Available) => Ok((uid, filesystem)),
+            (PidNamespace::Shared, _) => Err(refused(
+                "the workload does not get its own PID namespace here, and its namespace's init \
+                 is what writes the map",
+            )),
+            (PidNamespace::Own, UserNamespaces::Unavailable { reason }) => Err(refused(reason)),
+        }
+    }
+
     /// Who the child runs as, relative to the runtime.
     #[must_use]
     pub fn child_uid(&self) -> ChildUid {
         match self.posture {
-            Posture::DropTo(uid, ..) | Posture::Isolated { uid, gid: _ } => ChildUid::Distinct(uid),
+            Posture::DropTo(uid, ..)
+            | Posture::Isolated { uid, gid: _ }
+            | Posture::DropToUserNetwork {
+                uid,
+                filesystem: _,
+                inner_uid: _,
+                loopback: _,
+            } => ChildUid::Distinct(uid),
             Posture::Unsandboxed | Posture::Restricted(_) => ChildUid::SharedWithRuntime,
         }
     }
@@ -660,7 +919,13 @@ impl ChildConfinement {
         match self.posture {
             Posture::Unsandboxed => SyscallFilter::Unfiltered,
             Posture::Restricted(filter) | Posture::DropTo(_, filter, _) => filter,
-            Posture::Isolated { uid: _, gid: _ } => SyscallFilter::WorkloadDenylist,
+            Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork {
+                uid: _,
+                filesystem: _,
+                inner_uid: _,
+                loopback: _,
+            } => SyscallFilter::WorkloadDenylist,
         }
     }
 
@@ -668,7 +933,13 @@ impl ChildConfinement {
     #[must_use]
     pub fn filesystem(&self) -> FilesystemConfinement {
         match self.posture {
-            Posture::DropTo(_, _, fs) => fs,
+            Posture::DropTo(_, _, fs)
+            | Posture::DropToUserNetwork {
+                uid: _,
+                filesystem: fs,
+                inner_uid: _,
+                loopback: _,
+            } => fs,
             Posture::Unsandboxed
             | Posture::Restricted(_)
             | Posture::Isolated { uid: _, gid: _ } => FilesystemConfinement::NotApplied,
@@ -760,9 +1031,10 @@ impl ChildConfinement {
     pub fn is_unsandboxed(&self) -> bool {
         match self.posture {
             Posture::Unsandboxed => true,
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                false
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork { .. } => false,
         }
     }
 
@@ -770,9 +1042,10 @@ impl ChildConfinement {
     #[must_use]
     pub fn restricts(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork { .. } => true,
             Posture::Unsandboxed => false,
         }
     }
@@ -783,9 +1056,10 @@ impl ChildConfinement {
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
-                true
-            }
+            Posture::Restricted(_)
+            | Posture::DropTo(..)
+            | Posture::Isolated { uid: _, gid: _ }
+            | Posture::DropToUserNetwork { .. } => true,
             Posture::Unsandboxed => cfg!(target_os = "linux"),
         }
     }
@@ -916,6 +1190,38 @@ impl ChildConfinement {
                 rlimits,
                 syscalls,
             ),
+            // `placed` made this posture only for a spawn in its own PID
+            // namespace, whose init writes the map: there is no shared-PID
+            // form, so a caller that asks for one is refused, not degraded.
+            Posture::DropToUserNetwork {
+                uid,
+                filesystem,
+                inner_uid,
+                loopback,
+            } => match pids {
+                PidNamespace::Own => Self::restrict(
+                    cmd,
+                    Isolation::PidnsThenUserNetwork {
+                        uid,
+                        gid: uid,
+                        inner_uid,
+                        loopback,
+                    },
+                    SyscallFilter::WorkloadDenylist,
+                    filesystem,
+                    layer,
+                    rlimits,
+                    syscalls,
+                ),
+                PidNamespace::Shared => {
+                    tracing::error!(
+                        "refusing the spawn: a private user and network namespace is made only \
+                         inside the workload's own PID namespace"
+                    );
+                    refuse(cmd);
+                    SpawnHardening::Unhardened(Unhardened::Refused)
+                }
+            },
         }
     }
 
@@ -939,16 +1245,16 @@ impl ChildConfinement {
             SyscallFilter::Unfiltered => InstalledFilter::Unfiltered,
         };
         let workspace = layer.hold();
-        let pids = match isolation {
-            Isolation::PidnsThenDrop { uid: _, gid: _ } => PidNamespace::Own,
-            Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ } => PidNamespace::Shared,
-        };
+        // Both read off the `isolation` the hook runs (ADR 0007 G-1).
+        let pids = isolation.pids();
+        let namespace = isolation.namespace();
         match imp::install(cmd, isolation, filter, filesystem, layer, rlimits, syscalls) {
             Hook::Installed => SpawnHardening::Hardened(Hardened {
                 rlimits,
                 syscalls: installed,
                 workspace,
                 pids,
+                namespace,
             }),
             Hook::NoneOnThisPlatform => {
                 SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
@@ -1018,6 +1324,23 @@ impl SpawnHardening {
             Self::Unhardened(Unhardened::Refused) => "refused".to_string(),
         }
     }
+
+    /// What the spawn does to the child's user and network namespaces, read
+    /// off what [`ChildConfinement::apply`] installed (#3528). Without a hook
+    /// nothing moves the child, so it keeps the runtime's; `Refused` never
+    /// starts a child, so never reaches a receipt.
+    #[must_use]
+    pub fn namespace(&self) -> NamespaceSetup {
+        match self {
+            Self::Hardened(h) => h.namespace,
+            Self::Unhardened(
+                Unhardened::DeclaredBareTier
+                | Unhardened::NoHookOnThisPlatform
+                | Unhardened::BareTierWorkspaceReadOnly { abi: _ }
+                | Unhardened::Refused,
+            ) => NamespaceSetup::Runtime {},
+        }
+    }
 }
 
 /// The evidence that the confinement hook was installed, with which limits
@@ -1031,9 +1354,19 @@ pub struct Hardened {
     workspace: WorkspaceHold,
     /// Whether the hook made the child a PID namespace (#3344).
     pids: PidNamespace,
+    /// What the hook did to the child's user and network namespaces (#3528).
+    namespace: NamespaceSetup,
 }
 
 impl Hardened {
+    /// What the hook does to the child's user and network namespaces
+    /// (#3528): the launch receipt's `ns=` and, through the supervisor's
+    /// observation, the signed claim's `namespace`.
+    #[must_use]
+    pub fn namespace(&self) -> NamespaceSetup {
+        self.namespace
+    }
+
     /// How the hook holds the child's workspace (#2907).
     #[must_use]
     pub fn workspace(&self) -> WorkspaceHold {
@@ -1265,431 +1598,7 @@ mod hook {
 // `close_range`/`prctl`/`setrlimit`, which must be async-signal-safe. One
 // `unsafe` block: the syscall sequence. The hook install is `hook::pre_exec`.
 #[allow(unsafe_code)]
-mod imp {
-    use std::io;
-
-    use portcullis::{SeccompPolicy, SyscallClass};
-
-    use super::exec_pin::PinnedExec;
-    use super::landlock::Ruleset;
-    use super::seccomp::Program;
-    pub(super) use super::uid::{chown, drop_to, runtime_uid};
-    use super::{
-        AppliedRlimits, FilesystemConfinement, Hook, Isolation, RlimitVector, SyscallFilter,
-        WriteLayer,
-    };
-
-    // `setrlimit` takes `__rlimit_resource_t` on glibc but plain `c_int` on
-    // musl (the guest rootfs).
-    #[cfg(target_env = "gnu")]
-    type RlimitResource = libc::__rlimit_resource_t;
-    #[cfg(not(target_env = "gnu"))]
-    type RlimitResource = libc::c_int;
-
-    /// The limits as the hook sets them: plain scalars, computed in the parent
-    /// so the child neither decides nor allocates.
-    type HookLimits = [(RlimitResource, libc::rlim_t); 4];
-
-    /// The four `setrlimit` calls `applied` asks for. Each `u64` is assigned
-    /// to `rlim_t` without a conversion, which compiles only where `rlim_t` is
-    /// 64 bits (every target the runtime ships); a narrower `rlim_t` would be
-    /// a compile error, never a truncation to `RLIM_INFINITY`.
-    ///
-    /// `RLIMIT_NPROC` counts tasks per REAL UID (per user namespace since
-    /// Linux 5.14), not per process tree. It bounds one workload only because
-    /// the uid is that workload's alone, and that holds on one path:
-    /// * In a microVM guest every child of the tool-proxy (the workload and
-    ///   every `/v1/run` command) drops to `DEFAULT_CHILD_UID`, and the guest
-    ///   kernel runs one pod, so the bound is per pod. The syscall filter
-    ///   refuses new user namespaces, so the child cannot move to a fresh
-    ///   count.
-    /// * On a root host runtime every pod's children drop to the same
-    ///   `DEFAULT_CHILD_UID`, so the 512 tasks are shared across pods and
-    ///   with anything else running as that uid.
-    /// * A `Restricted` child (`HostHardened`, non-root runtime) keeps the
-    ///   runtime's uid, so the count includes every process of that user.
-    fn hook_limits(applied: AppliedRlimits) -> HookLimits {
-        let RlimitVector {
-            nproc,
-            nofile,
-            fsize_bytes,
-            cpu_seconds,
-        } = applied.limits();
-        [
-            (libc::RLIMIT_NPROC, nproc),
-            (libc::RLIMIT_NOFILE, nofile),
-            (libc::RLIMIT_FSIZE, fsize_bytes),
-            (libc::RLIMIT_CPU, cpu_seconds),
-        ]
-        .map(|(resource, max)| (resource as RlimitResource, max))
-    }
-
-    /// `CLOSE_RANGE_CLOEXEC` from uapi `linux/close_range.h` (kernel ≥ 5.11).
-    /// Local because the `libc` crate's binding varies by target.
-    const CLOSE_RANGE_CLOEXEC: libc::c_long = 1 << 2;
-
-    /// The syscall filter as the hook sees it: decided AND compiled in the
-    /// parent, so the child neither decides nor allocates. Three cases, not an
-    /// `Option` (ADR 0007 A-1, B-2): "the filter could not be built" is a
-    /// refusal, not "no filter".
-    enum Seccomp {
-        /// `SyscallFilter::Unfiltered`.
-        NotRequested,
-        /// The compiled denylist, installed after `no_new_privs`.
-        Install(Program),
-        /// The denylist was required and could not be compiled, so the spawn
-        /// fails. The reason was logged in the parent.
-        Refuse,
-    }
-
-    /// The Landlock ruleset as the hook sees it: decided AND compiled in the
-    /// parent. Three cases for the same reason as [`Seccomp`].
-    enum Landlock {
-        /// `FilesystemConfinement::Waived` or `NotApplied`.
-        NotRequested,
-        /// The compiled ruleset, applied after `no_new_privs`.
-        Restrict(Ruleset),
-        /// The ruleset was required and could not be compiled, so the spawn
-        /// fails. The reason was logged in the parent.
-        Refuse,
-    }
-
-    /// How much of the hook runs. Two named cases rather than an `Option`
-    /// of limits (ADR 0007 B-2).
-    enum Restrict<'a> {
-        /// Every step: `no_new_privs`, these limits, Landlock, the filter.
-        Full(&'a HookLimits),
-        /// The descriptor sweep only (the declared bare tier, #3461).
-        SweepOnly,
-    }
-
-    /// Who execs the child once the hook is done (#2907). Two named cases
-    /// rather than an `Option` (ADR 0007 B-2).
-    enum Start {
-        /// std's own `execvp`, after the hook returns.
-        ByStd,
-        /// The policy denies exec: the hook execs through the pin, the one
-        /// exec the filter allows, and returns only its error.
-        Pinned(PinnedExec),
-    }
-
-    /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
-    /// before exec. MUST be async-signal-safe: raw syscalls only, no
-    /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
-    fn harden_child(
-        isolation: Isolation,
-        seccomp: &mut Seccomp,
-        landlock: &mut Landlock,
-        writes: &mut Landlock,
-        restrict: Restrict<'_>,
-        start: &Start,
-    ) -> io::Result<()> {
-        // SAFETY: every call below is an async-signal-safe libc syscall taking
-        // scalars, a pointer to a fully-initialized local `rlimit`, or (the
-        // pinned `execveat`) pointers into buffers the parent built and the
-        // closure owns; none allocates or takes a lock, satisfying the
-        // `pre_exec` contract.
-        unsafe {
-            // A host service's own network namespace, entered while the
-            // child is still root, and only then the drop (std did not drop:
-            // `Isolated` declares no uid on the command). `setresuid` from
-            // root to a non-root uid clears every capability set, ambient
-            // included, because the hook never sets `SECBIT_KEEP_CAPS`.
-            match isolation {
-                Isolation::None => {}
-                Isolation::NetnsThenDrop { uid, gid } => {
-                    if libc::unshare(libc::CLONE_NEWNET) != 0
-                        || libc::setgroups(0, std::ptr::null()) != 0
-                        || libc::setresgid(gid, gid, gid) != 0
-                        || libc::setresuid(uid, uid, uid) != 0
-                    {
-                        return Err(io::Error::last_os_error());
-                    }
-                }
-                // Returns only in the workload, dropped (`pidns.rs`).
-                Isolation::PidnsThenDrop { uid, gid } => super::pidns::enter(uid, gid)?,
-            }
-            // Mark every fd from 3 up close-on-exec rather than closing it
-            // HERE: std still owns a CLOEXEC status pipe in this window, used
-            // to report a failed later step back to the parent. Closing it now
-            // turned such a failure into `fatal runtime error: assertion
-            // failed: output.write(&bytes).is_ok()` (the run-5 boot).
-            // CLOSE_RANGE_CLOEXEC gives the same post-exec result — nothing
-            // above 2 survives the exec (the runc CVE-2024-21626 shape) —
-            // while leaving the pipe usable until then.
-            //
-            // The raw syscall, not `libc::close_range` (a glibc-only wrapper;
-            // the guest is musl). ENOSYS (pre-5.9) is tolerated: std marks
-            // what it creates CLOEXEC. EINVAL (5.9–5.10: no CLOEXEC flag)
-            // falls back to closing outright. Anything else fails the spawn.
-            if libc::syscall(
-                libc::SYS_close_range,
-                3 as libc::c_long,
-                libc::c_uint::MAX as libc::c_long,
-                CLOSE_RANGE_CLOEXEC,
-            ) != 0
-            {
-                let err = io::Error::last_os_error();
-                match err.raw_os_error() {
-                    Some(libc::ENOSYS) => {}
-                    Some(libc::EINVAL) => {
-                        if libc::syscall(
-                            libc::SYS_close_range,
-                            3 as libc::c_long,
-                            libc::c_uint::MAX as libc::c_long,
-                            0 as libc::c_long,
-                        ) != 0
-                        {
-                            let err = io::Error::last_os_error();
-                            if err.raw_os_error() != Some(libc::ENOSYS) {
-                                return Err(err);
-                            }
-                        }
-                    }
-                    _ => return Err(err),
-                }
-            }
-            // The bare tier stops here: descriptors swept, nothing else.
-            // Under a read-only workspace (#2907) it also installs the write
-            // layer, and nothing else: `restrict_self` sets `no_new_privs`
-            // itself, which an unprivileged `landlock_restrict_self` needs.
-            let limits = match restrict {
-                Restrict::Full(limits) => limits,
-                Restrict::SweepOnly => {
-                    return match writes {
-                        Landlock::NotRequested => Ok(()),
-                        Landlock::Refuse => Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
-                        Landlock::Restrict(ruleset) => ruleset.restrict_self(),
-                    };
-                }
-            };
-            // What any process may do to itself — the uid, if it was to
-            // change, already has.
-            // No new privileges: defeats setuid/file-capability escalation,
-            // and is what lets an unprivileged process install the filter
-            // below (without it the kernel answers EACCES).
-            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            for &(resource, max) in limits {
-                let rl = libc::rlimit {
-                    rlim_cur: max,
-                    rlim_max: max,
-                };
-                if libc::setrlimit(resource, &rl) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-            }
-            // The filesystem ruleset: after `no_new_privs` (without which an
-            // unprivileged `landlock_restrict_self` is `EPERM`) and before the
-            // syscall filter, so the filter can never stand between the
-            // child and its own restriction.
-            match (landlock, isolation) {
-                (Landlock::NotRequested, _) => {}
-                (Landlock::Refuse, _) => {
-                    return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
-                }
-                // Its own `/proc` is a new procfs the parent's rule is not on.
-                (Landlock::Restrict(ruleset), Isolation::PidnsThenDrop { uid: _, gid: _ }) => {
-                    ruleset.grant_own_proc()?;
-                    ruleset.restrict_self()?;
-                }
-                (
-                    Landlock::Restrict(ruleset),
-                    Isolation::None | Isolation::NetnsThenDrop { uid: _, gid: _ },
-                ) => ruleset.restrict_self()?,
-            }
-            // The write layer (#2907), a second Landlock domain over the
-            // first: the two intersect, so a read-only workspace stays
-            // readable through the layout and is written by nothing.
-            match writes {
-                Landlock::NotRequested => {}
-                Landlock::Refuse => return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
-                Landlock::Restrict(ruleset) => ruleset.restrict_self()?,
-            }
-            // The syscall filter, LAST: after the uid drop (std did it before
-            // this hook ran) and after `no_new_privs`. `fprog` borrows the
-            // parent-compiled instructions, and `ErrorKind` errors do not
-            // allocate.
-            match seccomp {
-                Seccomp::NotRequested => {}
-                Seccomp::Refuse => return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
-                Seccomp::Install(program) => {
-                    let fprog = program.fprog();
-                    if libc::prctl(
-                        libc::PR_SET_SECCOMP,
-                        libc::SECCOMP_MODE_FILTER,
-                        &raw const fprog,
-                    ) != 0
-                    {
-                        return Err(io::Error::last_os_error());
-                    }
-                }
-            }
-            // Under the filter now. A policy that denies exec allows exactly
-            // the pinned `execveat`, which does not return on success: its
-            // descriptor and the NUL-terminated argv/envp arrays (addresses
-            // of `CString`s the pin keeps alive; `usize` and a pointer share
-            // one layout) were built in the parent, and the kernel only reads
-            // them (#2907).
-            match start {
-                Start::ByStd => {}
-                Start::Pinned(pinned) => {
-                    let (fd, argv, envp) = pinned.execveat_args();
-                    libc::syscall(
-                        libc::SYS_execveat,
-                        libc::c_long::from(fd),
-                        c"".as_ptr(),
-                        argv,
-                        envp,
-                        libc::c_long::from(libc::AT_EMPTY_PATH),
-                    );
-                    return Err(io::Error::last_os_error());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Install the self-restriction hook, with `filter` (the denylist plus
-    /// `syscalls`' classes) and the filesystem ruleset compiled, `rlimits`
-    /// converted and any exec pin opened here, in the parent.
-    pub(super) fn install(
-        cmd: &mut std::process::Command,
-        isolation: Isolation,
-        filter: SyscallFilter,
-        filesystem: FilesystemConfinement,
-        layer: WriteLayer<'_>,
-        rlimits: AppliedRlimits,
-        syscalls: SeccompPolicy,
-    ) -> Hook {
-        let limits = hook_limits(rlimits);
-        let mut writes = write_layer(layer);
-        let mut landlock = match filesystem {
-            FilesystemConfinement::NotApplied | FilesystemConfinement::Waived { .. } => {
-                Landlock::NotRequested
-            }
-            FilesystemConfinement::Landlock { abi } => match Ruleset::compile(abi) {
-                Ok(ruleset) => Landlock::Restrict(ruleset),
-                Err(e) => {
-                    tracing::error!(
-                        path = %e.path.display(),
-                        error = %e.error,
-                        abi,
-                        "the Landlock ruleset could not be compiled; refusing the confined spawn"
-                    );
-                    Landlock::Refuse
-                }
-            },
-        };
-        let (mut seccomp, start) = match filter {
-            SyscallFilter::Unfiltered => (Seccomp::NotRequested, Start::ByStd),
-            SyscallFilter::WorkloadDenylist => {
-                match compile(cmd, syscalls, rlimits.limits().nofile) {
-                    Ok((program, start)) => (Seccomp::Install(program), start),
-                    Err(error) => {
-                        tracing::error!(
-                            %error,
-                            derived = %syscalls.canonical(),
-                            "the workload syscall filter could not be built; refusing the confined spawn"
-                        );
-                        (Seccomp::Refuse, Start::ByStd)
-                    }
-                }
-            }
-        };
-        super::hook::pre_exec(cmd, move || {
-            harden_child(
-                isolation,
-                &mut seccomp,
-                &mut landlock,
-                &mut writes,
-                Restrict::Full(&limits),
-                &start,
-            )
-        });
-        Hook::Installed
-    }
-
-    /// The write layer (#2907), compiled in the parent. A layer that cannot
-    /// be compiled refuses the spawn; the reason is logged here and named by
-    /// `preflight_filesystem`.
-    fn write_layer(layer: WriteLayer<'_>) -> Landlock {
-        match layer {
-            WriteLayer::None => Landlock::NotRequested,
-            WriteLayer::ReadOnly { abi, workspace } => {
-                match Ruleset::compile_write_scope(abi, workspace) {
-                    Ok(ruleset) => Landlock::Restrict(ruleset),
-                    Err(e) => {
-                        tracing::error!(
-                            path = %e.path.display(),
-                            error = %e.error,
-                            abi,
-                            "the Landlock write layer could not be compiled; refusing the spawn"
-                        );
-                        Landlock::Refuse
-                    }
-                }
-            }
-        }
-    }
-
-    /// The denylist plus `syscalls`' classes, and who starts the child: a
-    /// policy that denies exec gets a pin at or above `nofile` (the limit the
-    /// hook sets), and the program pins `execveat` to it.
-    fn compile(
-        cmd: &mut std::process::Command,
-        syscalls: SeccompPolicy,
-        nofile: u64,
-    ) -> Result<(Program, Start), String> {
-        let start = if syscalls.denies(SyscallClass::Exec) {
-            Start::Pinned(PinnedExec::prepare(cmd, nofile).map_err(|e| e.to_string())?)
-        } else {
-            Start::ByStd
-        };
-        let pin = match &start {
-            Start::Pinned(p) => Some(p.pin()),
-            Start::ByStd => None,
-        };
-        let program = Program::workload(syscalls, pin).map_err(|e| e.to_string())?;
-        Ok((program, start))
-    }
-
-    /// The runtime's seal (#3461): non-dumpable, confirmed by reading it
-    /// back. Through `rustix`'s safe `prctl` wrappers, so no `unsafe`.
-    pub(super) fn seal_self() -> io::Result<bool> {
-        use rustix::process::{DumpableBehavior, dumpable_behavior, set_dumpable_behavior};
-        set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
-        if matches!(dumpable_behavior()?, DumpableBehavior::NotDumpable) {
-            Ok(true)
-        } else {
-            Err(io::Error::other("the process still reads as dumpable"))
-        }
-    }
-
-    /// The bare tier's one confinement (#3461): every descriptor above stdio
-    /// marked close-on-exec at the child's exec, so a descriptor the runtime
-    /// inherited without close-on-exec (from a careless launcher, or a build
-    /// tool's jobserver) does not pass on to a command the agent runs. No
-    /// `no_new_privs`, no limits, no filter: the tier's stated meaning stands.
-    ///
-    /// Under a read-only workspace (#2907) the same hook also installs the
-    /// write layer `layer` names, and still nothing else.
-    pub(super) fn sweep_inherited(cmd: &mut std::process::Command, layer: WriteLayer<'_>) -> Hook {
-        let mut writes = write_layer(layer);
-        super::hook::pre_exec(cmd, move || {
-            harden_child(
-                Isolation::None,
-                &mut Seccomp::NotRequested,
-                &mut Landlock::NotRequested,
-                &mut writes,
-                Restrict::SweepOnly,
-                &Start::ByStd,
-            )
-        });
-        Hook::Installed
-    }
-}
+mod imp;
 
 #[cfg(all(unix, not(target_os = "linux")))]
 mod imp {
@@ -1754,7 +1663,13 @@ mod imp {
         let isolated = match isolation {
             Isolation::None => false,
             Isolation::NetnsThenDrop { uid: _, gid: _ }
-            | Isolation::PidnsThenDrop { uid: _, gid: _ } => true,
+            | Isolation::PidnsThenDrop { uid: _, gid: _ }
+            | Isolation::PidnsThenUserNetwork {
+                uid: _,
+                gid: _,
+                inner_uid: _,
+                loopback: _,
+            } => true,
         };
         match (filter, landlock_required || isolated) {
             (SyscallFilter::Unfiltered, false) => {}
@@ -2487,3 +2402,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod user_network_tests;

@@ -173,6 +173,15 @@ pub enum NucleusError {
         platform: String,
     },
 
+    /// A private workload namespace this confinement cannot make true (#3528):
+    /// refused before anything is spawned, never run in the runtime's
+    /// namespaces instead.
+    #[error("workload namespace setup unavailable: {reason}")]
+    WorkloadNamespaceUnavailable {
+        /// Why: the posture, the PID namespace, or what the kernel offers.
+        reason: String,
+    },
+
     /// Subprocess execution refused because a declared third-party artifact has
     /// no verified provenance attestation (most-paranoid next-bet #3). Fail-closed:
     /// an unsigned / untrusted-key / digest-mismatched / wrong-predicate artifact,

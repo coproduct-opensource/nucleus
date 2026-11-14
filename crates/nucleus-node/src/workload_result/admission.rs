@@ -52,11 +52,17 @@ pub(super) async fn get(
         &door.to_string(),
     );
     Ok(Json(WorkloadAdmission {
-        // Read off the admission decider, never off the request: a spec this
-        // runtime cannot enforce has no admission record to publish.
+        // Read off the admission decider for this pod's backend, never off
+        // the request: a spec this runtime cannot enforce has no admission
+        // record to publish.
         namespace: workload
             .namespace
-            .admit()
+            .admit(
+                workload.uid,
+                crate::spec_posture::namespace_enforcement(Some(super::backend_of(
+                    &pod.driver_state,
+                ))),
+            )
             .map_err(|e| ApiError::InvalidSpec(e.to_string()))?
             .setup(),
         pod_id: id.to_string(),
