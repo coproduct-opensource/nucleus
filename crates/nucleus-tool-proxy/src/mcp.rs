@@ -1650,8 +1650,8 @@ impl NucleusMcpServer {
 
 #[tool_handler]
 impl ServerHandler for NucleusMcpServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_server_info(Implementation::new(
                 "nucleus-tool-proxy",
