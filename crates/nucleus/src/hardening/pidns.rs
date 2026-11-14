@@ -578,12 +578,31 @@ mod exchange_tests {
     }
 
     /// Whether this process may make a user namespace at all; the tests
-    /// below report and return where it may not.
+    /// below report and return where it may not. The sysctls are not the
+    /// whole answer: a test run inside a sandbox inherits its seccomp filter
+    /// (a gate step under this very confinement denies `unshare`), so a child
+    /// is asked to make one first, as `child_seccomp`'s user-namespace control
+    /// does.
     fn userns() -> bool {
-        match UserNamespaces::probe() {
-            UserNamespaces::Available => true,
-            UserNamespaces::Unavailable { reason } => {
-                eprintln!("skipped: {reason}");
+        if let UserNamespaces::Unavailable { reason } = UserNamespaces::probe() {
+            eprintln!("skipped: {reason}");
+            return false;
+        }
+        let mut control = Command::new("/bin/true");
+        control.current_dir("/");
+        // SAFETY: one raw `unshare` in the single-threaded forked child.
+        unsafe {
+            control.pre_exec(|| {
+                if libc::unshare(libc::CLONE_NEWUSER) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        match control.status() {
+            Ok(status) if status.success() => true,
+            other => {
+                eprintln!("skipped: this process may not make a user namespace: {other:?}");
                 false
             }
         }
