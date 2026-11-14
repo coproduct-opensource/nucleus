@@ -153,6 +153,7 @@ fn completed_claim(
         environment,
         program,
         isolation,
+        namespace,
     } = observed
     else {
         return Err(ApiError::Driver(
@@ -164,6 +165,21 @@ fn completed_claim(
             "workload has no declared program identity".into(),
         ));
     };
+    let workload = spec.spec.workload.as_ref().ok_or_else(|| {
+        ApiError::Driver("execution observation has no configured workload".into())
+    })?;
+    // The same decider the create-time admission used: a spec this runtime
+    // cannot enforce is never signed, whatever the supervisor reported.
+    let expected_namespace = workload
+        .namespace
+        .admit()
+        .map_err(|e| ApiError::Driver(e.to_string()))?
+        .setup();
+    if namespace != expected_namespace {
+        return Err(ApiError::Driver(
+            "supervisor namespace setup differs from admitted spec".into(),
+        ));
+    }
     let expected = nucleus_spec::identity::program_digest(spec)
         .map_err(|e| ApiError::Driver(format!("host program identity: {e}")))?;
     if digest != expected {
@@ -190,7 +206,7 @@ fn completed_claim(
         .cloned()
         .unwrap_or_default();
     Ok(ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
         pod_id: id.to_string(),
         source_commit,
         source_tree,
@@ -199,6 +215,7 @@ fn completed_claim(
         architecture: std::env::consts::ARCH.into(),
         backend,
         uid_isolated: isolation == WorkloadIsolation::UidIsolated,
+        namespace,
         exit_code,
         stdout_sha256,
         stderr_sha256,
@@ -342,12 +359,20 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "apiVersion": "nucleus/v1", "kind": "Pod",
             "metadata": {"name": "observation-test"},
-            "spec": {"policy":{"type":"profile","name":"default"},"work_dir": "/work"}
+            "spec": {"policy":{"type":"profile","name":"default"},"work_dir": "/work",
+                     "workload": {"command":"/usr/bin/true"}}
         }))
         .unwrap()
     }
 
     fn observed(spec: &nucleus_spec::PodSpec) -> WorkloadResult {
+        observed_namespace(spec, nucleus_spec::NamespaceSetup::Runtime {})
+    }
+
+    fn observed_namespace(
+        spec: &nucleus_spec::PodSpec,
+        namespace: nucleus_spec::NamespaceSetup,
+    ) -> WorkloadResult {
         WorkloadResult::Exited {
             exit_code: Some(23),
             stdout_sha256: "a".repeat(64),
@@ -358,12 +383,57 @@ mod tests {
                 digest: nucleus_spec::identity::program_digest(spec).unwrap(),
             },
             isolation: WorkloadIsolation::Unconfined,
+            namespace,
         }
     }
 
     fn unattested() -> nucleus_ci_verdict::execution::NodePlatform {
         nucleus_ci_verdict::execution::NodePlatform::Unattested {
             reason: "test node".into(),
+        }
+    }
+
+    #[test]
+    fn the_node_signs_runtime_placement_and_nothing_else() {
+        use nucleus_spec::{NamespaceSetup, WorkloadNamespace};
+        let claim_for = |spec: &nucleus_spec::PodSpec, observed: NamespaceSetup| {
+            completed_claim(
+                spec,
+                Uuid::nil(),
+                Backend::Local,
+                observed_namespace(spec, observed),
+                unattested(),
+                SandboxTier::Driver,
+            )
+        };
+        let runtime = spec();
+        let claim = claim_for(&runtime, NamespaceSetup::Runtime {}).unwrap();
+        assert_eq!(claim.schema, ExecutionSchema::V2);
+        assert_eq!(claim.namespace, NamespaceSetup::Runtime {});
+        let private = NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 1000,
+            loopback: true,
+        };
+        // A supervisor reporting anything but the admitted runtime placement
+        // is not signed.
+        for wrong in [
+            private,
+            NamespaceSetup::PrivateNetwork {},
+            NamespaceSetup::Unrecorded {},
+        ] {
+            assert!(claim_for(&runtime, wrong).is_err(), "{wrong:?}");
+        }
+        // A spec this runtime cannot enforce is not signed, even when the
+        // observation agrees with it.
+        let mut requested = spec();
+        requested.spec.workload.as_mut().unwrap().namespace =
+            WorkloadNamespace::PrivateUserNetwork {
+                inner_uid: 1000,
+                loopback: true,
+            };
+        for observed in [private, NamespaceSetup::Runtime {}] {
+            assert!(claim_for(&requested, observed).is_err(), "{observed:?}");
         }
     }
 
