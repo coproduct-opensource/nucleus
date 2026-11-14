@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(count(&pool, "SELECT COUNT(*) FROM verifications").await, 0);
         assert_eq!(
             count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations WHERE success").await,
-            MIGRATIONS.len() as i64
+            i64::try_from(MIGRATIONS.len()).unwrap()
         );
     }
 
@@ -404,7 +404,7 @@ mod tests {
         );
         assert_eq!(
             count(&db, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-            MIGRATIONS.len() as i64
+            i64::try_from(MIGRATIONS.len()).unwrap()
         );
     }
 
