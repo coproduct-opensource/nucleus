@@ -31,8 +31,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use ct_merkle::mem_backed_tree::MemoryBackedTree;
 use sha2::Sha256;
-use sqlx::{Row, SqlitePool};
 use tokio::sync::RwLock;
+
+use crate::db::Db;
 
 /// One Merkle log instance. Wrapped in `Arc<RwLock<_>>` inside
 /// [`crate::app::AppState`] so handlers can read proofs concurrently
@@ -52,14 +53,20 @@ impl MerkleLog {
     /// Replay every `log_entries` row in seq order into a fresh
     /// Merkle tree. Called once at process startup so the in-memory
     /// tree is consistent with the persisted chain.
-    pub async fn from_persisted_entries(pool: &SqlitePool) -> Result<Self> {
-        let mut tree = MerkleLog::empty();
-        let rows = sqlx::query("SELECT entry_hash FROM log_entries ORDER BY seq ASC")
-            .fetch_all(pool)
+    pub async fn from_persisted_entries(db: &Db) -> Result<Self> {
+        let rows: Vec<Vec<u8>> = db
+            .call(|conn| {
+                let mut stmt =
+                    conn.prepare("SELECT entry_hash FROM log_entries ORDER BY seq ASC")?;
+                let rows = stmt
+                    .query_map([], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                Ok(rows)
+            })
             .await
             .context("loading log_entries for merkle rebuild")?;
-        for row in rows {
-            let entry_hash: Vec<u8> = row.get(0);
+        let mut tree = MerkleLog::empty();
+        for entry_hash in rows {
             tree.tree.push(entry_hash);
         }
         Ok(tree)
