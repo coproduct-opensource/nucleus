@@ -22,8 +22,10 @@
 //! - tlog-tiles static serving (Go-sumdb-compatible)
 
 use anyhow::{Context, Result};
+use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqlitePool};
+
+use crate::db::Db;
 
 /// All-zero "genesis" hash for the very first entry's `prev_hash`.
 const ZERO_HASH: [u8; 32] = [0u8; 32];
@@ -38,59 +40,60 @@ pub fn compute_entry_hash(prev_hash: &[u8; 32], envelope_hash_hex: &str, ts_ms: 
     h.finalize().into()
 }
 
-/// Append a verification leaf to the log. Reads the current tip under
-/// the same connection so concurrent appends don't see torn state.
-/// Returns the (seq, entry_hash) of the newly-inserted row.
-pub async fn append_entry(
-    pool: &SqlitePool,
-    envelope_hash_hex: &str,
-    ts_ms: i64,
-) -> Result<(i64, [u8; 32])> {
-    // sqlx sqlite pool serializes writes at the driver level; for
-    // an extra safety margin we wrap in an explicit transaction. The
-    // chain-head read + insert must be atomic w.r.t. other appenders.
-    let mut tx = pool.begin().await.context("begin tx")?;
+/// Append a verification leaf to the log. Reads the current tip in the
+/// same transaction as the insert so concurrent appends don't see torn
+/// state. Returns the (seq, entry_hash) of the newly-inserted row.
+pub async fn append_entry(db: &Db, envelope_hash_hex: &str, ts_ms: i64) -> Result<(i64, [u8; 32])> {
+    let envelope_hash_hex = envelope_hash_hex.to_string();
+    db.call(move |conn| {
+        // The one connection already serializes callers; the explicit
+        // transaction keeps the chain-head read + insert atomic against any
+        // other process writing the same file.
+        let tx = conn.transaction().context("begin tx")?;
 
-    let prev = sqlx::query("SELECT entry_hash FROM log_entries ORDER BY seq DESC LIMIT 1")
-        .fetch_optional(&mut *tx)
-        .await
-        .context("read prev entry")?;
-    let prev_hash: [u8; 32] = match prev {
-        Some(row) => {
-            let bytes: Vec<u8> = row.get(0);
-            bytes
+        let prev: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT entry_hash FROM log_entries ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("read prev entry")?;
+        let prev_hash: [u8; 32] = match prev {
+            Some(bytes) => bytes
                 .as_slice()
                 .try_into()
-                .map_err(|_| anyhow::anyhow!("prev_hash != 32 bytes (corruption)"))?
-        }
-        None => ZERO_HASH,
-    };
-    let entry_hash = compute_entry_hash(&prev_hash, envelope_hash_hex, ts_ms);
+                .map_err(|_| anyhow::anyhow!("prev_hash != 32 bytes (corruption)"))?,
+            None => ZERO_HASH,
+        };
+        let entry_hash = compute_entry_hash(&prev_hash, &envelope_hash_hex, ts_ms);
 
-    let result = sqlx::query(
-        "INSERT INTO log_entries (envelope_hash, prev_hash, entry_hash, ts_ms) \
-         VALUES (?, ?, ?, ?)",
-    )
-    .bind(envelope_hash_hex)
-    .bind(prev_hash.to_vec())
-    .bind(entry_hash.to_vec())
-    .bind(ts_ms)
-    .execute(&mut *tx)
+        tx.execute(
+            "INSERT INTO log_entries (envelope_hash, prev_hash, entry_hash, ts_ms) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                envelope_hash_hex,
+                prev_hash.to_vec(),
+                entry_hash.to_vec(),
+                ts_ms
+            ],
+        )
+        .context("insert log entry")?;
+
+        let seq = tx.last_insert_rowid();
+        tx.commit().context("commit tx")?;
+        Ok((seq, entry_hash))
+    })
     .await
-    .context("insert log entry")?;
-
-    let seq = result.last_insert_rowid();
-    tx.commit().await.context("commit tx")?;
-    Ok((seq, entry_hash))
 }
 
 /// Number of entries currently in the log (== latest `seq`).
-pub async fn log_size(pool: &SqlitePool) -> Result<i64> {
-    let row = sqlx::query("SELECT COUNT(*) FROM log_entries")
-        .fetch_one(pool)
-        .await
-        .context("log size")?;
-    Ok(row.get(0))
+pub async fn log_size(db: &Db) -> Result<i64> {
+    db.call(|conn| {
+        conn.query_row("SELECT COUNT(*) FROM log_entries", [], |row| row.get(0))
+            .context("log size")
+    })
+    .await
 }
 
 /// Current chain-head hash + size + timestamp. The "Signed Tree Head"
@@ -107,18 +110,24 @@ pub struct UnsignedTreeHead {
 }
 
 /// Compute the current (unsigned) STH.
-pub async fn current_sth(pool: &SqlitePool) -> Result<UnsignedTreeHead> {
-    let row =
-        sqlx::query("SELECT seq, entry_hash, ts_ms FROM log_entries ORDER BY seq DESC LIMIT 1")
-            .fetch_optional(pool)
-            .await
-            .context("read tip")?;
+pub async fn current_sth(db: &Db) -> Result<UnsignedTreeHead> {
+    let tip: Option<(i64, Vec<u8>, i64)> = db
+        .call(|conn| {
+            conn.query_row(
+                "SELECT seq, entry_hash, ts_ms FROM log_entries ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .context("read tip")
+        })
+        .await?;
 
-    Ok(match row {
-        Some(r) => UnsignedTreeHead {
-            tree_size: r.get(0),
-            root_hash_hex: hex::encode::<Vec<u8>>(r.get(1)),
-            timestamp_ms: r.get(2),
+    Ok(match tip {
+        Some((tree_size, entry_hash, timestamp_ms)) => UnsignedTreeHead {
+            tree_size,
+            root_hash_hex: hex::encode(entry_hash),
+            timestamp_ms,
         },
         None => UnsignedTreeHead {
             tree_size: 0,
@@ -133,14 +142,14 @@ mod tests {
     use super::*;
     use crate::db::{VerificationRecord, connect_and_migrate, record_verification};
 
-    async fn fresh_pool() -> SqlitePool {
+    async fn fresh_pool() -> Db {
         connect_and_migrate("sqlite::memory:").await.unwrap()
     }
 
     /// Insert a `verifications` parent row so the FK on `log_entries`
     /// is satisfied. Mirrors the production flow: the verify endpoint
     /// records the result, then appends a log entry pointing at it.
-    async fn seed_parent(pool: &SqlitePool, envelope_hash: &str, ts_ms: i64) {
+    async fn seed_parent(pool: &Db, envelope_hash: &str, ts_ms: i64) {
         record_verification(
             pool,
             &VerificationRecord {

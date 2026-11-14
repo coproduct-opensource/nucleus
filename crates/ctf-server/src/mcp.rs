@@ -311,8 +311,8 @@ impl VaultCtfMcp {
 
 #[tool_handler]
 impl ServerHandler for VaultCtfMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
                 "the-vault-ctf",
                 env!("CARGO_PKG_VERSION"),

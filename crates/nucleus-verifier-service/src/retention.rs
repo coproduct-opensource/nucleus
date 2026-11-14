@@ -31,12 +31,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use sqlx::SqlitePool;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(test)]
-use sqlx::Row;
+use crate::db::Db;
 
 /// Default sweep cadence. Operators tune via the (currently
 /// unexposed) `RETENTION_SWEEP_INTERVAL_SECS` env if needed; the
@@ -63,17 +61,17 @@ fn compute_cutoff(now_secs: i64, retention_secs: i64) -> i64 {
 
 /// Run one sweep against the pool. Pure async fn so tests can drive
 /// the cutoff math without spawning a background task.
-pub async fn sweep_once(
-    pool: &SqlitePool,
-    retention_secs: i64,
-    now_secs: i64,
-) -> Result<SweepReport> {
+pub async fn sweep_once(db: &Db, retention_secs: i64, now_secs: i64) -> Result<SweepReport> {
     let cutoff = compute_cutoff(now_secs, retention_secs);
-    let result = sqlx::query("DELETE FROM verifications WHERE submitted_at < ?")
-        .bind(cutoff)
-        .execute(pool)
+    let deleted = db
+        .call(move |conn| {
+            Ok(conn.execute(
+                "DELETE FROM verifications WHERE submitted_at < ?1",
+                rusqlite::params![cutoff],
+            )?)
+        })
         .await?;
-    let rows_deleted = result.rows_affected();
+    let rows_deleted = u64::try_from(deleted)?;
 
     if rows_deleted > 0 {
         tracing::info!(
@@ -94,7 +92,7 @@ pub async fn sweep_once(
 /// the task to drop out cleanly (no `tokio::select!` racing the
 /// timer; just a polled cancel check between ticks).
 pub fn spawn(
-    pool: SqlitePool,
+    pool: Db,
     retention_secs: Option<i64>,
     interval_secs: u64,
     cancel: CancellationToken,
@@ -139,11 +137,11 @@ mod tests {
     use super::*;
     use crate::db::{VerificationRecord, connect_and_migrate, record_verification};
 
-    async fn fresh_pool() -> SqlitePool {
+    async fn fresh_pool() -> Db {
         connect_and_migrate("sqlite::memory:").await.unwrap()
     }
 
-    async fn insert(pool: &SqlitePool, hash: &str, submitted_at: i64) {
+    async fn insert(pool: &Db, hash: &str, submitted_at: i64) {
         record_verification(
             pool,
             &VerificationRecord {
@@ -159,13 +157,12 @@ mod tests {
         .unwrap();
     }
 
-    async fn row_count(pool: &SqlitePool) -> i64 {
-        sqlx::query("SELECT COUNT(*) FROM verifications")
-            .fetch_one(pool)
-            .await
-            .unwrap()
-            .try_get::<i64, _>(0)
-            .unwrap()
+    async fn row_count(pool: &Db) -> i64 {
+        pool.call(
+            |conn| Ok(conn.query_row("SELECT COUNT(*) FROM verifications", [], |r| r.get(0))?),
+        )
+        .await
+        .unwrap()
     }
 
     #[test]
