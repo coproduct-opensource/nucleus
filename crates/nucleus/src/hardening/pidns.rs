@@ -550,7 +550,8 @@ mod tests {
 /// check, the workload's read-back, and the closed-channel refusal. Each is
 /// a check the success path cannot show, so each test is built to pass only
 /// because that one check is there.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[allow(
     unsafe_code,
     reason = "test hooks: pre_exec closures over the production steps"
