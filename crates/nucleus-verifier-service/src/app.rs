@@ -9,8 +9,8 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::db::Db;
 use metrics_exporter_prometheus::PrometheusHandle;
+use sqlx::SqlitePool;
 
 use crate::merkle::SharedMerkleLog;
 use tower::limit::ConcurrencyLimitLayer;
@@ -52,11 +52,11 @@ const RATE_LIMIT_BURST_SIZE: u32 = 60;
 /// `/.well-known/jwks.json` publishes the matching public key.
 #[derive(Clone, Default)]
 pub struct AppState {
-    /// Optional persistence handle. When `None`, the service runs in
+    /// Optional persistence pool. When `None`, the service runs in
     /// the original stateless mode and bundle hash-lookup returns 404
     /// for every request ("persistence disabled"). When `Some`, the
-    /// handle is shared (cheap Arc-backed clone) across all handlers.
-    pub db: Option<Db>,
+    /// pool is shared (cheap Arc-backed clone) across all handlers.
+    pub db: Option<SqlitePool>,
     /// Optional Ed25519 signer for the verification log's STH.
     /// `None` means iter-1 behavior (unsigned `root_hash_hex` chain
     /// head); `Some` flips `signed: true` and adds a base64 signature
