@@ -390,6 +390,8 @@ pub(super) unsafe fn enter<I: Inside>(
         // `lo` up in the workload's fresh network namespace: the only
         // interface it has, down until this runs.
         let loopback_up = || -> io::Result<()> {
+            let up = libc::c_short::try_from(libc::IFF_UP)
+                .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
             let socket = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
             if socket < 0 {
                 return Err(io::Error::last_os_error());
@@ -398,7 +400,7 @@ pub(super) unsafe fn enter<I: Inside>(
             std::ptr::copy_nonoverlapping(c"lo".as_ptr(), request.ifr_name.as_mut_ptr(), 3);
             let mut result = libc::ioctl(socket, SIOCGIFFLAGS, &raw mut request);
             if result == 0 {
-                request.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
+                request.ifr_ifru.ifru_flags |= up;
                 result = libc::ioctl(socket, SIOCSIFFLAGS, &raw const request);
             }
             let failure = (result != 0).then(io::Error::last_os_error);
