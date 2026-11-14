@@ -22,7 +22,7 @@
 > them. Honest first-party snapshot (census, 2026-06-25): **nucleus 84 files /
 > 891 thm+lemma / 35 `sorry` (11 files) / 1 decorative**; platform 44 / 152 / 1;
 > olog 156 / 465 / 46 `sorry`. That snapshot is dated: the live proof-hole count
-> is whatever `scripts/formal-numbers.sh` reports (23 across 10 files today),
+> is whatever `scripts/formal-numbers.sh` reports (22 across 9 files today),
 > enumerated per file in `crates/portcullis-core/lean/CONJECTURES.md` — cite
 > those, not the snapshot. A theorem count is not a strength claim — a file
 > can be load-bearing, `sorry`-fenced research, or a `:= by trivial` stub; the

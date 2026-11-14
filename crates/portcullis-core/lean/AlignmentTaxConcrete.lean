@@ -4,10 +4,10 @@ import AlignmentTaxBridge
 
 Direct demonstration that the alignment-tax framework is **not
 vacuous** on a concrete example. The abstract bridge theorem
-`alignmentTaxH1_eq_operational` is conditional on a single open
-structural lemma (`gaussRankBool_append_le`, see the foundation
-audit in `AlignmentTaxBridge.lean`). This file sidesteps that
-open problem by using `native_decide` on fully-concrete instances.
+`alignmentTaxH1_eq_operational` is conditional on open `sorry`s and on
+the explicit `AugmentedRectangular` hypothesis (see the foundation
+audit in `AlignmentTaxBridge.lean`). This file sidesteps those
+open problems by using `native_decide` on fully-concrete instances.
 
 ## What this proves (unconditionally)
 
@@ -35,7 +35,8 @@ the *instance* is real.
 * A tight realiser of size 2 (would require knowing the specific
   C¹ indices of diamondSite and picking edges for each H¹ generator).
 * The abstract equality `alignmentTaxH1 = operationalAlignmentTaxH1`
-  — still needs `gaussRankBool_append_le`.
+  — still needs the open `sorry`s in `AlignmentTaxBridge.lean` and
+  `AugmentedRectangular` for every `L`.
 -/
 
 open PortcullisCore.AlignmentTaxBridge
@@ -251,7 +252,8 @@ theorem directInject_euler_char :
 /- **Arc status (honest)**: this file now contains a concrete
    realiser proof — the FIRST instance where the upper-bound side
    of the alignment-tax conjecture is verified WITHOUT depending on
-   the abstract `gaussRankBool_append_le` sorry.
+   the abstract rank-subadditivity law (whose hypothesis-free form
+   was false and was removed 2026-11-14).
 
    Additional non-vacuity anchors:
    - `diamond_rank_is_two`: alignmentTaxH1 = 2 on a 4-level IFC poset
@@ -262,7 +264,7 @@ theorem directInject_euler_char :
    (0, 2, 90) on three structurally-distinct concrete IFC posets.
 
    The lower-bound side of the tax theorem (no smaller realiser
-   exists) still requires `realising_set_size_ge_h1`, which uses the
-   open foundation sorry. Full equality remains conditional. -/
+   exists) still requires `realising_set_size_ge_h1`, which now needs
+   `AugmentedRectangular` as an explicit hypothesis. Full equality remains conditional. -/
 
 end PortcullisCore.AlignmentTaxConcrete

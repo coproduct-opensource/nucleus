@@ -14,7 +14,14 @@ hole cannot be smuggled out of quarantine.
 
 > Last reconciled: 2026-09-04 (`scripts/formal-numbers.sh`, the same comment-aware
 > counter the CI gate runs). Authoritative counts (comment-stripped):
-> **23 proof-hole `sorry` terms across exactly 10 files**, zero elsewhere in the tree.
+> **22 proof-hole `sorry` terms across exactly 9 files**, zero elsewhere in the tree.
+> (2026-11-14: `RankNullity` 1 → 0. Its one hole, `gaussRankBool_append_le`, was
+> FALSE as stated — `M = [[], [false, true]]`, `N = [[true]]` gives rank 2 on the
+> left and 1 on the right, decided in `RankNullity.gaussRankBool_append_le_counterexample`
+> — so `False` was derivable from it. Removed; the true, width-hypothesised form is
+> `MatrixBridge.gaussRankBool_append_le_via_bridge`, and `RankNullity` moves to
+> Tier 2c. `AlignmentTaxBridge.realising_set_size_ge_h1` and its consumers now
+> take the explicit hypothesis `AugmentedRectangular`.)
 > (2026-09-04: `SemanticIFCDecidable` 10 → 7 and `PACVCBridge` 2 → 1 had been
 > closed since June without this manifest being updated — #2478.)
 > (2026-06-28: `MatrixBridge` discharged in full — 6 holes → 0 — and promoted
@@ -82,14 +89,13 @@ carries a `CONJECTURE` banner at its head.
 | `SemanticIFCDecidable` | 7 | Float `BEq` lacks `LawfulBEq`; neighbor-transitivity, BFS class-rep lemmas (the LayerCosheaf sum/max/countP aggregation holes were closed 2026-06-29 by induction) |
 | `ComparisonTheorem` | 3 | Layer-1 structural lemmas: `uniform_implies_h1_zero` nonempty case (full-simplex Čech acyclicity, needs `SimplexAcyclic`), `c0_exceeds_globals_of_exclusive`, `exclusive_implies_h1_pos` (needs `RankNullity`). The 4 Borromean H¹/H² value holes were closed 2026-06-29 via `native_decide` (Tier-2b disclosure) |
 | `AlignmentTaxBridge` | 5 | `operationalTax = rank H¹` (the central alignment-tax conjecture) |
-| `RankNullity` | 1 | GF(2) rank subadditivity — foundation for the whole alignment-tax chain |
 | `SimplexAcyclic` | 1 | cone construction ⇒ H¹ = 0 |
 | `MultiAgentCohomology` | 1 | IFC sheaf lift to communication graphs |
 | `HigherObstruction` | 1 | H² / spectral-sequence analog |
 | `CompositionalAlignment` | 1 | Mayer-Vietoris-analog for spec composition |
 | `UniversalityTheorem` | 2 | rank H¹ as a complete invariant |
 | `PACVCBridge` | 1 | PAC / VC-dimension equivalence |
-| **Total** | **23** | across **10** files |
+| **Total** | **22** | across **9** files |
 
 **Machine-readable allowlist** (the CI gate parses exactly the lines between the
 markers below — these are the only files permitted to contain a proof hole):
@@ -99,7 +105,6 @@ markers below — these are the only files permitted to contain a proof hole):
 SemanticIFCDecidable
 ComparisonTheorem
 AlignmentTaxBridge
-RankNullity
 SimplexAcyclic
 MultiAgentCohomology
 HigherObstruction
@@ -134,7 +139,8 @@ build turns the gate red and names it.
 
 | Library | Own declarations | What its closure reaches |
 |---|---|---|
-| `MatrixBridge` | clean (`propext`, `Classical.choice`, `Quot.sound`) | `RankNullity` → `SemanticIFCDecidable`, both with declarations on `sorryAx` (`SemanticIFCDecidable` also on undisclosed `native_decide`) |
+| `MatrixBridge` | clean (`propext`, `Classical.choice`, `Quot.sound`) | `RankNullity` → `SemanticIFCDecidable`, with declarations on `sorryAx` and undisclosed `native_decide` |
+| `RankNullity` | clean since 2026-11-14 (its one hole was a false lemma, removed) | `SemanticIFCDecidable`, with declarations on `sorryAx` and undisclosed `native_decide` |
 
 To promote one back: close the holes its closure reaches (or cut the import),
 then add it to the proven build list. The audit is the check.

@@ -7,11 +7,15 @@
   (`gaussRankBool_append_le_via_bridge`, `fullDeclassList_realises_via_bridge`,
   `h1_basis_realiser_exists_via_bridge`) are kernel-checked. HONEST SCOPE CAVEAT:
   the three derivations carry an explicit uniform-row-width hypothesis
-  (`∀ row ∈ …, row.length = m`) required to invoke the bridge; the corresponding
-  axioms still stated in `RankNullity.lean` / `AlignmentTaxBridge.lean` are
-  hypothesis-free and are NOT yet rewired to consume these lemmas, so those
-  downstream files remain Tier-2 until that wiring lands. This file is part of
-  the alignment-tax / Cech-cohomology / braid research cluster.
+  (`∀ row ∈ …, row.length = m`) required to invoke the bridge. The hypothesis is
+  necessary, not a proof convenience: the hypothesis-free form of
+  `gaussRankBool_append_le` that `RankNullity.lean` stated with a `sorry` is
+  FALSE on ragged matrices (`RankNullity.gaussRankBool_append_le_counterexample`,
+  by `decide`), and was removed 2026-11-14; its one downstream use in
+  `AlignmentTaxBridge.lean` now goes through `gaussRankBool_append_le_via_bridge`.
+  The other two derivations are not yet wired to the `AlignmentTaxBridge`
+  sorries they correspond to. This file is part of the alignment-tax /
+  Cech-cohomology / braid research cluster.
 
   Status + full manifest: crates/portcullis-core/lean/CONJECTURES.md (Tier 2).
   The PROVEN, CI-gated enforcement core is a SEPARATE set of libraries.
@@ -795,9 +799,12 @@ These are the unconditional closures of the axioms introduced in
 `RankNullity.lean` and `AlignmentTaxBridge.lean`, conditional only on
 `gaussRankBool_eq_matrix_rank`. -/
 
-/-- **Axiom 1 closed (modulo bridge)**: `gaussRankBool_append_le`.
+/-- **Rank subadditivity under row append, for rectangular matrices.**
 
-    Standard `Matrix.rank` subadditivity: `rank (A ++ B) ≤ rank A + (rows of B)`. -/
+    Standard `Matrix.rank` subadditivity: `rank (A ++ B) ≤ rank A + (rows of B)`.
+    This is the true form of the `gaussRankBool_append_le` that `RankNullity.lean`
+    used to assume without the width hypothesis; that form is false
+    (`RankNullity.not_gaussRankBool_append_le_general`). -/
 theorem gaussRankBool_append_le_via_bridge
     (M N : List (List Bool)) (m : Nat)
     (h_m : ∀ row ∈ M ++ N, row.length = m) :

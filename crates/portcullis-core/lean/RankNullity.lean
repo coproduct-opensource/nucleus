@@ -1,12 +1,12 @@
 /-
 ████████████████████████████████████████████████████████████████████████████
-  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 1 `sorry`)
+  RESEARCH-TIER CLOSURE — no open proof holes in this file (0 `sorry`), but it
+  imports `SemanticIFCDecidable`, which has declarations on `sorryAx`, so it is
+  not part of the proven build. Do NOT cite a result here as "verified" on the
+  strength of this file alone. This file is part of the alignment-tax /
+  Cech-cohomology / braid research cluster.
 
-  Nothing in this file is kernel-checked or formally verified. Do NOT cite any
-  result here as "proven", "verified", or "kernel-checked". This file is part of
-  the alignment-tax / Cech-cohomology / braid research cluster.
-
-  Status + full manifest: crates/portcullis-core/lean/CONJECTURES.md (Tier 2).
+  Status + full manifest: crates/portcullis-core/lean/CONJECTURES.md (Tier 2c).
   The PROVEN, CI-gated enforcement core is a SEPARATE set of libraries.
 ████████████████████████████████████████████████████████████████████████████
 -/
@@ -170,29 +170,45 @@ theorem gaussRankBool_zero_matrix (M : List (List Bool))
 
 /-! ## Rank subadditivity under row concatenation
 
-### Foundation audit (honest scoping)
+### The general form is false (2026-11-14)
 
-The tight subadditivity statement below — `gaussRankBool (M ++ N) ≤
-gaussRankBool M + N.length` — is the **single load-bearing structural
-sorry** for the entire Alignment-Tax / H¹-cost chain. Every open
-sorry downstream in `AlignmentTaxBridge.lean`
-(`h1_basis_realiser_exists`, `fullDeclassList`-realising existence,
-both copies of the `Nat.find` witness) reduces to this one fact.
+Until 2026-11-14 this file stated, with a `sorry`,
 
-Classical linear algebra: `rank(A ++ B) ≤ rank(A) + rank(B) ≤ rank(A) +
-(#rows of B)`. For `gaussRankBool` on `List (List Bool)` the identity is
-intuitively "each appended row adds at most one new pivot".
+    gaussRankBool_append_le (M N : List (List Bool)) :
+      gaussRankBool (M ++ N) ≤ gaussRankBool M + N.length
 
-**Why it's hard here**: `gaussRankBool` is a fuel-bounded recursive
-algorithm whose recursion processes all rows together. It doesn't
-admit a clean inductive proof separating "M's contribution" from
-"N's contribution". The natural workaround is to bridge to Mathlib's
-`Matrix.rank` (file `MatrixBridge.lean`), but that path hit a Lean
-elaboration-heartbeat timeout (tracked as a Zulip-level blocker).
+and called it "the single load-bearing structural sorry" of the
+alignment-tax chain. **It is false for ragged matrices**, and its
+negation is decided below (`gaussRankBool_append_le_counterexample`):
+
+    M = [[], [false, true]],  N = [[true]]
+    gaussRankBool M = 0,  gaussRankBool (M ++ N) = 2,  2 ≤ 0 + 1 fails.
+
+The reason is in `gaussRankBool` itself: the no-pivot branch stops at
+the width of the *head* row, while the pivot branch advances the column
+without consulting any width. With `M`'s head row `[]`, elimination on
+`M` stops at column 0 and never sees the `true` at column 1. In `M ++ N`
+the head row is still `[]`, but `[true]` supplies a pivot at column 0,
+so the pivot branch walks on to column 1 and finds `[false, true]`. On a
+ragged matrix `gaussRankBool` is therefore not a rank, and no
+subadditivity law holds for it.
+
+With the `sorry` in scope `False` was derivable — the two-line proof
+`gaussRankBool_append_le_counterexample (gaussRankBool_append_le _ _)`
+type-checked, with axioms `[propext, sorryAx]`.
+
+**The true statement** carries a uniform-row-width hypothesis
+(`∀ row ∈ M ++ N, row.length = m`) and is proved, sorry-free, as
+`PortcullisCore.MatrixBridge.gaussRankBool_append_le_via_bridge`
+through the bridge `gaussRankBool = Matrix.rank`. It lives there rather
+than here because `MatrixBridge` imports this file. Every former use
+of the general form now goes through it; see `AlignmentTaxBridge.lean`
+for the one downstream theorem whose matrix is *not* rectangular in
+general and which now takes that as an explicit hypothesis.
 
 **Weak version** (`gaussRankBool_append_le_length`, proved below):
-the trivial consequence of `gaussRankBool_le_rows`. Not enough to
-close the downstream chain but a useful honest dependency.
+the trivial consequence of `gaussRankBool_le_rows`, true for every
+matrix, ragged or not.
 -/
 
 /-- **Weak rank subadditivity** (provable, trivial): the rank of any
@@ -203,17 +219,26 @@ theorem gaussRankBool_append_le_length (M N : List (List Bool)) :
   have h := gaussRankBool_le_rows (M ++ N)
   simpa [List.length_append] using h
 
-/-- **Rank subadditivity** (tight — sorry): appending `k` rows to a
-    matrix increases its GF(2) rank by at most `k`. The single open
-    structural lemma for the alignment-tax chain. -/
-theorem gaussRankBool_append_le (M N : List (List Bool)) :
-    gaussRankBool (M ++ N) ≤ gaussRankBool M + N.length := by
-  sorry
+/-- **The former `gaussRankBool_append_le` fails at one instance**, decided
+    by the kernel. `M = [[], [false, true]]` has `gaussRankBool` 0 (elimination
+    stops at the head row's width, 0); `M ++ [[true]]` has `gaussRankBool` 2.
+    `N` is a single row, so this also refutes the removed corollary
+    `gaussRankBool_append_rows_le_succ` (`gaussRankBool (M ++ [r]) ≤
+    gaussRankBool M + 1`). What stops either from coming back as a `sorry`
+    is not this theorem but the proven-tier gate: `RankNullity` is no
+    longer on the `CONJECTURES.md` allowlist, so any hole here fails
+    `portcullis-core-proven-lean.yml`. -/
+theorem gaussRankBool_append_le_counterexample :
+    ¬ (gaussRankBool ([[], [false, true]] ++ [[true]]) ≤
+        gaussRankBool [[], [false, true]] + [[true]].length) := by
+  decide
 
-/-- **Corollary**: appending a fixed list of rows is rank-subadditive. -/
-theorem gaussRankBool_append_rows_le_succ (M : List (List Bool)) (r : List Bool) :
-    gaussRankBool (M ++ [r]) ≤ gaussRankBool M + 1 := by
-  have h := gaussRankBool_append_le M [r]
-  simpa using h
+/-- **The general (hypothesis-free) subadditivity law is false.** Any proof of
+    it yields `False`; the true form needs uniform row width and is
+    `PortcullisCore.MatrixBridge.gaussRankBool_append_le_via_bridge`. -/
+theorem not_gaussRankBool_append_le_general :
+    ¬ ∀ M N : List (List Bool),
+        gaussRankBool (M ++ N) ≤ gaussRankBool M + N.length :=
+  fun h => gaussRankBool_append_le_counterexample (h _ _)
 
 end PortcullisCore.RankNullity
