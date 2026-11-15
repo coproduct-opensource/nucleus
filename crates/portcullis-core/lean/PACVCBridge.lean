@@ -152,11 +152,12 @@ theorem vcDim_le_alignmentTaxH1
 theorem pac_compatibility
     (P : IndexedPoset Secret) (indices : List Nat)
     (E : List AlignmentExample)
+    (h_rect : AugmentedRectangular P indices E)
     (h_aligned : AlignedAfter P indices E) :
     vcDim P indices ≤ E.length := by
   calc vcDim P indices
       ≤ alignmentTaxH1 P indices := vcDim_le_alignmentTaxH1 P indices
-    _ ≤ E.length := alignment_sample_complexity_ge_h1 P indices E h_aligned
+    _ ≤ E.length := alignment_sample_complexity_ge_h1 P indices E h_rect h_aligned
 
 /- **Shannon-analog assembly (for documentation)**: together with
    `alignment_sample_complexity_ge_h1` and

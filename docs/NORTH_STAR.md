@@ -182,7 +182,7 @@ for months; the numbers below are recomputed from the tree
 |---|---|---|
 | Kani BMC harnesses | 121 | portcullis 71, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1 (`scripts/formal-numbers.sh`) |
 | Lean 4 theorems over **extracted** Rust | ~280 in the security core | IFC noninterference family, ck-policy gate, `chain_effective_authority`, certificate-chain monotonicity (`chain_attenuates`, #2451) |
-| Open `sorry` holes | 23 across 10 files | research tier only (`CONJECTURES.md`); the proven tier is `sorry`-free and CI-gated |
+| Open `sorry` holes | 22 across 9 files | research tier only (`CONJECTURES.md`); the proven tier is `sorry`-free and CI-gated |
 | Budget conservation | Kani E1/E2 over the shipped `LedgerCore` | `Σ child allocations + consumed ≤ max` |
 
 **`decide_pure` is not in the extracted row.** Its 11 theorems
