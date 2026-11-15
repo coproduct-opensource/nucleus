@@ -234,12 +234,12 @@ These are important security properties that have NO formal verification:
 
 **Total: 121 Kani BMC harnesses repo-wide** (portcullis 71, portcullis-core 26,
 ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1; recount with
-`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 125 because it also
+`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 126 because it also
 counts a doc comment in ck-kernel and the string inside nucleus-audit's own
 counter; CI runs the script and fails on drift) **+ ~277 kernel-checked
 Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
 the exploratory alignment-tax / cohomology / braid formalizations are
-research-tier and **not discharged** (23 open `sorry` proof holes across 10
+research-tier and **not discharged** (22 open `sorry` proof holes across 9
 files — see `crates/portcullis-core/lean/CONJECTURES.md`). The
 `portcullis-core-proven-lean.yml` CI gate `lake build`s the proven tier and
 fails if any proof hole appears outside that manifest. Because that manifest is
