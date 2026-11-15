@@ -1,0 +1,16 @@
+# Open statements: claims about this repository's code, stated in Lean and not yet proved.
+# One [[statement]] table per row. A row's status only moves forward:
+# open < posted < settled < merged, and withdrawn (terminal) from open or posted.
+# The convention, and what each field means: crates/portcullis-core/lean/Statements/README.md.
+
+# The Aeneas extraction of nucleus-ifc-kernel's `should_gate` returns the
+# decide_pure hand model's answer on every input.
+[[statement]]
+id = "S0001"
+package = "crates/portcullis-core/lean"
+module = "Statements.S0001"
+claim = "Statements.S0001.claim"
+permitted_axioms = ["propext", "Classical.choice", "Quot.sound"]
+maximum_artifact_bytes = 65536
+statement_sha256 = "5a52ba7e61637203fc8d6d9c81e9b14257f09eb923c766d9abdc4ade810011e2"
+status = "open"
