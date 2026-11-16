@@ -59,6 +59,11 @@ chrono = { version = "0.4", default-features = false, features = ["serde", "wasm
 # needed because ed25519-dalek pulls getrandom transitively. Without
 # this, wasm32-unknown-unknown builds fail at link time.
 getrandom = { version = "0.2", features = ["js"] }
+# The same for getrandom 0.4, which arrived with p256/p384 0.14 (RustSec batch,
+# 2026-11-01): crypto-bigint 0.7 depends on it unconditionally, and 0.4 spells
+# the browser backend `wasm_js`. Without it the wasm build stops at getrandom's
+# compile_error!, and so does every CI job that runs wasm-pack.
+getrandom_04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 # uuid is transitively required by nucleus-lineage; force the `js`
 # feature so its `compile_error!` for wasm32-unknown-unknown is
 # satisfied. We don't actually call any uuid functions in the verify

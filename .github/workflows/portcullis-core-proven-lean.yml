@@ -154,6 +154,7 @@ jobs:
             PortcullisCoreBridge
             PortcullisCoreIFC
             IntegrityNoninterferenceExtracted
+            PortcullisCoreDecide
             ExposureProofs
             FlowProofs
             FlowGraphProofs

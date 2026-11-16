@@ -97,6 +97,10 @@ impl Drop for Scratch {
 
 /// A world-writable directory under `parent`, removed on drop.
 fn scratch(parent: &Path, tag: &str) -> Scratch {
+    try_scratch(parent, tag).unwrap()
+}
+
+fn try_scratch(parent: &Path, tag: &str) -> std::io::Result<Scratch> {
     let dir = parent.join(format!(
         "nucleus-workspace-{tag}-{}-{}",
         std::process::id(),
@@ -106,16 +110,24 @@ fn scratch(parent: &Path, tag: &str) -> Scratch {
             .replace("::", "-")
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
-    Scratch(dir)
+    std::fs::create_dir_all(&dir)?;
+    let made = Scratch(dir);
+    std::fs::set_permissions(&made.0, std::fs::Permissions::from_mode(0o777))?;
+    Ok(made)
 }
 
 /// Where the test's workspace lives: outside the write layer's scratch, or
-/// the layer refuses it for overlapping (`/tmp`, where `tempfile` would put
-/// it). Cargo's per-target scratch is writable wherever the build is (a gate
-/// sandbox that writes only `target/` included); if the target dir is itself
-/// under `/tmp`, `/var/tmp`, which is not scratch.
+/// the layer refuses it for overlapping. Cargo's per-target scratch is
+/// writable wherever the build is (a gate sandbox that writes only `target/`
+/// included), so it comes first. But the target dir can itself be scratch: a
+/// gate's is `/cache/target` (measured on the arm64 lane, 2026-10-30, where
+/// three tests here failed "the workspace overlaps the writable scratch
+/// /cache"), and a local one can sit under `/tmp`. Then `/var/tmp`, and then
+/// `HOME`, which a gate sets to its own writable `/work`.
+///
+/// Which of them overlaps is asked of the write layer itself, through
+/// `preflight_filesystem`. This used to be a second copy of its scratch list
+/// (`starts_with("/tmp")`), and that copy did not learn about `/cache`.
 fn workspace_parent() -> PathBuf {
     // A root run's children drop to an unprivileged uid, which may not be
     // able to traverse a home directory holding `target/`; root can always
@@ -124,13 +136,39 @@ fn workspace_parent() -> PathBuf {
         return PathBuf::from("/var/tmp");
     }
     let target_tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    std::fs::create_dir_all(&target_tmp).unwrap();
-    let resolved = std::fs::canonicalize(&target_tmp).unwrap();
-    if resolved.starts_with("/tmp") {
-        PathBuf::from("/var/tmp")
-    } else {
-        resolved
+    let mut candidates = vec![target_tmp, PathBuf::from("/var/tmp")];
+    candidates.extend(std::env::var_os("HOME").map(PathBuf::from));
+    let mut refused = Vec::new();
+    for candidate in candidates {
+        match outside_the_scratch(&candidate) {
+            Ok(resolved) => return resolved,
+            Err(why) => refused.push(format!("{}: {why}", candidate.display())),
+        }
     }
+    panic!(
+        "no writable directory outside the runtime's scratch can hold a test workspace:\n{}",
+        refused.join("\n")
+    );
+}
+
+/// `parent`, resolved, if a workspace can be made in it and every posture's
+/// write layer would hold that workspace read-only. A kernel without Landlock
+/// refuses every read-only workspace by name, which says nothing about this
+/// parent, so that refusal is not counted against it; any other refusal is.
+fn outside_the_scratch(parent: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let resolved = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
+    let probe = try_scratch(&resolved, "probe").map_err(|e| e.to_string())?;
+    let writes = WorkspaceWrites::ReadOnly {
+        workspace: probe.0.clone(),
+    };
+    for (name, c) in postures() {
+        match c.preflight_filesystem(&writes) {
+            Ok(_) | Err(NucleusError::WorkspaceReadOnlyUnenforceable { .. }) => {}
+            Err(e) => return Err(format!("{name}: {e}")),
+        }
+    }
+    Ok(resolved)
 }
 
 /// A workspace seeded the way a pod's is: a source file the agent was given,
