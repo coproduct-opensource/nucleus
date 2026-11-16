@@ -1054,8 +1054,14 @@ var = "SEARCH_API_TOKEN"
         let state = node.path().to_str().unwrap();
         let (r, out, _) = cli(&["rotate", "--state-dir", state, "--init"], T0);
         let msg = format!("{:#}", r.unwrap_err());
-        assert!(msg.contains(state), "expected refusal to name key directory {state:?}, got: {msg}");
-        assert!(msg.contains("must not be writable by group or others"), "expected group/other writable error, got: {msg}");
+        assert!(
+            msg.contains(state),
+            "expected refusal to name key directory {state:?}, got: {msg}"
+        );
+        assert!(
+            msg.contains("must not be writable by group or others"),
+            "expected group/other writable error, got: {msg}"
+        );
         assert!(out.is_empty());
     }
 
