@@ -75,7 +75,8 @@ jobs:
               crates/**
               scripts/check-ci-spec.sh
     env:
-      GATEHOUSE_REF: efa1e1a2e7ecd5e3de051c45223d8ef982d79721
+      # Moves with gatehouse-plan.yml's pin (xtask gatehouse-pin); see the reason there.
+      GATEHOUSE_REF: 0c485d7b08abe9709d6271e12911b0a5fc90b929
       GATE_NAME: ${{ matrix.gate }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
