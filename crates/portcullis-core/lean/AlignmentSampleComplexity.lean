@@ -97,13 +97,18 @@ def AlignedAfter (P : IndexedPoset Secret) (indices : List Nat)
 
     Our bound is NOT always smaller — for maximally-adversarial specs,
     `rank H¹` can be as large as `|C¹|`. But for well-structured
-    alignment specs (most of practice), it's dramatically tighter. -/
+    alignment specs (most of practice), it's dramatically tighter.
+
+    **Explicit hypothesis** `h_rect`: the augmented matrix is rectangular.
+    The bound rests on rank subadditivity, which is false for ragged
+    matrices (see `AlignmentTaxBridge.AugmentedRectangular`). -/
 theorem alignment_sample_complexity_ge_h1
     (P : IndexedPoset Secret) (indices : List Nat)
     (E : List AlignmentExample)
+    (h_rect : AugmentedRectangular P indices E)
     (h_aligned : AlignedAfter P indices E) :
     alignmentTaxH1 P indices ≤ E.length := by
-  exact realising_set_size_ge_h1 P indices E h_aligned
+  exact realising_set_size_ge_h1 P indices E h_rect h_aligned
 
 /-- **Training-procedure-independent corollary**: the minimum alignment
     sample complexity is exactly `rank H¹` — no fewer, no more.
