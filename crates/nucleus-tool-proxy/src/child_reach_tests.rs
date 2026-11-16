@@ -269,6 +269,7 @@ fn a_workload_companion_is_one_of_the_children() {
         command: "/bin/true".into(),
         artifacts: Default::default(),
         args: vec![],
+        namespace: nucleus_spec::WorkloadNamespace::Runtime {},
         uid: None,
         env: Default::default(),
         companion: Some(nucleus_spec::CompanionSpec {
@@ -413,6 +414,7 @@ async fn run_probe(script: String, work_dir: &Path) -> String {
         command: "/bin/sh".into(),
         artifacts: Default::default(),
         args: vec!["-c".into(), script],
+        namespace: nucleus_spec::WorkloadNamespace::Runtime {},
         uid: None,
         env: Default::default(),
         companion: None,
@@ -450,6 +452,7 @@ fn harness_reach() -> ChildReach {
             command: "/bin/sh".into(),
             artifacts: Default::default(),
             args: vec![],
+            namespace: nucleus_spec::WorkloadNamespace::Runtime {},
             uid: None,
             env: Default::default(),
             companion: None,

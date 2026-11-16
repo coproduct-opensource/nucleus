@@ -64,6 +64,7 @@ fn prepare(
     // runtime names are refused by name.
     let inputs = admission.environment_inputs(declared)?;
     let WorkloadAdmission {
+        namespace,
         pod_id,
         created_at_unix,
         source_commit,
@@ -80,6 +81,14 @@ fn prepare(
     if verifying_key != signer {
         bail!("admission signer does not match the independently enrolled public key");
     }
+    if matches!(
+        namespace,
+        nucleus_ci_verdict::execution::NamespaceSetup::Unrecorded {}
+    ) {
+        bail!(
+            "admission does not record namespace setup; current execution verification requires it"
+        );
+    }
     if pod_id.is_empty() || pod_id != session_id {
         bail!("admission pod and session must identify the same nonempty attempt");
     }
@@ -90,6 +99,7 @@ fn prepare(
         bail!("validity deadline must be after now and no earlier than admission");
     }
     Ok(RecordedExecution {
+        namespace,
         pod_id,
         source_commit,
         source_tree,
@@ -112,6 +122,7 @@ mod tests {
 
     fn admission() -> WorkloadAdmission {
         WorkloadAdmission {
+            namespace: nucleus_spec::NamespaceSetup::Runtime {},
             pod_id: "attempt-1".into(),
             session_id: "attempt-1".into(),
             created_at_unix: 10,

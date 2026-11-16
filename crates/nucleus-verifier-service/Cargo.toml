@@ -61,12 +61,11 @@ clap = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
-# SQLite only, no TLS (SQLite opens a file; nothing to encrypt in transit).
-# `sqlite-bundled` + `sqlite-unlock-notify` is what 0.8's `sqlite` built; 0.9's
-# `sqlite` also adds load-extension and deserialize, which this crate never uses.
-# No `mysql`/`mysql-rsa`: sqlx 0.9 keeps `rsa` (RUSTSEC-2023-0071) behind
-# `mysql-rsa`, so it stays out of Cargo.lock.
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "sqlite-unlock-notify", "macros", "migrate"] }
+# The verification log's SQLite driver, with SQLite built from the bundled
+# source. rusqlite 0.42 bundles libsqlite3-sys 0.40 (SQLite >= 3.54), which
+# RUSTSEC-2026-0459 names as patched. It replaced sqlx 0.9, whose sqlx-sqlite
+# caps libsqlite3-sys below 0.38 and so could not take the fix (src/db.rs).
+rusqlite = { version = "0.42", features = ["bundled"] }
 ed25519-dalek = { version = "=3.0.0", features = ["rand_core"] }
 rand = "0.10"
 base64 = "0.23"
