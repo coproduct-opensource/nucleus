@@ -656,9 +656,13 @@ population_floor = 23
 # 2026-10-14 (#3461): the tests that seal their process run alone in a fresh copy of the
 # test binary, under one reasoned #[expect] of the #1216 spawn ban (the umask pattern).
 # 39/144 = 27.08%; both pins follow the tree.
-floor_bp = 2708
+# 2026-11-01 (#3525, RustSec batch): tokio 1.54 deprecates AsyncFd::new / with_interest
+# (tokio#8587). The node's two call sites hand over self-owning descriptors and keep the call
+# under two reasoned #[expect(deprecated)]s, rather than two new unsafe blocks.
+# 41/146 = 28.08%; both pins follow the tree.
+floor_bp = 2808
 floor_set = "measurement"
-population_floor = 144
+population_floor = 146
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
