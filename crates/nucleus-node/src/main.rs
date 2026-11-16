@@ -1406,10 +1406,9 @@ async fn create_pod_internal(
     // The issued lattice AND the admitted credentialed upstreams replace what the spec requested,
     // inside `admit_pod`, and the plan it returns is the only thing a driver spawns (#2600). The
     // pod's owner is the issued root identity (ADR 0001: its tenant).
-    // The host's label for the pod before its guest says anything: the join of what the host
-    // puts into the cell, an eval cell untrusted whatever it carries (ADR 0014 §3).
-    // And what its operator declared about its workspace, refused where the workspace is a host
-    // directory the pod shares (ADR 0014 §10).
+    // The host's label for the pod before its guest says anything (ADR 0014 §3): the join of what
+    // the host puts into the cell, an eval cell untrusted whatever it carries, and its operator's
+    // declaration about its workspace, refused where that is a host directory the pod shares (§10).
     let starting = host_decide::HostStart::of(profile, &spec, &state.driver)?;
     // How this node's driver hands the guest its spec, decided once: the plan derives the
     // delivered bytes and the pod's manifest hash from the applied spec (`delivered_spec`, G-1).
