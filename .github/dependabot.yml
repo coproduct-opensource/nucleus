@@ -45,5 +45,13 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    groups:
+      # init and analyze move together: analyze fails on a config written by another
+      # init version (#3500: init 4.38.3, analyze 4.39.0, its Analyze job red).
+      # Ungrouped, Dependabot opened one pull request per action path.
+      codeql-action:
+        patterns:
+          - "github/codeql-action"
+          - "github/codeql-action/*"
     commit-message:
       prefix: "deps(actions)"
