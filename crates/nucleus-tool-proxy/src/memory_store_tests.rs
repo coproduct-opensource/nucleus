@@ -323,6 +323,7 @@ async fn a_workload_child_cannot_read_or_append_the_journal() {
                 target.display()
             ),
         ],
+        namespace: nucleus_spec::WorkloadNamespace::Runtime {},
         uid: None,
         env: Default::default(),
         companion: None,

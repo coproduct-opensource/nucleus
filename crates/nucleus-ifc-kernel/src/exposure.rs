@@ -206,7 +206,12 @@ pub enum PureVerdict {
 /// 2. If capability level is LowRisk → RequiresApproval
 /// 3. If exposure gate triggers → GateExfil
 /// 4. Otherwise → Allow
-pub fn decide_pure(level: CapabilityLevel, exposure: &ExposureSet, op: Operation) -> PureVerdict {
+///
+/// The exposure parameter is named `current`, as in [`should_gate`], and not
+/// `exposure`: Aeneas carries parameter names into the Lean extraction, where a
+/// binder named `exposure` shadows this module's namespace, and every
+/// `exposure.…` reference in the generated body then fails to elaborate.
+pub fn decide_pure(level: CapabilityLevel, current: &ExposureSet, op: Operation) -> PureVerdict {
     // Step 1: Capability level check
     if level == CapabilityLevel::Never {
         return PureVerdict::DenyCapability;
@@ -218,7 +223,7 @@ pub fn decide_pure(level: CapabilityLevel, exposure: &ExposureSet, op: Operation
     }
 
     // Step 3: Dynamic exposure gate
-    if should_gate(exposure, op) {
+    if should_gate(current, op) {
         return PureVerdict::GateExfil;
     }
 
