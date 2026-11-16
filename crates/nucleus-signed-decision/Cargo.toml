@@ -29,6 +29,6 @@ thiserror = { workspace = true }
 # The owner's signing key today is a P-256 Secure Enclave key (X9.62 DER ECDSA).
 # `pkcs8` gives the SPKI decoder and the DER signature type; both are already in
 # the lockfile through nucleus-node-evidence.
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 # Ed25519 trust roots, verified with `verify_strict` only (scripts/check-verify-strict.sh).
 ed25519-dalek = { workspace = true }

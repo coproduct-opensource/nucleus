@@ -223,6 +223,26 @@ jobs:
           cat crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide/Funs.lean
           echo "CANONICAL-FUNS-END"
 
+      # --- Elaborate the fresh extraction before it can be committed ---
+      # This job used to print and commit what Aeneas emitted without ever
+      # handing it to Lean. The committed Funs.lean did not elaborate (a
+      # parameter named `exposure` shadowed the `exposure` namespace) and
+      # nothing reported it. A failure here stops the job before the commit
+      # step, so output Lean rejects cannot reach the bot branch.
+      - name: Elaborate the fresh extraction (lake build PortcullisCoreDecide)
+        uses: leanprover/lean-action@f061402b660e0c34644504b324e830f2991d4865 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
+        with:
+          lake-package-directory: crates/portcullis-core/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "false"
+          build-args: PortcullisCoreDecide
+
       # --- Auto-commit the regenerated Lean back to the branch ---
       # [skip ci] prevents a regenerate->push->regenerate loop.
       - name: Commit regenerated decide_pure extraction
