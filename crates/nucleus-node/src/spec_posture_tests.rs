@@ -413,6 +413,51 @@ fn a_spec_cannot_choose_its_own_mediation() {
         .expect("network label is admitted here");
 }
 
+/// #3528: a private user+network namespace is admitted at create only where the node's backend
+/// runs the workload under a guest runtime that makes it (Firecracker), and only with
+/// `workload.uid` stated and mappable. Everywhere else it is refused, naming the field, rather than
+/// admitted and run in the runtime's namespaces. Omission and an explicit `runtime` are admitted on
+/// every backend.
+#[test]
+fn a_workload_namespace_is_admitted_only_where_the_backend_makes_it() {
+    let workload = |rest: &str| {
+        spec(&format!(
+            r#"{{"workload":{{"command":"/bin/true"{rest}}}}}"#
+        ))
+    };
+    let named = |e: PostureRefused, what: &str| {
+        assert!(
+            matches!(e, PostureRefused::WorkloadNamespace(_)),
+            "{what}: {e:?}"
+        );
+        let msg = ApiError::from(e).to_string();
+        assert!(
+            msg.contains("workload.namespace"),
+            "{what}: names the field: {msg}"
+        );
+    };
+    for request in [
+        r#","namespace":{"kind":"private_user_network","inner_uid":0,"loopback":false}"#,
+        r#","namespace":{"kind":"private_user_network","inner_uid":1001,"loopback":true}"#,
+    ] {
+        let stated = workload(&format!(r#","uid":65534{request}"#));
+        admitted(&stated).expect("Firecracker makes it, at the stated uid");
+        named(
+            on_container(&stated).expect_err("the container driver does not"),
+            "container",
+        );
+        named(refused(&workload(request)), "uid unstated");
+        named(
+            refused(&workload(&format!(r#","uid":0{request}"#))),
+            "mapped onto root",
+        );
+    }
+    for placement in ["", r#","namespace":{"kind":"runtime"}"#] {
+        admitted(&workload(placement)).expect("runtime placement on Firecracker");
+        on_container(&workload(placement)).expect("runtime placement on the container driver");
+    }
+}
+
 /// A spec with none of these fields is admitted unchanged: the default is not a refusal.
 #[test]
 fn a_minimal_spec_is_admitted() {
@@ -455,6 +500,23 @@ async fn create_refuses_a_hostile_posture_before_anything_is_spawned() {
         panic!("a pod larger than the node's ceiling must be refused at create");
     };
     assert!(msg.contains("resources.memory_mib 1048576"), "{msg}");
+    assert!(st.pods.lock().await.is_empty(), "nothing was registered");
+
+    // A namespace placement this (local) driver cannot make, through the same create path.
+    let private = spec(
+        r#"{"workload":{"command":"/bin/true","uid":65534,"namespace":{"kind":"private_user_network","inner_uid":1000,"loopback":true}}}"#,
+    );
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let Err(ApiError::InvalidSpec(msg)) =
+        crate::create_pod_internal(&st, private, None, None, root).await
+    else {
+        panic!("a private namespace request must be refused at create");
+    };
+    assert!(msg.contains("workload.namespace"), "{msg}");
     assert!(st.pods.lock().await.is_empty(), "nothing was registered");
 }
 
