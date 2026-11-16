@@ -23,7 +23,7 @@ serde_jcs = "0.2.0"
 # Chosen over ring so the verify closure compiles to wasm32-unknown-unknown
 # (the WASM verifier SDK consumes verify_card directly). Same version as the
 # rest of the workspace lock.
-p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 
 # Path deps. nucleus-identity supplies did_crypto::jws_sign_es256 — SIGN
 # ONLY, optional, behind the `sign` feature (its ring/tokio closure is

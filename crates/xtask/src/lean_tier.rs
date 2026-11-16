@@ -321,6 +321,121 @@ pub fn derive_workflow(root: &Path, workflow: &Path) -> Result<Vec<Tier>> {
         .collect()
 }
 
+// What follows is compiled for tests only: the check it implements is the test
+// `every_generated_directory_is_the_source_dir_of_a_lean_lib`, which the workspace test job
+// runs. It is not a subcommand, so there is no second way to invoke it that CI does not.
+
+/// Directories the walk for `lakefile.lean` does not enter, besides every dot-directory
+/// (`.lake` holds dependencies' own lakefiles, `.git` and tool directories hold other checkouts).
+#[cfg(test)]
+const NOT_SOURCE: [&str; 2] = ["target", "node_modules"];
+
+/// Whether `dir` holds a `.lean` file at any depth.
+#[cfg(test)]
+fn holds_lean(dir: &Path) -> Result<bool> {
+    for entry in std::fs::read_dir(dir).with_context(|| dir.display().to_string())? {
+        let path = entry?.path();
+        if path.is_dir() {
+            if holds_lean(&path)? {
+                return Ok(true);
+            }
+        } else if path.extension().is_some_and(|e| e == "lean") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Every directory under `dir` that holds a `lakefile.lean`.
+#[cfg(test)]
+fn lake_packages(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    if dir.join("lakefile.lean").is_file() {
+        out.push(dir.to_path_buf());
+    }
+    for entry in std::fs::read_dir(dir).with_context(|| dir.display().to_string())? {
+        let path = entry?.path();
+        let skip = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_none_or(|n| n.starts_with('.') || NOT_SOURCE.contains(&n));
+        if path.is_dir() && !skip {
+            lake_packages(&path, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// The `generated…` directories of every Lake package under `root`, split by whether a
+/// `lean_lib` of that package names the directory as its `srcDir`.
+#[cfg(test)]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GeneratedDirs {
+    /// Named as a `srcDir`, relative to `root`.
+    named: Vec<String>,
+    /// Holding Lean sources that no `lean_lib` names, relative to `root`.
+    unnamed: Vec<String>,
+}
+
+/// Sort every `generated…` directory that holds Lean sources by whether a `lean_lib` names it.
+///
+/// An extraction is committed to such a directory. `scripts/check-lean-libs-built.sh` asks
+/// whether every DECLARED library is built by something; a directory no library declares is
+/// outside that question, and so is elaborated by nothing. `generated-decide/` sat there with a
+/// `Funs.lean` that Lean rejects, and no check said so.
+///
+/// Reach, stated: a directory counts as named when some library's `srcDir` is that directory.
+/// Whether each file inside it is under one of that library's roots is not asked.
+///
+/// Finding no such directory at all is an error, never an empty result (ADR 0007 A-1): a walk
+/// that looked in the wrong place would otherwise read as a clean tree.
+#[cfg(test)]
+fn generated_dirs(root: &Path) -> Result<GeneratedDirs> {
+    let mut packages = Vec::new();
+    lake_packages(root, &mut packages)?;
+    packages.sort();
+    let mut found = GeneratedDirs::default();
+    for pkg in &packages {
+        let lakefile = pkg.join("lakefile.lean");
+        let text =
+            std::fs::read_to_string(&lakefile).with_context(|| lakefile.display().to_string())?;
+        let libs = parse_lakefile(&text).with_context(|| lakefile.display().to_string())?;
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(pkg)
+            .with_context(|| pkg.display().to_string())?
+            .map(|e| e.map(|e| e.path()))
+            .collect::<std::io::Result<_>>()?;
+        dirs.sort();
+        for dir in dirs {
+            let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !dir.is_dir() || !name.starts_with("generated") || !holds_lean(&dir)? {
+                continue;
+            }
+            let shown = dir
+                .strip_prefix(root)
+                .unwrap_or(&dir)
+                .to_string_lossy()
+                .into_owned();
+            let is_src_dir = libs
+                .iter()
+                .any(|l| l.src_dir.trim_start_matches("./").trim_end_matches('/') == name);
+            if is_src_dir {
+                found.named.push(shown);
+            } else {
+                found.unnamed.push(shown);
+            }
+        }
+    }
+    if found.named.is_empty() && found.unnamed.is_empty() {
+        bail!(
+            "{}: no `generated…` directory with Lean sources under any lakefile.lean; \
+             the walk is looking in the wrong place",
+            root.display()
+        );
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +531,69 @@ mod tests {
         );
         // Every module carries the source file it was resolved from.
         assert!(core.closure.values().all(|p| p.is_file()));
+    }
+
+    /// The gate. A committed extraction that no `lean_lib` names is elaborated by nothing;
+    /// `generated-decide/` was one, with a `Funs.lean` Lean 4.30.0 rejects. Driven red on that
+    /// tree: without `lean_lib «PortcullisCoreDecide»` in `crates/portcullis-core/lean`'s
+    /// lakefile this fails naming `crates/portcullis-core/lean/generated-decide`.
+    #[test]
+    fn every_generated_directory_is_the_source_dir_of_a_lean_lib() {
+        let found = generated_dirs(&repo().canonicalize().unwrap()).unwrap();
+        assert_eq!(
+            found.unnamed,
+            Vec::<String>::new(),
+            "committed Lean under a `generated…` directory that no lean_lib names: nothing \
+             elaborates it. Add a lean_lib with that srcDir (and build it), or delete it."
+        );
+    }
+
+    #[test]
+    fn a_generated_directory_no_lib_names_is_reported_and_an_empty_one_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("a/lean");
+        for (dir, file) in [
+            ("generated-named/Gen", Some("Types.lean")),
+            ("generated-orphan/Deep/Er", Some("Funs.lean")),
+            ("generated-empty", None),
+            ("generated-notes", Some("README.md")),
+            ("proofs", Some("P.lean")),
+            (".lake/packages/dep/generated", Some("X.lean")),
+        ] {
+            std::fs::create_dir_all(pkg.join(dir)).unwrap();
+            if let Some(file) = file {
+                std::fs::write(pkg.join(dir).join(file), "").unwrap();
+            }
+        }
+        // A dependency's own lakefile under .lake is not a package of this tree.
+        std::fs::write(pkg.join(".lake/packages/dep/lakefile.lean"), "").unwrap();
+        std::fs::write(
+            pkg.join("lakefile.lean"),
+            "lean_lib «Gen» where\n  roots := #[`Gen.Types]\n  srcDir := \"./generated-named/\"\n\nlean_lib «P» where\n",
+        )
+        .unwrap();
+        let found = generated_dirs(tmp.path()).unwrap();
+        assert_eq!(found.named, ["a/lean/generated-named"]);
+        assert_eq!(found.unnamed, ["a/lean/generated-orphan"]);
+    }
+
+    #[test]
+    fn a_tree_with_no_generated_directory_is_an_error_not_a_clean_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("pkg/proofs")).unwrap();
+        std::fs::write(tmp.path().join("pkg/lakefile.lean"), "lean_lib «P» where\n").unwrap();
+        std::fs::write(tmp.path().join("pkg/proofs/P.lean"), "").unwrap();
+        let err = generated_dirs(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("wrong place"), "{err:#}");
+        // A lakefile this reader cannot read is an error too, never a package with no libs.
+        std::fs::create_dir_all(tmp.path().join("pkg/generated/G")).unwrap();
+        std::fs::write(tmp.path().join("pkg/generated/G/T.lean"), "").unwrap();
+        std::fs::write(
+            tmp.path().join("pkg/lakefile.lean"),
+            "lean_lib G where\n  globs := #[.submodules `G]\n",
+        )
+        .unwrap();
+        assert!(generated_dirs(tmp.path()).is_err());
     }
 
     #[test]

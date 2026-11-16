@@ -326,7 +326,8 @@ async fn a_bare_tier_child_forging_with_every_key_it_can_read_gains_nothing() {
 
     let forged = |key: &ed25519_dalek::SigningKey, kid: &str| {
         let claim = ExecutionClaim {
-            schema: ExecutionSchema::V1,
+            schema: ExecutionSchema::V2,
+            namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
             pod_id: "pod-1".into(),
             source_commit: "commit-1".into(),
             source_tree: "tree-1".into(),
@@ -360,6 +361,7 @@ async fn a_bare_tier_child_forging_with_every_key_it_can_read_gains_nothing() {
         )
     };
     let expect = |key: &'static [u8; 32], kid: &'static str| ExpectedExecution {
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: "pod-1",
         source_commit: "commit-1",
         source_tree: "tree-1",
@@ -423,7 +425,8 @@ async fn the_nodes_own_insecure_mode_receipt_is_marked_and_refused() {
     assert_eq!(state.trust_gate.tier, EvidenceTier::InsecureSharedUid);
     let id = uuid::Uuid::new_v4();
     let claim = |sandbox_tier| ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: id.to_string(),
         source_commit: "commit-1".into(),
         source_tree: "tree-1".into(),
@@ -458,6 +461,7 @@ async fn the_nodes_own_insecure_mode_receipt_is_marked_and_refused() {
             .starts_with(INSECURE_SHARED_UID_KID_PREFIX)
     );
     let pinned = RecordedExecution {
+        namespace: nucleus_ci_verdict::execution::NamespaceSetup::Runtime {},
         pod_id: id.to_string(),
         source_commit: "commit-1".into(),
         source_tree: "tree-1".into(),

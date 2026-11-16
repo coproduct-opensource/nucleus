@@ -11,7 +11,7 @@
 ████████████████████████████████████████████████████████████████████████████
 -/
 import ComparisonTheorem
-import RankNullity
+import MatrixBridge
 
 /-! # Alignment Tax = rank H¹: the operational–structural bridge
 
@@ -69,32 +69,51 @@ This file states the bridge. Proving it is the research frontier.
 
 ## Foundation audit (honest scoping)
 
-All four open `sorry`s in this file (`operationalTax_le_h1`,
-`operationalTax_ge_h1`, the two `fullDeclassList`-realising witnesses
-inside `operationalAlignmentTaxH1`, and `h1_basis_realiser_exists`)
-chain back to **one** structural fact in `RankNullity.lean`:
+This file used to say that all its open `sorry`s chain back to one
+structural fact in `RankNullity.lean`,
 
   `gaussRankBool_append_le : gaussRankBool (M ++ N) ≤
                              gaussRankBool M + N.length`
 
-That lemma is classical GF(2) linear algebra but not cleanly provable
-against the fuel-bounded `gaussRankBool.go` recursion. The `MatrixBridge`
-module tried a Mathlib `Matrix.rank` bridge and hit a Lean elaboration
-heartbeat (Zulip-level blocker).
+**That fact is false** (2026-11-14). On the ragged matrix
+`M = [[], [false, true]]`, `N = [[true]]` the left side is 2 and the
+right side is 1; `RankNullity.gaussRankBool_append_le_counterexample`
+decides it. With the `sorry` in scope, `False` was derivable. The true
+form needs every row to have the same length and is proved, sorry-free,
+as `MatrixBridge.gaussRankBool_append_le_via_bridge`.
 
-Everything built on top of this bridge — `AlignmentSampleComplexity`,
-`CompositionalAlignment`, `PACVCBridge`, `UniversalityTheorem`,
-`HigherObstruction`, `EntropicCocycle`, `QuantumExtension`,
-`PersistentAlignment`, `LipschitzEquivariance` — has this single open
-structural dependency. Downstream modules' own `sorry`s are
-scaffolding stubs (placeholder definitions like `h2Obstruction = 0`)
-that make their theorems trivial until the real definitions land.
+Its only use here was `realising_set_size_ge_h1`, and the matrix there
+is **not rectangular in general**: `augmentedDelta0` stacks the rows of
+`reducedDelta0` — one per C¹ entry, each of length `|C⁰|` — on top of
+`declassRow`s, each of length `|C¹|`. The two widths agree only when
+`|C⁰| = |C¹|` (or one of the two blocks is empty). So the lower bound
+now carries that as an explicit, named hypothesis
+(`AugmentedRectangular`) instead of resting on a false lemma, and the
+theorems built on it (`operationalAlignmentTaxH1_ge`,
+`alignmentTaxH1_eq_operational`, and downstream
+`alignment_sample_complexity_ge_h1`, `pac_compatibility`,
+`composed_sample_complexity_bound`) carry it too.
+`augmentedRectangular_of_card_eq` discharges it from `|C⁰| = |C¹|`.
+
+Whether the lower bound holds without the hypothesis is **open**: it is
+not known to be false, but no proof exists, and the ragged
+`augmentedDelta0` is arguably the wrong object (a declassification row is
+a vector in C¹, while a `reducedDelta0` row is a vector in C⁰; the
+dimensionally meaningful augmentation stacks declassification rows onto
+the *transpose* of `reducedDelta0`, whose rows span `im δ⁰ ⊆ C¹`).
+
+The remaining `sorry`s in this file (`operationalTax_le_h1`,
+`operationalTax_ge_h1`, the two `fullDeclassList`-realising witnesses
+inside `operationalAlignmentTaxH1`, and `h1_basis_realiser_exists`)
+are independent open problems; none is closed by this change.
 
 **Consequence for claim strength**: the cohomological-alignment-cost
-arc is one proved lower bound (`realising_set_size_ge_h1`, which
-uses the open `gaussRankBool_append_le`) plus a tight-realiser
-conjecture. Treat all "Alignment Tax Theorem" claims elsewhere in
-this codebase as conditional on those two structural facts.
+arc is one lower bound proved *under `AugmentedRectangular`*
+(`realising_set_size_ge_h1`; `#print axioms` gives `[propext,
+Classical.choice, Quot.sound]` as of 2026-11-14, no `sorryAx` and no
+`native_decide`, although this module's imports elsewhere do carry
+`sorry`s) plus a tight-realiser conjecture. Treat all "Alignment Tax Theorem" claims
+elsewhere in this codebase as conditional on both.
 -/
 
 open SemanticIFCDecidable
@@ -245,10 +264,11 @@ it requires `|L| ≥ |C¹|` rather than `|L| ≥ rank H¹`. The genuine
 bridge theorem needs the *cohomological* version below: `L` realises
 iff augmenting `δ⁰` with `L`'s indicator rows kills H¹.
 
-Under this stronger predicate, `operationalTax_ge_h1` follows from rank
-subadditivity (`gaussRankBool_append_le`): augmenting δ⁰ by `|L|` rows
-increases its rank by at most `|L|`, so to push H¹ to 0 one needs
-`|L| ≥ rank H¹`. -/
+Under this stronger predicate, the lower bound follows from rank
+subadditivity (`MatrixBridge.gaussRankBool_append_le_via_bridge`):
+augmenting δ⁰ by `|L|` rows increases its rank by at most `|L|`, so to
+push H¹ to 0 one needs `|L| ≥ rank H¹` — provided the augmented matrix
+is rectangular (`AugmentedRectangular`, below). -/
 
 /-- The C¹-indicator row of a declassification edge.
 
@@ -278,25 +298,57 @@ def RealisesH1 (P : IndexedPoset Secret) (indices : List Nat)
     gaussRankBool (augmentedDelta0 P indices L) +
     gaussRankBool (reducedDelta1 P indices)
 
-/-- **Lower bound on realising sets** — the holy-grail core lemma.
+/-- **Explicit hypothesis, not a theorem**: every row of the augmented matrix
+    has the same length.
 
-    Any cohomologically-realising declassification set has cardinality at
-    least `alignmentTaxH1 P indices = rank H¹`. The proof uses rank
-    subadditivity of `gaussRankBool` under row append (from `RankNullity`).
+    `augmentedDelta0` stacks `reducedDelta0`'s rows (each of length `|C⁰|`)
+    on `declassRow`s (each of length `|C¹|`), so this holds when
+    `|C⁰| = |C¹|` (`augmentedRectangular_of_card_eq`), when `L = []`, or when
+    C¹ is empty — and fails otherwise. It is the hypothesis under which
+    `gaussRankBool` is a rank at all: on a ragged matrix it is not, and rank
+    subadditivity fails (`RankNullity.gaussRankBool_append_le_counterexample`). -/
+def AugmentedRectangular (P : IndexedPoset Secret) (indices : List Nat)
+    (L : List DeclassEdge) : Prop :=
+  ∃ m : Nat, ∀ row ∈ augmentedDelta0 P indices L, row.length = m
 
-    Once this lands, it implies `operationalTax ≥ rank H¹` for any
-    operationalAlignmentTax defined as `min |L|` over realising sets — i.e.
-    the lower bound of the Alignment Tax Theorem. -/
+/-- When `|C⁰| = |C¹|`, every augmentation is rectangular (width `|C¹|`). -/
+theorem augmentedRectangular_of_card_eq
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h_card : (reducedC0 P indices).length = (reducedC1 P indices).length)
+    (L : List DeclassEdge) :
+    AugmentedRectangular P indices L := by
+  refine ⟨(reducedC1 P indices).length, ?_⟩
+  intro row hrow
+  unfold augmentedDelta0 at hrow
+  rcases List.mem_append.mp hrow with h0 | hL
+  · unfold reducedDelta0 at h0
+    obtain ⟨c, _, rfl⟩ := List.mem_map.mp h0
+    obtain ⟨a, b, d⟩ := c
+    simp [h_card]
+  · obtain ⟨e, _, rfl⟩ := List.mem_map.mp hL
+    simp [declassRow]
+
+/-- **Lower bound on realising sets, for rectangular augmentations.**
+
+    Any cohomologically-realising declassification set whose augmented matrix
+    is rectangular has cardinality at least `alignmentTaxH1 P indices = rank H¹`.
+    The proof uses rank subadditivity of `gaussRankBool` under row append,
+    `MatrixBridge.gaussRankBool_append_le_via_bridge`, which needs uniform row
+    width. Before 2026-11-14 it used a hypothesis-free form of that law from
+    `RankNullity` that is false; whether this bound holds without
+    `h_rect` is open. -/
 theorem realising_set_size_ge_h1
     (P : IndexedPoset Secret) (indices : List Nat) (L : List DeclassEdge)
+    (h_rect : AugmentedRectangular P indices L)
     (h : RealisesH1 P indices L) :
     alignmentTaxH1 P indices ≤ L.length := by
   -- Rank subadditivity: augmented rank ≤ original + |L|.
   have h_aug : gaussRankBool (augmentedDelta0 P indices L) ≤
       gaussRankBool (reducedDelta0 P indices) + L.length := by
-    unfold augmentedDelta0
-    have := PortcullisCore.RankNullity.gaussRankBool_append_le
-              (reducedDelta0 P indices) (L.map (declassRow P indices))
+    obtain ⟨m, hm⟩ := h_rect
+    unfold augmentedDelta0 at hm ⊢
+    have := PortcullisCore.MatrixBridge.gaussRankBool_append_le_via_bridge
+              (reducedDelta0 P indices) (L.map (declassRow P indices)) m hm
     simpa using this
   -- Realising: augmented rank + rank δ¹ ≥ |C¹|.
   -- Substitute: rank δ⁰ + |L| + rank δ¹ ≥ |C¹|, i.e. |L| ≥ alignmentTaxH1.
@@ -344,8 +396,12 @@ noncomputable def operationalAlignmentTaxH1
 /-- **Holy-grail lower bound** on the H¹-flavoured operational tax.
 
     Direct corollary of `realising_set_size_ge_h1`: every realising set
-    is at least `rank H¹` in size, so the minimum is too. -/
-theorem operationalAlignmentTaxH1_ge (P : IndexedPoset Secret) (indices : List Nat) :
+    is at least `rank H¹` in size, so the minimum is too. The minimiser is
+    chosen by `Nat.find`, so the rectangularity hypothesis is needed for
+    every `L` (`augmentedRectangular_of_card_eq` supplies it from
+    `|C⁰| = |C¹|`). -/
+theorem operationalAlignmentTaxH1_ge (P : IndexedPoset Secret) (indices : List Nat)
+    (h_rect : ∀ L, AugmentedRectangular P indices L) :
     alignmentTaxH1 P indices ≤ operationalAlignmentTaxH1 P indices := by
   classical
   unfold operationalAlignmentTaxH1
@@ -356,7 +412,7 @@ theorem operationalAlignmentTaxH1_ge (P : IndexedPoset Secret) (indices : List N
       by unfold fullDeclassList; simp,
       by sorry⟩
   obtain ⟨L, hL_len, hL_h1⟩ := h_spec
-  have h_lower := realising_set_size_ge_h1 P indices L hL_h1
+  have h_lower := realising_set_size_ge_h1 P indices L (h_rect L) hL_h1
   omega
 
 /-! ## Upper bound and the holy-grail equality
@@ -406,13 +462,17 @@ theorem operationalAlignmentTaxH1_le (P : IndexedPoset Secret) (indices : List N
     Čech cohomology group of the IFC sheaf — the "holy-grail conjecture"
     from `project_alignment_tax_conjecture.md`.
 
-    Proved (modulo three structural sorries — all classical-LA facts
-    about GF(2) row-space rank). -/
+    NOT proved: conditional on the open `sorry`s behind
+    `operationalAlignmentTaxH1` and `h1_basis_realiser_exists`, and on the
+    explicit hypothesis `h_rect` (every augmentation rectangular), which the
+    lower bound needs because `gaussRankBool` is not a rank on ragged
+    matrices. -/
 theorem alignmentTaxH1_eq_operational
-    (P : IndexedPoset Secret) (indices : List Nat) :
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h_rect : ∀ L, AugmentedRectangular P indices L) :
     operationalAlignmentTaxH1 P indices = alignmentTaxH1 P indices :=
   Nat.le_antisymm
     (operationalAlignmentTaxH1_le P indices)
-    (operationalAlignmentTaxH1_ge P indices)
+    (operationalAlignmentTaxH1_ge P indices h_rect)
 
 end PortcullisCore.AlignmentTaxBridge
