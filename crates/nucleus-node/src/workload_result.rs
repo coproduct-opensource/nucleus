@@ -68,12 +68,7 @@ pub(crate) async fn observe_claim(
     id: Uuid,
 ) -> Result<(ExecutionClaim, String), ApiError> {
     let pod = pod_api::get_pod_for_caller(state, id, caller).await?;
-    let backend = match &pod.driver_state {
-        #[cfg(feature = "local-driver")]
-        DriverState::Local(_) => Backend::Local,
-        DriverState::Container(_) => Backend::Container,
-        DriverState::Firecracker(_) => Backend::Firecracker,
-    };
+    let backend = backend_of(&pod.driver_state);
     let address = pod
         .proxy_addr
         .lock()
@@ -98,6 +93,16 @@ pub(crate) async fn observe_claim(
         state.trust_gate.tier.claim_tier(),
     )?;
     Ok((claim, address))
+}
+
+/// The backend a pod runs on, from the driver the host spawned it with: never from a label.
+pub(crate) fn backend_of(driver: &DriverState) -> Backend {
+    match driver {
+        #[cfg(feature = "local-driver")]
+        DriverState::Local(_) => Backend::Local,
+        DriverState::Container(_) => Backend::Container,
+        DriverState::Firecracker(_) => Backend::Firecracker,
+    }
 }
 
 pub(crate) fn sign_claim(
@@ -153,6 +158,7 @@ fn completed_claim(
         environment,
         program,
         isolation,
+        namespace,
     } = observed
     else {
         return Err(ApiError::Driver(
@@ -164,6 +170,26 @@ fn completed_claim(
             "workload has no declared program identity".into(),
         ));
     };
+    let workload = spec.spec.workload.as_ref().ok_or_else(|| {
+        ApiError::Driver("execution observation has no configured workload".into())
+    })?;
+    // The same decider the create-time admission used, for this backend: a
+    // spec this runtime cannot enforce is never signed, and the supervisor's
+    // record of what the hook did must be exactly what the spec was admitted
+    // for (#3528).
+    let expected_namespace = workload
+        .namespace
+        .admit(
+            workload.uid,
+            crate::spec_posture::namespace_enforcement(Some(backend)),
+        )
+        .map_err(|e| ApiError::Driver(e.to_string()))?
+        .setup();
+    if namespace != expected_namespace {
+        return Err(ApiError::Driver(
+            "supervisor namespace setup differs from admitted spec".into(),
+        ));
+    }
     let expected = nucleus_spec::identity::program_digest(spec)
         .map_err(|e| ApiError::Driver(format!("host program identity: {e}")))?;
     if digest != expected {
@@ -190,7 +216,7 @@ fn completed_claim(
         .cloned()
         .unwrap_or_default();
     Ok(ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema: ExecutionSchema::V2,
         pod_id: id.to_string(),
         source_commit,
         source_tree,
@@ -199,6 +225,7 @@ fn completed_claim(
         architecture: std::env::consts::ARCH.into(),
         backend,
         uid_isolated: isolation == WorkloadIsolation::UidIsolated,
+        namespace,
         exit_code,
         stdout_sha256,
         stderr_sha256,
@@ -342,12 +369,20 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "apiVersion": "nucleus/v1", "kind": "Pod",
             "metadata": {"name": "observation-test"},
-            "spec": {"policy":{"type":"profile","name":"default"},"work_dir": "/work"}
+            "spec": {"policy":{"type":"profile","name":"default"},"work_dir": "/work",
+                     "workload": {"command":"/usr/bin/true"}}
         }))
         .unwrap()
     }
 
     fn observed(spec: &nucleus_spec::PodSpec) -> WorkloadResult {
+        observed_namespace(spec, nucleus_spec::NamespaceSetup::Runtime {})
+    }
+
+    fn observed_namespace(
+        spec: &nucleus_spec::PodSpec,
+        namespace: nucleus_spec::NamespaceSetup,
+    ) -> WorkloadResult {
         WorkloadResult::Exited {
             exit_code: Some(23),
             stdout_sha256: "a".repeat(64),
@@ -358,6 +393,7 @@ mod tests {
                 digest: nucleus_spec::identity::program_digest(spec).unwrap(),
             },
             isolation: WorkloadIsolation::Unconfined,
+            namespace,
         }
     }
 
@@ -365,6 +401,120 @@ mod tests {
         nucleus_ci_verdict::execution::NodePlatform::Unattested {
             reason: "test node".into(),
         }
+    }
+
+    #[test]
+    fn the_node_signs_runtime_placement_and_nothing_else() {
+        use nucleus_spec::{NamespaceSetup, WorkloadNamespace};
+        let claim_for = |spec: &nucleus_spec::PodSpec, observed: NamespaceSetup| {
+            completed_claim(
+                spec,
+                Uuid::nil(),
+                Backend::Local,
+                observed_namespace(spec, observed),
+                unattested(),
+                SandboxTier::Driver,
+            )
+        };
+        let runtime = spec();
+        let claim = claim_for(&runtime, NamespaceSetup::Runtime {}).unwrap();
+        assert_eq!(claim.schema, ExecutionSchema::V2);
+        assert_eq!(claim.namespace, NamespaceSetup::Runtime {});
+        let private = NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 1000,
+            loopback: true,
+        };
+        // A supervisor reporting anything but the admitted runtime placement
+        // is not signed.
+        for wrong in [
+            private,
+            NamespaceSetup::PrivateNetwork {},
+            NamespaceSetup::Unrecorded {},
+        ] {
+            assert!(claim_for(&runtime, wrong).is_err(), "{wrong:?}");
+        }
+        // A spec this runtime cannot enforce is not signed, even when the
+        // observation agrees with it.
+        let mut requested = spec();
+        requested.spec.workload.as_mut().unwrap().namespace =
+            WorkloadNamespace::PrivateUserNetwork {
+                inner_uid: 1000,
+                loopback: true,
+            };
+        for observed in [private, NamespaceSetup::Runtime {}] {
+            assert!(claim_for(&requested, observed).is_err(), "{observed:?}");
+        }
+    }
+
+    /// #3528: on the backend that makes it, a private placement is signed,
+    /// and only when the supervisor's hook record is exactly the admitted
+    /// mapping: the outer uid the spec states, the inner uid and the loopback
+    /// state it asked for. A record that differs in any one of them, or says
+    /// `runtime`, is not signed; neither is a spec whose outer uid is left to
+    /// a default.
+    #[test]
+    fn the_node_signs_a_private_placement_only_as_the_hook_recorded_it() {
+        use nucleus_spec::{NamespaceSetup, WorkloadNamespace};
+        let mut pinned = spec();
+        let digest = format!("sha-256:{}", "a".repeat(64));
+        pinned.spec.image = Some(
+            serde_json::from_value(serde_json::json!({
+                "kernel_path": "/kernel", "rootfs_path": "/rootfs",
+                "kernel_digest": digest, "rootfs_digest": digest, "read_only": true
+            }))
+            .unwrap(),
+        );
+        let workload = pinned.spec.workload.as_mut().unwrap();
+        workload.uid = Some(65534);
+        workload.namespace = WorkloadNamespace::PrivateUserNetwork {
+            inner_uid: 1001,
+            loopback: false,
+        };
+        let claim_for = |spec: &nucleus_spec::PodSpec, observed: NamespaceSetup| {
+            completed_claim(
+                spec,
+                Uuid::nil(),
+                Backend::Firecracker,
+                observed_namespace(spec, observed),
+                unattested(),
+                SandboxTier::Driver,
+            )
+        };
+        let admitted = NamespaceSetup::PrivateUserNetwork {
+            outer_uid: 65534,
+            inner_uid: 1001,
+            loopback: false,
+        };
+        let claim = claim_for(&pinned, admitted).expect("the hook record matches");
+        assert_eq!(claim.schema, ExecutionSchema::V2);
+        assert_eq!(claim.namespace, admitted);
+        for wrong in [
+            NamespaceSetup::PrivateUserNetwork {
+                outer_uid: 4242,
+                inner_uid: 1001,
+                loopback: false,
+            },
+            NamespaceSetup::PrivateUserNetwork {
+                outer_uid: 65534,
+                inner_uid: 0,
+                loopback: false,
+            },
+            NamespaceSetup::PrivateUserNetwork {
+                outer_uid: 65534,
+                inner_uid: 1001,
+                loopback: true,
+            },
+            NamespaceSetup::Runtime {},
+            NamespaceSetup::Unrecorded {},
+        ] {
+            assert!(claim_for(&pinned, wrong).is_err(), "{wrong:?}");
+        }
+        pinned.spec.workload.as_mut().unwrap().uid = None;
+        assert!(
+            claim_for(&pinned, admitted).is_err(),
+            "an outer uid left to a default is not a mapping anyone can check"
+        );
     }
 
     #[test]

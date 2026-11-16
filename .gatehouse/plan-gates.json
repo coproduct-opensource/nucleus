@@ -919,6 +919,7 @@
     "steps": [
       {
         "args": [],
+        "checkout_at": "/data/work/nucleus/nucleus",
         "loopback": 0,
         "program": "scripts/gatehouse-verifier-sdk.sh",
         "reads": [
@@ -1406,6 +1407,7 @@
     "steps": [
       {
         "args": [],
+        "checkout_at": "/data/work/nucleus/nucleus",
         "loopback": 0,
         "program": "scripts/gatehouse-verifier-sdk.sh",
         "reads": [

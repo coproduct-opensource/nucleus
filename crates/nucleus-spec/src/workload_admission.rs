@@ -9,6 +9,8 @@ use crate::workload_result::MEDIATOR_BINDINGS;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkloadAdmission {
+    #[serde(default = "crate::NamespaceSetup::not_recorded")]
+    pub namespace: crate::NamespaceSetup,
     pub pod_id: String,
     pub created_at_unix: u64,
     pub source_commit: String,
@@ -94,6 +96,7 @@ mod tests {
 
     fn admission(runtime: &[(&str, &str)]) -> WorkloadAdmission {
         WorkloadAdmission {
+            namespace: crate::NamespaceSetup::Runtime {},
             pod_id: "attempt-1".into(),
             created_at_unix: 10,
             source_commit: String::new(),

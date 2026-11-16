@@ -153,8 +153,20 @@ jobs:
       # Version-pinned: the crates' manifests call the toolchain, clippy_utils rev
       # and dylint version a LOCKSTEP TRIPLE and say not to bump one in isolation.
       # An unpinned `cargo install` would drift the third leg silently.
+      #
+      # The DRIVER leg moved alone, 6.0.1 -> 6.3.2, and that is deliberate.
+      # rust-lang/rust-clippy renamed its default branch master -> main.
+      # cargo-dylint 6.0.1 builds `dylint_driver` with a script that clones Clippy
+      # and resolves `master`, so every fresh driver build failed with "revspec
+      # 'master' not found" and this job went red on every PR. dylint 6.3.0 is the
+      # first release that handles the rename. The LIBRARY legs (dylint_linting
+      # 6.0.x, clippy_utils f6d3106, nightly-2026-04-16) are unchanged: measured
+      # 2026-11-01, cargo-dylint 6.3.2 with a fresh DYLINT_DRIVER_PATH runs the
+      # 6.0.x-built passes, and the mediation reds-on-revert self-test still
+      # fires. Built with the pinned nightly because cargo-dylint 6.3.x requires
+      # rustc 1.97 and the workspace stable is 1.96.1.
       - name: Install cargo-dylint
-        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.0.1" || cargo install cargo-dylint dylint-link --version 6.0.1 --locked
+        run: command -v cargo-dylint >/dev/null && cargo dylint --version | grep -q " 6.3.2" || cargo +nightly-2026-04-16 install cargo-dylint dylint-link --version 6.3.2 --locked
 
       # ── cb4a_separation (enforced at zero) ──────────────────────────────
       #

@@ -1,6 +1,27 @@
 # `decide_pure` refinement-proof plan (round 2)
 
-**Status: PLAN ONLY — nothing in this doc is wired into the lake build yet.**
+**Status, 2026-11-13: the extraction is committed and is a `lean_lib`; no theorem
+over it exists.** What changed since this plan was written:
+
+- `generated-decide/PortcullisCoreDecide/{Types,Funs}.lean` are on `main`.
+- As first committed, `Funs.lean` did not elaborate under the pinned Lean 4.30.0:
+  `decide_pure` took a parameter named `exposure`, Aeneas carried the name into
+  Lean, and the binder shadowed the `exposure` namespace, so
+  `exposure.PureVerdict` and `exposure.should_gate` in the generated body were
+  read as fields of the parameter (Lean: "Invalid field `PureVerdict` … from
+  an expression `exposure` of type `ExposureSet`"). Nothing built the directory,
+  so nothing reported it. The Rust parameter is now `current`, and the
+  extraction was regenerated from that source.
+- Step a.1's first edit is done: `lean_lib «PortcullisCoreDecide»` is in
+  `lakefile.lean`, the proven-tier workflow builds it, and the regeneration
+  workflow elaborates what it emits before committing it.
+- Steps a.2 onward are NOT done. `DecidePureExtractedProofs.lean` does not
+  exist; `DecidePureProofs.lean` still proves a hand-written model. The text
+  below is the original plan and is kept for those steps. Where it says the
+  generated files do not exist, or that the lib must not be added yet, it
+  describes the state before this note.
+
+**Original status: PLAN ONLY — nothing in this doc is wired into the lake build yet.**
 The Aeneas-generated `decide_pure` does **not** exist in this checkout. It is
 produced by CI (`.github/workflows/aeneas-decide-pure.yml`, round-1 deliverable),
 which runs scoped Charon + Aeneas on a Linux runner and **auto-commits** the
