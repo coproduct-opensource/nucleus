@@ -33,7 +33,10 @@ use std::process::Command;
 use nucleus::portcullis::{
     CapabilityLattice, CapabilityLevel, NetworkEgress, PermissionLattice, SeccompPolicy,
 };
-use nucleus::{ChildConfinement, ContainmentMode, LandlockWaiver, UnsandboxedOptIn};
+use nucleus::{
+    ChildConfinement, ContainmentMode, LandlockWaiver, NamespaceSetup, PidNamespace,
+    UnsandboxedOptIn, UserNamespaces,
+};
 
 const OP_ENV: &str = "NUCLEUS_CHILD_SECCOMP_OP";
 const RESULT: &str = "CHILD_SECCOMP_RESULT ";
@@ -91,6 +94,8 @@ fn seccomp_filters() -> String {
 fn run_op(op: &str) -> String {
     match op {
         "filters" => format!("filters={}", seccomp_filters()),
+        // #3528: who the child is, as its own kernel answers.
+        "placement" => placement(),
         "vsock" => {
             // SAFETY: plain syscall; the fd is closed below.
             let fd =
@@ -256,8 +261,63 @@ fn run_op(op: &str) -> String {
             }
             r
         }
+        // #3528: reach a TCP listener the PARENT holds on its loopback.
+        other if other.starts_with("connect=") => {
+            let port: u16 = other["connect=".len()..].parse().unwrap();
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(_) => "ok".to_string(),
+                Err(e) => format!("errno={}", e.raw_os_error().unwrap_or(-1)),
+            }
+        }
         other => format!("unknown-op={other}"),
     }
+}
+
+/// The child's placement (#3528), as one line: its pid, real/effective/saved
+/// uid and gid, its uid and gid maps, its `setgroups`, its four capability
+/// sets (inheritable, permitted, effective, ambient), its securebits and its
+/// network namespace.
+fn placement() -> String {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .map_or_else(
+                || "?".to_string(),
+                |v| v.split_whitespace().collect::<Vec<_>>().join(","),
+            )
+    };
+    let words = |path: &str| {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    // SAFETY: plain syscalls that only read this process's state.
+    let (pid, securebits) = unsafe {
+        (
+            libc::getpid(),
+            libc::prctl(libc::PR_GET_SECUREBITS, 0, 0, 0, 0),
+        )
+    };
+    let net = std::fs::read_link("/proc/self/ns/net")
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    format!(
+        "pid={pid};uid={};gid={};uid_map={};gid_map={};setgroups={};caps={}/{}/{}/{};\
+         securebits={securebits};net={net}",
+        field("Uid:"),
+        field("Gid:"),
+        words("/proc/self/uid_map"),
+        words("/proc/self/gid_map"),
+        words("/proc/self/setgroups"),
+        field("CapInh:"),
+        field("CapPrm:"),
+        field("CapEff:"),
+        field("CapAmb:"),
+    )
 }
 
 // --------------------------------------------------------------- parent side
@@ -339,6 +399,17 @@ fn try_run_under(
     policy: SeccompPolicy,
     op: &str,
 ) -> std::io::Result<String> {
+    try_run_in(confinement, PidNamespace::Shared, policy, op)
+}
+
+/// [`try_run_under`], spawned in its own PID namespace when `pids` says so
+/// (#3344), the way the guest's workload is.
+fn try_run_in(
+    confinement: Option<ChildConfinement>,
+    pids: PidNamespace,
+    policy: SeccompPolicy,
+    op: &str,
+) -> std::io::Result<String> {
     let exe = child_exe(confinement.and_then(|c| c.drop_uid()).is_some());
     let mut cmd = Command::new(&exe.path);
     cmd.args([
@@ -351,11 +422,12 @@ fn try_run_under(
     .env(OP_ENV, op)
     .current_dir(Path::new("/"));
     if let Some(c) = confinement {
-        let _ = c.apply(
+        let _ = c.apply_with_pids(
             &mut cmd,
             nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
             policy,
             &nucleus::WorkspaceWrites::Writable,
+            pids,
         );
     }
     // Under root each test writes its own copy of this binary while other
@@ -726,4 +798,216 @@ fn the_derived_classes_add_no_second_filter() {
             "{mode:?}"
         );
     }
+}
+
+// ── #3528: a private user and network namespace inside the PID namespace ────
+
+/// The value of `key` in a `placement` line.
+fn placed_field<'a>(line: &'a str, key: &str) -> &'a str {
+    line.split(';')
+        .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+        .unwrap_or_else(|| panic!("no {key} in {line}"))
+}
+
+/// The guest workload's base posture under a root runtime, and what this
+/// kernel lets it be placed in; `None` (after asserting the refusal) where
+/// the runtime is not root and so cannot drop at all.
+fn guest_base() -> Option<(ChildConfinement, nucleus_spec::NamespaceEnforcement)> {
+    let base = ChildConfinement::workload(
+        ContainmentMode::MicroVM,
+        Some(nucleus::DEFAULT_CHILD_UID),
+        UnsandboxedOptIn::Absent,
+        LandlockWaiver::Absent,
+    );
+    if nucleus::runtime_uid() != 0 {
+        assert!(
+            matches!(
+                base,
+                Err(nucleus::NucleusError::ChildSeparationUnavailable { .. })
+            ),
+            "a non-root runtime cannot drop, so it places nothing: {base:?}"
+        );
+        return None;
+    }
+    let base = base.expect("a root runtime drops its guest workload");
+    Some((base, base.namespace_enforcement(PidNamespace::Own)))
+}
+
+/// **The ordering the receipt depends on (#3528 on #3344).** As root, a
+/// guest workload placed in `private_user_network` runs as pid 2 of its own
+/// PID namespace, AND in a fresh user namespace mapping exactly `inner 65534
+/// 1` for uid and gid with `setgroups` denied, AND in a fresh network
+/// namespace whose `lo` is up iff asked, with every capability set empty and
+/// `SECBIT_NOROOT` locked. The hook's record says exactly that, and the rest
+/// of the confinement still holds: no further user namespace, a derived
+/// network denial still wins over the available loopback, and the runtime's
+/// own loopback is out of reach.
+///
+/// Where the kernel offers no user namespaces the placement is refused by
+/// name instead, and that is asserted.
+#[test]
+fn a_private_user_network_namespace_is_made_inside_the_workloads_own_pid_namespace() {
+    let Some((base, enforcement)) = guest_base() else {
+        return;
+    };
+    if let UserNamespaces::Unavailable { reason } = UserNamespaces::probe() {
+        eprintln!("this kernel offers no user namespaces ({reason}): asserting the refusal");
+        assert_eq!(enforcement, nucleus_spec::NamespaceEnforcement::RuntimeOnly);
+        return;
+    }
+    assert_eq!(
+        enforcement,
+        nucleus_spec::NamespaceEnforcement::PrivateUserNetwork
+    );
+    let original = std::fs::read_link("/proc/self/ns/net").unwrap();
+    let outer = nucleus::DEFAULT_CHILD_UID;
+    // A listener on the RUNTIME's loopback, which a private namespace must
+    // not reach.
+    let runtime_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let runtime_port = runtime_listener.local_addr().unwrap().port();
+    for (inner, loopback) in [(0, false), (0, true), (1001, false), (1001, true)] {
+        let what = format!("inner {inner}, loopback {loopback}");
+        let admitted = nucleus_spec::WorkloadNamespace::PrivateUserNetwork {
+            inner_uid: inner,
+            loopback,
+        }
+        .admit(Some(outer), enforcement)
+        .expect("admitted where enforced");
+        let placed = base.placed(admitted, PidNamespace::Own).expect("placed");
+
+        // The record: what `apply` says the hook does, minted with the hook.
+        let mut probe = Command::new("/usr/bin/true");
+        probe.current_dir("/");
+        match placed.apply_with_pids(
+            &mut probe,
+            nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
+            nothing(),
+            &nucleus::WorkspaceWrites::Writable,
+            PidNamespace::Own,
+        ) {
+            nucleus::SpawnHardening::Hardened(h) => {
+                assert_eq!(h.pid_namespace(), PidNamespace::Own, "{what}");
+                assert_eq!(
+                    h.namespace(),
+                    NamespaceSetup::PrivateUserNetwork {
+                        outer_uid: outer,
+                        inner_uid: inner,
+                        loopback
+                    },
+                    "{what}"
+                );
+            }
+            other => panic!("{what}: a placed workload is hardened: {other:?}"),
+        }
+        assert!(probe.status().unwrap().success(), "{what}: /usr/bin/true");
+
+        // The effect, as the child's own kernel answers.
+        let line = try_run_in(Some(placed), PidNamespace::Own, nothing(), "placement")
+            .unwrap_or_else(|e| panic!("{what}: the placed child did not spawn: {e}"));
+        eprintln!("{what}: {line}");
+        assert_eq!(
+            placed_field(&line, "pid"),
+            "2",
+            "{what}: pid 2 of its own: {line}"
+        );
+        let ids = format!("{inner},{inner},{inner},{inner}");
+        assert_eq!(placed_field(&line, "uid"), ids, "{what}: {line}");
+        assert_eq!(placed_field(&line, "gid"), ids, "{what}: {line}");
+        let map = format!("{inner},{outer},1");
+        assert_eq!(placed_field(&line, "uid_map"), map, "{what}: {line}");
+        assert_eq!(placed_field(&line, "gid_map"), map, "{what}: {line}");
+        assert_eq!(placed_field(&line, "setgroups"), "deny", "{what}: {line}");
+        assert_eq!(
+            placed_field(&line, "caps"),
+            "0000000000000000/0000000000000000/0000000000000000/0000000000000000",
+            "{what}: {line}"
+        );
+        let securebits: i32 = placed_field(&line, "securebits").parse().unwrap();
+        assert_eq!(securebits & 0b11, 0b11, "{what}: NOROOT locked: {line}");
+        assert_ne!(
+            placed_field(&line, "net"),
+            original.display().to_string(),
+            "{what}: a network namespace of its own"
+        );
+
+        let tcp = run_in(placed, "tcp");
+        if loopback {
+            assert_eq!(tcp, "ok", "{what}: lo is up");
+        } else {
+            // Measured 2026-11-14 (Debian 12, 6.1.0-54): no route to a
+            // 127.0.0.1 whose interface was never raised.
+            assert_eq!(
+                tcp,
+                format!("errno={}", libc::ENETUNREACH),
+                "{what}: lo stays down"
+            );
+        }
+        eprintln!("{what}: tcp on its own loopback: {tcp}");
+        assert_ne!(
+            run_in(placed, &format!("connect={runtime_port}")),
+            "ok",
+            "{what}: the runtime's loopback is not reachable"
+        );
+        assert_eq!(run_in(placed, "fork"), "ok", "{what}");
+        assert_eq!(run_in(placed, "unshare_userns"), denied(), "{what}");
+        assert_eq!(run_in(placed, "clone_newuser"), denied(), "{what}");
+        // A derived network denial still wins over the loopback it has.
+        let no_net = derived(CapabilityLevel::Always, CapabilityLevel::Never);
+        assert_eq!(
+            try_run_in(Some(placed), PidNamespace::Own, no_net, "tcp").unwrap(),
+            denied(),
+            "{what}: the derived class still holds"
+        );
+    }
+    drop(runtime_listener);
+    assert_eq!(
+        std::fs::read_link("/proc/self/ns/net").unwrap(),
+        original,
+        "the runtime stayed where it was"
+    );
+}
+
+/// [`try_run_in`] in the workload's own PID namespace, under no derived
+/// classes, panicking on a spawn failure.
+fn run_in(c: ChildConfinement, op: &str) -> String {
+    try_run_in(Some(c), PidNamespace::Own, nothing(), op)
+        .unwrap_or_else(|e| panic!("{op}: the placed child did not spawn: {e}"))
+}
+
+/// **The PID namespace alone is unchanged (#3344).** Runtime placement in a
+/// guest still gets its own PID namespace, the runtime's user and network
+/// namespaces, and a record that says `runtime` beside `own`.
+#[test]
+fn runtime_placement_keeps_its_own_pid_namespace_and_records_runtime() {
+    let Some((base, enforcement)) = guest_base() else {
+        return;
+    };
+    let admitted = nucleus_spec::WorkloadNamespace::Runtime {}
+        .admit(Some(nucleus::DEFAULT_CHILD_UID), enforcement)
+        .unwrap();
+    let placed = base.placed(admitted, PidNamespace::Own).unwrap();
+    assert_eq!(placed, base, "runtime placement changes nothing");
+    let mut probe = Command::new("/usr/bin/true");
+    match placed.apply_with_pids(
+        &mut probe,
+        nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
+        nothing(),
+        &nucleus::WorkspaceWrites::Writable,
+        PidNamespace::Own,
+    ) {
+        nucleus::SpawnHardening::Hardened(h) => {
+            assert_eq!(h.pid_namespace(), PidNamespace::Own);
+            assert_eq!(h.namespace(), NamespaceSetup::Runtime {});
+        }
+        other => panic!("{other:?}"),
+    }
+    let line = run_in(placed, "placement");
+    let original = std::fs::read_link("/proc/self/ns/net").unwrap();
+    assert_eq!(placed_field(&line, "pid"), "2", "{line}");
+    assert_eq!(placed_field(&line, "uid_map"), "0,0,4294967295", "{line}");
+    assert_eq!(
+        placed_field(&line, "net"),
+        original.display().to_string(),
+        "{line}"
+    );
 }
