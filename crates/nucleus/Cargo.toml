@@ -89,8 +89,10 @@ landlock = "0.4.7"
 # The exec pin (#2907) raises the runtime's own RLIMIT_NOFILE and places a
 # descriptor at a floor (`F_DUPFD_CLOEXEC`) without `unsafe`. Already in the
 # lockfile (1.1.4, through tempfile). `fs` opens a guest workload's own
-# `/proc` for its Landlock rule (#3344), in the forked child.
-rustix = { version = "1.1.4", features = ["fs", "process"] }
+# `/proc` for its Landlock rule (#3344), in the forked child. `net` and
+# `thread` are a private user namespace's map exchange and capability shed
+# (#3528), in the forked child, so that step adds no `unsafe` block.
+rustix = { version = "1.1.4", features = ["fs", "net", "process", "thread"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

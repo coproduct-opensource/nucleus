@@ -6863,6 +6863,7 @@ name = "nucleus-spec"
 version = "1.0.0"
 dependencies = [
  "hex",
+ "nucleus-ci-verdict",
  "nucleus-cred-protocol",
  "nucleus-yaml",
  "portcullis",
