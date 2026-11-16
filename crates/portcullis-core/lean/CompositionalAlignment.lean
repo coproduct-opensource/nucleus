@@ -131,10 +131,12 @@ theorem compositional_cost_subadditive
 theorem composed_sample_complexity_bound
     (S₁ S₂ : AlignmentSpec Secret) (h_model : S₁.model = S₂.model)
     (E : List AlignmentExample)
+    (h_rect : AugmentedRectangular (specUnion S₁ S₂ h_model).model
+                                   (specUnion S₁ S₂ h_model).covering E)
     (h_aligned : AlignedAfter (specUnion S₁ S₂ h_model).model
                               (specUnion S₁ S₂ h_model).covering E) :
     cost (specUnion S₁ S₂ h_model) ≤ E.length := by
-  exact realising_set_size_ge_h1 _ _ E h_aligned
+  exact realising_set_size_ge_h1 _ _ E h_rect h_aligned
 
 /-- **Disjoint-support case** (provable unconditionally): when specs
     don't share observation indices, costs are additive with an

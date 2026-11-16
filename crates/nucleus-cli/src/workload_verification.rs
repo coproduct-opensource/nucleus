@@ -130,10 +130,15 @@ fn expectations(
         admission.architecture == architecture,
         "setup admission architecture differs from host inputs"
     );
+    ensure!(
+        admission.namespace == nucleus_spec::NamespaceSetup::Runtime {},
+        "setup admission changed the requested runtime namespace placement"
+    );
     // The declared inputs plus what the runtime injected, from the admission
     // record (#3219): the same derivation `nucleus-audit prepare-execution` uses.
     let inputs = admission.environment_inputs(&environment())?;
     Ok(RecordedExecution {
+        namespace: nucleus_spec::NamespaceSetup::Runtime {},
         pod_id: pod.to_string(),
         session_id: pod.to_string(),
         source_commit: String::new(),

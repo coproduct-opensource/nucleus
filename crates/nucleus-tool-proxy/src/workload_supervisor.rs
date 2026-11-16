@@ -175,6 +175,7 @@ pub(crate) fn start(
                     environment: launch.environment,
                     program,
                     isolation,
+                    namespace: launch.namespace,
                 },
                 logs: Some((stdout, stderr)),
             },

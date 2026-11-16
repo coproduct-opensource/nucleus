@@ -89,10 +89,12 @@ RUN set -eux; \
 # `cargo xtask ci-timings` on PR #2617 showed "Install cargo-dylint" at 1.9 min
 # in each of four dylint jobs and cargo-llvm-cov / cargo-hack / cargo-audit
 # installs of 1–2.5 min per job — runner time spent rebuilding the same
-# binaries every PR. Versions mirror the workflows' pins (dylint 6.0.1,
+# binaries every PR. Versions mirror the workflows' pins (dylint 6.3.2,
 # cargo-audit 0.22.0); the rest are `--locked` at the versions below so an
-# image rebuild is a deliberate bump, not a drift.
-ARG CARGO_DYLINT_VERSION=6.0.1
+# image rebuild is a deliberate bump, not a drift. cargo-dylint 6.3.x needs
+# rustc 1.97, so it is built with the pinned nightly (1.97.0-nightly); see
+# .github/workflows/dylint-separation.yml for why the driver moved past 6.0.1.
+ARG CARGO_DYLINT_VERSION=6.3.2
 ARG CARGO_AUDIT_VERSION=0.22.0
 ARG CARGO_LLVM_COV_VERSION=0.9.0
 ARG CARGO_HACK_VERSION=0.6.45
@@ -101,7 +103,7 @@ ARG CARGO_DENY_VERSION=0.20.2
 ARG CARGO_ZIGBUILD_VERSION=0.23.4
 ARG CARGO_MUTANTS_VERSION=27.1.0
 RUN set -eux; \
-    cargo install cargo-dylint dylint-link --version ${CARGO_DYLINT_VERSION} --locked; \
+    cargo +nightly-2026-04-16 install cargo-dylint dylint-link --version ${CARGO_DYLINT_VERSION} --locked; \
     cargo +stable install cargo-audit --version ${CARGO_AUDIT_VERSION} --locked --no-default-features; \
     cargo install cargo-llvm-cov --version ${CARGO_LLVM_COV_VERSION} --locked; \
     cargo install cargo-hack --version ${CARGO_HACK_VERSION} --locked; \
