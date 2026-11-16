@@ -15,7 +15,7 @@ categories = ["config", "development-tools"]
 serde = { workspace = true }
 nucleus-yaml = { path = "../nucleus-yaml" }
 serde_json = { workspace = true }
-serde_json_canonicalizer = "0.3"
+serde_json_canonicalizer = "0.4"
 sha2 = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
