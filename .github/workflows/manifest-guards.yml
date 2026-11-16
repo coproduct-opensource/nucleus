@@ -110,6 +110,11 @@ jobs:
       # is excluded on purpose: those are upstream packages' own pins and differ legitimately.
       - name: One fact, one value (elan, aeneas/charon, lean-toolchain)
         run: cargo run -q -p xtask -- pin-parity
+      # Four Dependabot pull requests (#3504, #3509, #3530, #3539) each deleted the plugin's
+      # MCP SDK override from its lockfile and moved the SDK back to 1.30.0, under the
+      # GHSA-6qxp-vccf-f47h floor. Nothing in CI read that lockfile.
+      - name: The plugin lockfile keeps its overrides and the MCP SDK floor
+        run: cargo run -q -p xtask -- pnpm-lock-floors
       # The manager validates POOLS at startup and nothing validated the COMMITTED
       # default, so it had drifted into a config the manager refuses: requires_volume
       # with zero volumes for eight machines. That is the value a fresh deployment

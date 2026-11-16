@@ -184,6 +184,12 @@ pub fn probes() -> Vec<Probe> {
             desc: "two first-party Lean versions in one tree",
             perturb: pert!(perturb_lean_toolchain_split),
         },
+        Probe {
+            family: xtask("pnpm-lock-floors"),
+            target: "examples/openclaw-nucleus-plugin/pnpm-lock.yaml",
+            desc: "a plugin lockfile written without its MCP SDK override",
+            perturb: pert!(perturb_pnpm_lock_drop_overrides),
+        },
         // Exit 2 ("could not look") is red and is the right red: a pin nobody can resolve is
         // not a pin.
         Probe {
