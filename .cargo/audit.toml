@@ -32,4 +32,11 @@ ignore = [
     # i18n-embed-impl (proc-macros) -> i18n-config. cargo-deny already scopes
     # unmaintained to workspace deps and does not flag it.
     "RUSTSEC-2026-0374",
+
+    # EXPIRES 2027-01-31. chrono unmaintained (RUSTSEC-2026-0543), published
+    # 2026-11-17: informational, no vulnerability. A direct workspace dependency
+    # (chrono 0.4.45; Cargo.toml [workspace.dependencies] and more than a dozen
+    # crates), so leaving it is a migration to `jiff` or `time`. Mirrors the
+    # deny.toml ignore.
+    "RUSTSEC-2026-0543",
 ]
