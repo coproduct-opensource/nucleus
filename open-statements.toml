@@ -15,4 +15,4 @@ permitted_axioms = ["propext", "Classical.choice", "Quot.sound"]
 # artifact this row admits can be relayed. The reference proof exports to 28,561 v2 bytes.
 maximum_artifact_bytes = 32768
 statement_sha256 = "5a52ba7e61637203fc8d6d9c81e9b14257f09eb923c766d9abdc4ade810011e2"
-status = "open"
+status = "posted"
