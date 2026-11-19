@@ -199,6 +199,12 @@ lean_lib «PodCrossView» where
 lean_lib «PodCrossViewIdentity» where
   roots := #[`PodCrossViewIdentity]
 
+-- VM-to-VM links (ADR 0017, proposed): the link table's meaning, before any
+-- code. Mathlib-free. Not yet listed in the proven-tier workflow; that lands
+-- with the implementation (a guardrail path).
+lean_lib «LinkTable» where
+  roots := #[`LinkTable]
+
 -- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
 -- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
 -- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.
