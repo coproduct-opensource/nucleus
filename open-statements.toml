@@ -43,7 +43,8 @@ module = "Statements.S0007"
 claim = "Statements.S0007.claim"
 permitted_axioms = ["propext", "Classical.choice", "Quot.sound"]
 maximum_artifact_bytes = 32768
-statement_sha256 = "953e31927bd5aa3d3e6503b873c0fa4ec7c6bb60d325268fdf43e115cb923756"
+# Export roots now end with `Nat`, which this claim does not reach on its own.
+statement_sha256 = "e3285b679dc427c61efb98ea45844427bd1bcb995459595042e82f91e7914daf"
 status = "open"
 
 # Pa.Egress.1 L4: for every policy header_policy accepts, a fixed header is not
