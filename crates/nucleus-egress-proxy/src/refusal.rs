@@ -123,6 +123,18 @@ pub enum Refusal {
     /// `TlsVerdict::RefusedFronting`: the TLS name, the `CONNECT` authority
     /// and the `Host` header do not all agree.
     Fronting,
+
+    // ── links (ADR 0017 L4b, link.rs) ───────────────────────────────────────
+    /// A link name reached the egress proxy: links ride only the link
+    /// proxy, so one can never leave the node by the egress path.
+    LinkNotHere,
+    /// The link proxy got a host that is not a link name.
+    NotALink,
+    /// The node allowed the request, but this pod holds no live link to
+    /// that pod and port (never announced, or severed): `may_deliver` said no.
+    LinkNotLive,
+    /// The destination's vsock mux or relay did not answer.
+    LinkUnreachable,
 }
 
 impl Refusal {
@@ -140,6 +152,7 @@ impl Refusal {
             | Refusal::NotOriginForm
             | Refusal::NotTls
             | Refusal::Fronting
+            | Refusal::NotALink
             | Refusal::Incomplete => (400, "Bad Request"),
             Refusal::RequestLineTooLong => (414, "URI Too Long"),
             Refusal::HeadersTooLarge | Refusal::TooManyHeaders | Refusal::SummaryTooLong => {
@@ -162,11 +175,14 @@ impl Refusal {
             | Refusal::NoAddress
             | Refusal::ForbiddenAddress
             | Refusal::PrivateAddress
-            | Refusal::UpstreamUnreachable => (502, "Bad Gateway"),
+            | Refusal::UpstreamUnreachable
+            | Refusal::LinkUnreachable => (502, "Bad Gateway"),
             Refusal::HeadTimeout => (408, "Request Timeout"),
             Refusal::TlsExpired
             | Refusal::TlsNameNotPermitted
-            | Refusal::ClientRejectedInterception => (403, "Forbidden"),
+            | Refusal::ClientRejectedInterception
+            | Refusal::LinkNotHere
+            | Refusal::LinkNotLive => (403, "Forbidden"),
         }
     }
 
@@ -221,6 +237,10 @@ impl Refusal {
             Refusal::TlsNameNotPermitted => "tls_name_not_permitted",
             Refusal::ClientRejectedInterception => "client_rejected_interception",
             Refusal::Fronting => "fronting",
+            Refusal::LinkNotHere => "link_not_here",
+            Refusal::NotALink => "not_a_link",
+            Refusal::LinkNotLive => "link_not_live",
+            Refusal::LinkUnreachable => "link_unreachable",
         }
     }
 

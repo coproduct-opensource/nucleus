@@ -44,11 +44,12 @@ use tokio::sync::Semaphore;
 use crate::Refusal;
 use crate::address::admit;
 use crate::decision::{Decided, HostAnswer, SharedDecider};
+use crate::link::{LinkTarget, Links, deliverable, dial, link_dst};
 use crate::request::{
     ConnectParsed, Host, MAX_HEAD, Method, Origin, Parsed, Request, Scheme, parse_connect_head,
     parse_head, parse_head_tunnelled,
 };
-use crate::resolve::Resolve;
+use crate::resolve::{NoOutboundPath, Resolve};
 use crate::summary::{Summary, digest};
 use crate::tls::Termination;
 
@@ -84,6 +85,9 @@ pub struct Proxy<D, R> {
     slots: Arc<Semaphore>,
     tls: Option<Arc<Termination>>,
     journal: Mutex<VecDeque<TlsRecord>>,
+    /// Link mode (ADR 0017 L4b): the routes the node announced. `None` is
+    /// the egress proxy, where a link name is refused.
+    links: Option<Arc<Links>>,
 }
 
 /// What a connection ended in, for the log and for tests.
@@ -130,6 +134,7 @@ where
             slots: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
             tls: None,
             journal: Mutex::new(VecDeque::new()),
+            links: None,
         }
     }
 
@@ -218,10 +223,27 @@ where
         guest: &mut G,
         tls_name: Option<&str>,
     ) -> Result<(), Refusal> {
+        // Which path this request may take is fixed by the proxy's mode
+        // before anyone is asked: a link name only through the link proxy,
+        // and the link proxy only to link names.
+        let link = link_dst(&request.origin.host).map(|dst| LinkTarget {
+            dst,
+            port: request.origin.port,
+        });
+        match (&self.links, link) {
+            (None, Some(_)) => return Err(Refusal::LinkNotHere),
+            (Some(_), None) => return Err(Refusal::NotALink),
+            (None, None) | (Some(_), Some(_)) => {}
+        }
         // 2. ask
         let summary = Summary::of(request, body);
         let subject = summary.subject()?;
         let answer = self.decider.decide(subject, digest(&summary.text())).await;
+        if let (Some(links), Some(target)) = (&self.links, link) {
+            return self
+                .deliver_link(links, target, answer, request, body, guest)
+                .await;
+        }
         // Exhaustive, no `_` arm (ADR 0007 B-3): only an allow continues.
         match answer {
             HostAnswer::Verdict(Decided::Allowed) => {}
@@ -266,6 +288,51 @@ where
             // request without a CA: no path that was decided for it.
             _ => return Err(Refusal::UpstreamUnreachable),
         }
+        let _ = guest.shutdown().await;
+        Ok(())
+    }
+
+    /// Steps 3–5 in link mode: deliver a decided request to another pod, only
+    /// through the kernel's `may_deliver(connection_live, host_admits)`.
+    async fn deliver_link<G: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        links: &Links,
+        target: LinkTarget,
+        answer: HostAnswer,
+        request: &Request,
+        body: &[u8],
+        guest: &mut G,
+    ) -> Result<(), Refusal> {
+        let host_admits = matches!(answer, HostAnswer::Verdict(Decided::Allowed));
+        let live = links.live(target);
+        if !deliverable(live.is_some(), host_admits) {
+            // Say why: the node's refusal if it refused, else the link.
+            // Exhaustive, no `_` arm (ADR 0007 B-3).
+            return Err(match answer {
+                HostAnswer::Verdict(Decided::Denied(reason)) => Refusal::Denied(reason),
+                HostAnswer::Verdict(Decided::ApprovalRequired) => Refusal::ApprovalRequired,
+                HostAnswer::Unreachable(why) => Refusal::HostUnavailable(why),
+                HostAnswer::Verdict(Decided::Allowed) => Refusal::LinkNotLive,
+            });
+        }
+        let Some((route, severed)) = live else {
+            return Err(Refusal::LinkNotLive);
+        };
+        let mut upstream = dial(&route, target.port).await?;
+        upstream
+            .write_all(&upstream_request(request, body))
+            .await
+            .map_err(|_| Refusal::LinkUnreachable)?;
+        // Past the decision: a sever ends the exchange at once, mid-response
+        // included (ADR 0017 §3). The guest stream is borrowed, so the sever
+        // is a signal raced against the relay rather than a task to abort.
+        tokio::select! {
+            _ = tokio::io::copy(&mut upstream, guest) => {}
+            () = until_severed(severed) => {
+                tracing::info!(dst = %crate::link::uuid_string(target.dst), port = target.port, "link severed mid-exchange");
+            }
+        }
+        drop(upstream);
         let _ = guest.shutdown().await;
         Ok(())
     }
@@ -360,6 +427,33 @@ where
                 Err(Stop::Told(refusal))
             }
         }
+    }
+}
+
+/// Resolves once the route is severed. A sender that went away without
+/// saying so counts as severed: no answer is a denial.
+async fn until_severed(mut severed: tokio::sync::watch::Receiver<bool>) {
+    loop {
+        if *severed.borrow_and_update() {
+            return;
+        }
+        if severed.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+impl<D> Proxy<D, NoOutboundPath>
+where
+    D: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    /// The link proxy (ADR 0017 L4b): decides through `decider`, delivers
+    /// only to the routes `links` holds. It has no resolver and no address
+    /// path: a link name is the only upstream it knows.
+    pub fn link(decider: SharedDecider<D>, links: Arc<Links>) -> Self {
+        let mut proxy = Proxy::new(decider, NoOutboundPath, Vec::new());
+        proxy.links = Some(links);
+        proxy
     }
 }
 
@@ -584,3 +678,7 @@ mod tests;
 #[cfg(test)]
 #[path = "serve_tls_tests.rs"]
 mod tls_tests;
+
+#[cfg(test)]
+#[path = "serve_link_tests.rs"]
+mod link_tests;

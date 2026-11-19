@@ -379,6 +379,62 @@ constant.
   The link-name format is L4b's to fix. The node should refuse a pod spec whose own vsock
   control port is 1031; until it does, such a pod runs without links.
 
+**What L4b delivered, proxy side (2026-11-19).** `nucleus-egress-proxy --mode link` is the host
+link relay: the same confined binary, parser, summary and decision channel as egress, with one
+different upstream (`crates/nucleus-egress-proxy/src/link.rs`).
+
+- **Link names.** `<dst-uuid>.link.nucleus.invalid` (canonical lower-case `8-4-4-4-12`; `.invalid`
+  per RFC 6761, so a link name can never resolve outward). Absolute-form
+  `http://<name>:<port>/…`, or `CONNECT <name>:443` terminated through E3 with a leaf for that
+  name. The summary's URL carries the destination and port, so the decision frames are unchanged.
+- **Modes are exclusive.** The egress proxy refuses a link name (`link_not_here`) and the link
+  proxy refuses any other host (`not_a_link`), both before the node is asked.
+- **Delivery** goes through the extracted `may_deliver(connection_live, host_admits)` only:
+  `host_admits` is the node's allow, `connection_live` is whether the node announced this
+  `(dst, port)` and has not severed it. Otherwise the node's own refusal, or `link_not_live`.
+- **Upstream bytes** to the destination: `CONNECT <guest-port>\n`, `OK …`, `PORT <port>\n`
+  (L4c's preamble), then the decided request re-serialised in origin form. Plain HTTP over vsock:
+  TLS from the source ends at the relay.
+- **Severing** is a one-way control pipe from the node, not a decision frame (the decision
+  channel is strictly numbered request–answer; an unsolicited frame would poison it). A `SEVER`
+  closes every live connection on that link at once, mid-response included. A control line that
+  does not parse, or the pipe ending, drops every route and severs everything (fail closed).
+- **Tests** (`serve_link_tests.rs`, in-process, macOS; 48 pass in the crate): an admitted request
+  arrives with the handshake, the preamble and the decided request; a denied one opens zero
+  connections; a link never announced, on another port, or severed opens zero; `SEVER` and a
+  broken control pipe close a live connection mid-response; TLS over a link is terminated and
+  delivered in clear; CL+TE, a pipelined second request, `Upgrade` and a non-TLS `CONNECT` are
+  refused before the node is asked; each mode refuses the other's names.
+- **Driven red:** delivering regardless of the node's answer failed
+  `a_denied_request_never_reaches_the_destination`; a relay not raced against the sever signal
+  failed both sever tests (timed out); an egress proxy that let link names through failed
+  `the_egress_proxy_refuses_a_link_name`.
+- **Not compiled for Linux here,** like E3: the `--mode link` start path in `main.rs` is
+  Linux-only. Its pipe adapter (`control_pipe`) is compiled on every platform.
+
+**What the node half of L4b must do** (not built):
+
+1. **Start one link proxy per pod** that may hold links (eval cells included), the way
+   `egress_proxy::start_for_pod` starts the egress one: stdin = the `PodLink` listener
+   (`bind_guest_listener(uds, VsockListener::PodLink, …)`, `{uds}_1030`), stdout = a decision
+   socketpair, `--mode link`, `--link-control-fd N` = the read end of a pipe, no `--deny-floor`,
+   and `--tls-ca-fd` when the pod has a CA (its constraints must include the link names of the
+   pod's links). The process is per source pod, so the source is the pod whose `{uds}_1030` the
+   connection arrived on: never anything the guest says.
+2. **Write control lines** to that pipe, one per change, `\n`-terminated:
+   `LINK <dst-uuid> <port> 1031 <dst-vsock-uds-path>` when a link from this pod is made (the
+   path is the destination's Firecracker `vsock.sock`, `jail.host_path(in_jail::VSOCK)`, which
+   `FirecrackerPod` must now record), and `SEVER <dst-uuid> <port>` on unlink and on either end's
+   exit, before the unlink or drop receipt is signed. Closing the pipe severs everything.
+3. **Decide link requests** on the link proxy's decision channel: parse the summary, map the
+   link name back to `(src, dst, port)`, require the row in `NodeState.links` (refuse with
+   `RouteRefused` otherwise), then `PodPolicy::authorize_effect` exactly as egress does. Record
+   the connection with `LinkTable::connect` and each delivered request with
+   `LinkTable::request`, so receipts and `severed` lists name real connections.
+4. **Confinement to check on Linux:** the link proxy must be able to `connect(2)` the
+   destination's `vsock.sock` after Landlock (ABI V2 handles no connect right) from inside its
+   namespaces as its unprivileged uid; jail ownership of that socket may need a group grant.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.

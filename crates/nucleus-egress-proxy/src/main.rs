@@ -9,6 +9,11 @@
 //! * **stdout** is the proxy's end of a socketpair whose other end is the
 //!   node's decision service for this pod.
 //!
+//! With `--mode link` (ADR 0017 L4b) stdin is the pod's link listener
+//! (vsock 1030, `VsockListener::PodLink`) instead, `--link-control-fd N` is
+//! the read end of a pipe the node writes `LINK`/`SEVER` lines to, and there
+//! is no `--deny-floor`: a link proxy reaches only the pods the node routes.
+//!
 //! The node has already put the process in a fresh network namespace, as an
 //! unprivileged uid, with no capabilities, `no_new_privs` and its syscall
 //! filter. This binary checks each of those from inside and refuses to serve
@@ -61,9 +66,11 @@ fn main() -> ExitCode {
 /// is read once, before Landlock, through `/proc/self/fd/n` (this crate has
 /// no `unsafe`, so it cannot adopt a raw descriptor). Without it, `CONNECT`
 /// is refused as in E2. The key is never in argv, the environment or a file.
-fn deny_floor() -> Result<(Vec<IpNet>, Option<u32>), String> {
+fn deny_floor() -> Result<Args, String> {
     let mut floor = Vec::new();
     let mut tls_ca_fd: Option<u32> = None;
+    let mut link = false;
+    let mut link_control_fd: Option<u32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -85,13 +92,55 @@ fn deny_floor() -> Result<(Vec<IpNet>, Option<u32>), String> {
                     return Err("--tls-ca-fd given twice".into());
                 }
             }
+            "--mode" => match args.next().as_deref() {
+                Some("egress") => link = false,
+                Some("link") => link = true,
+                other => return Err(format!("--mode {other:?}: egress or link")),
+            },
+            "--link-control-fd" => {
+                let n = args.next().ok_or("--link-control-fd needs a descriptor")?;
+                let fd = n.parse::<u32>().ok().filter(|fd| *fd > 2).ok_or_else(|| {
+                    format!("--link-control-fd {n}: not a descriptor above stderr")
+                })?;
+                if link_control_fd.replace(fd).is_some() {
+                    return Err("--link-control-fd given twice".into());
+                }
+            }
             other => return Err(format!("unknown argument {other}")),
         }
+    }
+    if link {
+        let control = link_control_fd.ok_or("--mode link needs --link-control-fd")?;
+        if !floor.is_empty() {
+            return Err("--deny-floor is for egress mode; a link proxy has no address path".into());
+        }
+        return Ok(Args {
+            floor,
+            tls_ca_fd,
+            link_control_fd: Some(control),
+        });
+    }
+    if link_control_fd.is_some() {
+        return Err("--link-control-fd is for --mode link".into());
     }
     if floor.is_empty() {
         return Err("no --deny-floor given".into());
     }
-    Ok((floor, tls_ca_fd))
+    Ok(Args {
+        floor,
+        tls_ca_fd,
+        link_control_fd: None,
+    })
+}
+
+/// What the node passed.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Args {
+    floor: Vec<IpNet>,
+    tls_ca_fd: Option<u32>,
+    /// `Some` in link mode (ADR 0017 L4b): the read end of a pipe the node
+    /// writes `LINK`/`SEVER` lines to (`link::Links::follow`).
+    link_control_fd: Option<u32>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -109,11 +158,16 @@ fn run() -> Result<(), String> {
     use std::sync::Arc;
 
     use nucleus_egress_proxy::decision::{DECISION_DEADLINE, SharedDecider};
+    use nucleus_egress_proxy::link::Links;
     use nucleus_egress_proxy::posture::{check_interfaces, check_status};
     use nucleus_egress_proxy::resolve::NoOutboundPath;
     use nucleus_egress_proxy::serve::Proxy;
 
-    let (floor, tls_ca_fd) = deny_floor()?;
+    let Args {
+        floor,
+        tls_ca_fd,
+        link_control_fd,
+    } = deny_floor()?;
 
     // What the node did, read from the kernel before Landlock takes /proc.
     let status = std::fs::read_to_string("/proc/self/status")
@@ -137,6 +191,15 @@ fn run() -> Result<(), String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     decisions.set_nonblocking(true).map_err(|e| e.to_string())?;
 
+    // The link control pipe (L4b), opened while /proc is still reachable.
+    let control = match link_control_fd {
+        None => None,
+        Some(fd) => Some(
+            std::fs::File::open(format!("/proc/self/fd/{fd}"))
+                .map_err(|e| format!("--link-control-fd {fd}: {e}"))?,
+        ),
+    };
+
     // The pod CA (E3), read once while /proc is still reachable.
     let termination = match tls_ca_fd {
         None => None,
@@ -154,11 +217,17 @@ fn run() -> Result<(), String> {
     runtime.block_on(async move {
         let listener = tokio::net::UnixListener::from_std(listener).map_err(|e| e.to_string())?;
         let decisions = tokio::net::UnixStream::from_std(decisions).map_err(|e| e.to_string())?;
-        let proxy = Proxy::new(
-            SharedDecider::new(decisions, DECISION_DEADLINE),
-            NoOutboundPath,
-            floor,
-        );
+        let decider = SharedDecider::new(decisions, DECISION_DEADLINE);
+        let proxy = match control {
+            None => Proxy::new(decider, NoOutboundPath, floor),
+            Some(control) => {
+                let links = Arc::new(Links::default());
+                let follow = Arc::clone(&links);
+                let control = control_pipe(control)?;
+                tokio::spawn(async move { follow.follow(control).await });
+                Proxy::link(decider, links)
+            }
+        };
         let proxy = match termination {
             Some(t) => proxy.with_tls(t),
             None => proxy,
@@ -166,6 +235,14 @@ fn run() -> Result<(), String> {
         Arc::new(proxy).serve(listener).await;
         Ok(())
     })
+}
+
+/// The link control pipe as an async reader (must run inside the runtime).
+/// Not gated to Linux, so it is type-checked on every platform.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn control_pipe(file: std::fs::File) -> Result<tokio::net::unix::pipe::Receiver, String> {
+    tokio::net::unix::pipe::Receiver::from_file(file)
+        .map_err(|e| format!("--link-control-fd: not a pipe: {e}"))
 }
 
 /// Read the pod CA bundle from descriptor `fd` once, bounded, and build TLS

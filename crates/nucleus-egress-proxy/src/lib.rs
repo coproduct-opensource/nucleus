@@ -64,6 +64,7 @@
 
 pub mod address;
 pub mod decision;
+pub mod link;
 pub mod posture;
 pub mod refusal;
 pub mod request;
