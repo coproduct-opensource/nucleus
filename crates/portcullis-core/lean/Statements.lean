@@ -1,4 +1,7 @@
 import Statements.S0001
+import Statements.S0006
+import Statements.S0007
+import Statements.S0008
 
 /-!
 # Open statements

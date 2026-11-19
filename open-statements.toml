@@ -16,3 +16,46 @@ permitted_axioms = ["propext", "Classical.choice", "Quot.sound"]
 maximum_artifact_bytes = 32768
 statement_sha256 = "5a52ba7e61637203fc8d6d9c81e9b14257f09eb923c766d9abdc4ade810011e2"
 status = "posted"
+
+# Pa.Egress.1 L1, the build-time clause: an effect table EffectTable::from_parts
+# accepts answers every request, through EffectTable::declared, with the
+# operation of every effect that matches it. Over a hand model of
+# crates/nucleus-cred-protocol/src/egress/effects.rs, not an extraction: a proof
+# proves the model (see the module's header).
+[[statement]]
+id = "S0006"
+package = "crates/portcullis-core/lean"
+module = "Statements.S0006"
+claim = "Statements.S0006.claim"
+permitted_axioms = ["propext", "Classical.choice", "Quot.sound"]
+maximum_artifact_bytes = 32768
+statement_sha256 = "fff47ea357d16945a265b84f905c991b1e1c64a593afcd571e9c6a76d191db37"
+status = "open"
+
+# Pa.Egress.1 L3: PodAuthority::admit_upstreams, through
+# CredentialedEgressSpec::clamp and ::admitted_by, admits a request exactly when
+# the registry and, for a pod caller, the parent hold every entry, and then
+# admits it unchanged. Over a hand model, not an extraction.
+[[statement]]
+id = "S0007"
+package = "crates/portcullis-core/lean"
+module = "Statements.S0007"
+claim = "Statements.S0007.claim"
+permitted_axioms = ["propext", "Classical.choice", "Quot.sound"]
+maximum_artifact_bytes = 32768
+statement_sha256 = "953e31927bd5aa3d3e6503b873c0fa4ec7c6bb60d325268fdf43e115cb923756"
+status = "open"
+
+# Pa.Egress.1 L4: for every policy header_policy accepts, a fixed header is not
+# a credential, secret, framing or forwarding header, forwarded_headers sends it
+# with the operator's value, and no header whose name equals it ignoring ASCII
+# case goes out with another value. Over a hand model, not an extraction.
+[[statement]]
+id = "S0008"
+package = "crates/portcullis-core/lean"
+module = "Statements.S0008"
+claim = "Statements.S0008.claim"
+permitted_axioms = ["propext", "Classical.choice", "Quot.sound"]
+maximum_artifact_bytes = 32768
+statement_sha256 = "a20f8b2e5202bb1d5429ea64eac4e9a2bf3fb27f1fcae0f8be0d86f145763a38"
+status = "open"
