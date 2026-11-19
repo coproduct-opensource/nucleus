@@ -220,4 +220,15 @@ structure extracted.mediation.StepResult where
   ok : Bool
   next : extracted.mediation.MedState
 
+/-- [nucleus_ifc_kernel::extracted::tls::TlsVerdict]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/tls.rs', lines 16:0-28:1
+    Visibility: public -/
+@[discriminant isize]
+inductive extracted.tls.TlsVerdict where
+| Decided : extracted.tls.TlsVerdict
+| RefusedExpired : extracted.tls.TlsVerdict
+| RefusedNameNotPermitted : extracted.tls.TlsVerdict
+| RefusedClientRejected : extracted.tls.TlsVerdict
+| RefusedFronting : extracted.tls.TlsVerdict
+
 end nucleus_ifc_kernel

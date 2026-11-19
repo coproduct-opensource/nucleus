@@ -285,6 +285,19 @@ kind = "lean-extracted"
 artifact = "crates/portcullis-core/lean/LinkTableExtracted.lean::names_spec"
 status = "proved"
 
+# ADR 0015 E3: the terminated-handshake verdict, held to TlsTermination.step.
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::tls::may_issue_leaf"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/TlsTerminationExtracted.lean::may_issue_leaf_spec"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::tls::tls_verdict"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/TlsTerminationExtracted.lean::tls_verdict_is_step"
+status = "proved"
+
 [[obligation]]
 function = "nucleus_ifc_kernel::extracted::identity::ident_may_deliver"
 kind = "lean-extracted"

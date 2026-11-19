@@ -216,6 +216,14 @@ lean_lib «PortcullisCoreLink» where
 lean_lib «LinkTableExtracted» where
   roots := #[`LinkTableExtracted]
 
+-- ADR 0015 E3: TLS termination's meaning (core Lean) and the extracted
+-- verdict held to it (the tls slice lives in generated-link, same run).
+lean_lib «TlsTermination» where
+  roots := #[`TlsTermination]
+
+lean_lib «TlsTerminationExtracted» where
+  roots := #[`TlsTerminationExtracted]
+
 -- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
 -- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
 -- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.

@@ -864,4 +864,43 @@ def extracted.mediation.med_step
       else ok { ok := false, next := state }
     else ok { ok := false, next := state }
 
+/-- [nucleus_ifc_kernel::extracted::tls::tls_verdict]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/tls.rs', lines 34:0-55:1
+    Visibility: public -/
+def extracted.tls.tls_verdict
+  (ca_live : Bool) (now : Std.U64) (not_after : Std.U64)
+  (name_permitted : Bool) (client_accepted_leaf : Bool)
+  (sni_matches_host : Bool) :
+  Result extracted.tls.TlsVerdict
+  := do
+  if ca_live
+  then
+    if now > not_after
+    then ok extracted.tls.TlsVerdict.RefusedExpired
+    else
+      if name_permitted
+      then
+        if client_accepted_leaf
+        then
+          if sni_matches_host
+          then ok extracted.tls.TlsVerdict.Decided
+          else ok extracted.tls.TlsVerdict.RefusedFronting
+        else ok extracted.tls.TlsVerdict.RefusedClientRejected
+      else ok extracted.tls.TlsVerdict.RefusedNameNotPermitted
+  else ok extracted.tls.TlsVerdict.RefusedExpired
+
+/-- [nucleus_ifc_kernel::extracted::tls::may_issue_leaf]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/tls.rs', lines 60:0-62:1
+    Visibility: public -/
+def extracted.tls.may_issue_leaf
+  (ca_live : Bool) (now : Std.U64) (not_after : Std.U64)
+  (name_permitted : Bool) :
+  Result Bool
+  := do
+  if ca_live
+  then if now <= not_after
+       then ok name_permitted
+       else ok false
+  else ok false
+
 end nucleus_ifc_kernel
