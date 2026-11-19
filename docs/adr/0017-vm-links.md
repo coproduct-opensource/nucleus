@@ -340,6 +340,45 @@ constant.
   `jailer_limits.rs`, `host_decide.rs`), none in files this step touched; CI runs clippy on
   Linux.
 
+**What L4c delivered (2026-11-19).**
+
+- `crates/nucleus-tool-proxy/src/link_relay.rs`, both guest halves, parsing nothing and
+  deciding nothing (ADR 0013's adversary holds root in the guest):
+  - outbound: a loopback listener at `127.0.0.1:3129` (3128 stays ADR 0015's), advertised to
+    the workload as `NUCLEUS_LINK_PROXY=http://127.0.0.1:3129`, each connection spliced to the
+    host's `PodLink` listener (vsock CID 2, port 1030). The workload speaks HTTP proxy protocol
+    (absolute-form, or `CONNECT <name>:443` under E3); the host reads it.
+  - inbound: a guest vsock listener on port 1031 admitting only the host's CID
+    (`peer_is_host`). The host writes one line, `PORT <n>\n`; the relay connects to
+    `127.0.0.1:<n>` and splices. A malformed line, a port outside 1..=65535, or a host that
+    closes before the newline is dropped with nothing sent to the workload. The line is read
+    byte by byte, so no request byte after it is lost.
+  - severing: when the host's side ends, both streams drop at once; a workload half-close is
+    passed on and the answer still flows back.
+- `NUCLEUS_LINK_PROXY` is runtime-injected (a spec cannot point it elsewhere) and admitted as
+  public runtime config (`workload.rs` `PUBLIC_RESERVED`). Bound before the workload starts, so
+  the address is listening when the workload reads it. A relay that cannot bind logs and leaves
+  the pod without links, never without its tool-proxy (PID 1).
+- `GuestCapability::PodLinkRelay`: `FirstShipped::NotYet`, `Demand::Optional`.
+  `the_pinned_release_serves_this_tree` requires every unreleased row to be optional, and the
+  node cannot learn a Firecracker guest's release anyway; a guest without the relay carries no
+  bytes on its links, which refuses nothing the host decided.
+- Tests (macOS, through `DialHost`/`DialWorkload` seams over in-memory streams): bytes spliced
+  both ways, outbound and inbound (including request bytes in the same write as the preamble);
+  a closed host side closes the workload side within 5 s; a workload half-close still gets the
+  answer; malformed, out-of-range and truncated preambles are refused; a non-host peer is
+  refused and reaches no workload dial. Driven red: admitting a non-host peer failed
+  `a_non_host_peer_is_refused_and_reaches_nothing`; a splice that kept going after the host's
+  EOF failed `a_closed_host_side_closes_the_workload_side` (timed out).
+- The Linux-only code (`VsockHost`, `start_in_guest`) cannot build on macOS and the crate cannot
+  be cross-checked here (`ring` needs a cross C compiler); a verbatim copy type-checks against
+  `tokio-vsock` 0.7 for `aarch64-unknown-linux-gnu`. It runs for the first time on a KVM host.
+- Contract L4b must meet, found here: the host relay names the source pod by the vsock socket the
+  connection arrives on (`{uds}_1030`, per pod), the destination by the link name in the request,
+  and writes `PORT <link port>\n` to the destination's guest port 1031 only after its decision.
+  The link-name format is L4b's to fix. The node should refuse a pod spec whose own vsock
+  control port is 1031; until it does, such a pod runs without links.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.

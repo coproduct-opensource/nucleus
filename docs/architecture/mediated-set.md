@@ -167,6 +167,12 @@ Deliberately not in the table:
 - **The proxy's workload door.** It is a Unix socket inside the guest, not a host
   service. Its route table is built from `DoorRoute::ALL`, which has no approval
   route (`nucleus-tool-proxy/src/workload_door.rs`).
+- **The guest link relays (ADR 0017 L4c).** Both are in the GUEST: a loopback TCP
+  port, `127.0.0.1:3129`, that the workload learns as `NUCLEUS_LINK_PROXY` and that
+  the tool-proxy splices to the host's `pod_link` row above; and a vsock listener on
+  guest port 1031 that only the host may dial (`peer_is_host`), to deliver an
+  inbound link. Neither parses or decides; the host relay does both
+  (`nucleus-tool-proxy/src/link_relay.rs`).
 
 What the `Workload` column does not yet prove: it states what the workload should
 get, and nothing yet connects from inside a booted guest to hold it to that. An

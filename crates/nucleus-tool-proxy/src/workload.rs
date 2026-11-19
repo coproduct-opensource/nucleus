@@ -80,7 +80,7 @@ pub(crate) struct ClassifiedEntry {
 /// key is `RuntimeInjected` regardless of whether the spec also named it, which
 /// is the correct attribution: the value that crossed is the runtime's.
 fn env_source(key: &str, spec: &WorkloadSpec) -> EnvSource {
-    if key == "NUCLEUS_TOOL_PROXY_URL" {
+    if key == "NUCLEUS_TOOL_PROXY_URL" || key == crate::link_relay::LINK_PROXY_ENV {
         EnvSource::RuntimeInjected
     } else if key.starts_with("NUCLEUS_EGRESS_") {
         EnvSource::Egress
@@ -173,6 +173,14 @@ pub(crate) fn workload_env(
     // only — the credential stays in the runtime, which is the point.
     env.extend(crate::egress::workload_egress_env(egress, door_url));
     env.insert("NUCLEUS_TOOL_PROXY_URL".to_string(), door_url.to_string());
+    // The outbound link relay (ADR 0017 L4c): an HTTP proxy address, public
+    // runtime config. Runtime-injected like the door URL, so a spec cannot
+    // point the workload elsewhere. Where no relay runs (no vsock), the address
+    // refuses connections, which is what "no link" looks like to the workload.
+    env.insert(
+        crate::link_relay::LINK_PROXY_ENV.to_string(),
+        format!("http://{}", crate::link_relay::LINK_PROXY_ADDR),
+    );
     env
 }
 
@@ -408,7 +416,8 @@ impl WorkloadLaunch {
         // other `NUCLEUS_*` name must be classified deliberately (as a secret
         // material kind if it carries identity, or added to this allowlist if it
         // is genuinely public runtime config) before it may cross.
-        const PUBLIC_RESERVED: &[&str] = &["NUCLEUS_TOOL_PROXY_URL"];
+        const PUBLIC_RESERVED: &[&str] =
+            &["NUCLEUS_TOOL_PROXY_URL", crate::link_relay::LINK_PROXY_ENV];
         for entry in &self.classified {
             if entry.key.starts_with("NUCLEUS_")
                 && entry.material == MaterialKind::OrdinaryData

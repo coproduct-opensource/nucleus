@@ -363,9 +363,18 @@ pub enum GuestCapability {
     /// the guest-local release. S6's `HostDecides` is the row that makes the
     /// host's answer load-bearing for an eval cell.
     HostApprovalRedeem,
+    /// The tool-proxy runs the guest halves of a link between pods (ADR 0017
+    /// L4c): a loopback HTTP-proxy port the workload learns as
+    /// `NUCLEUS_LINK_PROXY`, spliced to the host's `PodLink` listener (vsock
+    /// 1030), and a host-only vsock listener (port 1031) that delivers an inbound
+    /// link to the workload. [`Demand::Optional`] while it is in no published
+    /// release (`the_pinned_release_serves_this_tree` requires that of every
+    /// unreleased row): a guest without it relays nothing, so a link to or from
+    /// its pod carries no bytes, which refuses nothing the host decided.
+    PodLinkRelay,
 }
 
-/// A use of the guest that depends on capabilities the node does not need for
+/// A use of the guest) that depends on capabilities the node does not need for
 /// every pod. A capability whose demand is [`Demand::When`] is checked only
 /// for a caller that names the use (see [`guest_skew_for`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -418,7 +427,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 21] = [
+    pub const ALL: [GuestCapability; 22] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -440,6 +449,7 @@ impl GuestCapability {
         GuestCapability::SharedSecretTierRetired,
         GuestCapability::HostDecideTelemetry,
         GuestCapability::HostApprovalRedeem,
+        GuestCapability::PodLinkRelay,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -480,6 +490,7 @@ impl GuestCapability {
             // Read by `cargo xtask host-decide-agreement`, never by the node.
             GuestCapability::HostDecideTelemetry => Demand::Optional,
             GuestCapability::HostApprovalRedeem => Demand::Optional,
+            GuestCapability::PodLinkRelay => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -548,6 +559,7 @@ impl GuestCapability {
             // ADR 0014 S1: in this tree and in no release yet.
             GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
             GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
+            GuestCapability::PodLinkRelay => FirstShipped::NotYet,
         }
     }
 
@@ -671,6 +683,12 @@ impl GuestCapability {
                 "ADR 0014 (S4) has the tool-proxy redeem, on the host, the approval of a call its \
                  own grant released; an older guest never does, so the host never sees that \
                  release (the node does not require it)"
+            }
+            GuestCapability::PodLinkRelay => {
+                "ADR 0017 (L4c) has the tool-proxy relay links between pods: a loopback proxy \
+                 port for the workload and a host-only vsock listener for inbound links; an older \
+                 guest relays nothing, so its pod's links carry no bytes (the node does not \
+                 require it)"
             }
         }
     }
@@ -1093,6 +1111,7 @@ mod tests {
         let after_the_pin = [
             GuestCapability::HostDecideTelemetry,
             GuestCapability::HostApprovalRedeem,
+            GuestCapability::PodLinkRelay,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1270,7 +1289,8 @@ mod tests {
                 GuestCapability::SignedAuditLog => GuestCapability::SharedSecretTierRetired,
                 GuestCapability::SharedSecretTierRetired => GuestCapability::HostDecideTelemetry,
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
-                GuestCapability::HostApprovalRedeem => GuestCapability::CaBundle,
+                GuestCapability::HostApprovalRedeem => GuestCapability::PodLinkRelay,
+                GuestCapability::PodLinkRelay => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
