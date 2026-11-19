@@ -17,12 +17,13 @@
   Holding a key is authority, so who holds each CA key is part of the state, and
   the theorems say no step moves it. Mathlib-free, like `LinkTable.lean`.
 
-  Note (2026-11-19, E3 node side): links are made after admission, so the node
-  mints the CA with the link namespace as one DNS subtree (`link.nucleus.invalid`)
-  and leaves "which link" to the link table. `permitted` here is exact names
-  (`permitted.contains`), which is also what the proxy grants, so a link name is
-  never permitted as modelled. Subtree semantics for that namespace is open
-  (ADR 0017 §10).
+  A CA permits names by a predicate (`permits`), not a list. Found 2026-11-19 (E3
+  node side): links are made after admission, so the node mints the CA with the
+  link namespace as one DNS subtree (`link.nucleus.invalid`), and the first draft
+  of this model, which permitted exact names only, made every link name refused.
+  As built: in egress mode the proxy's predicate is the pod's exact registry
+  hosts; in link mode it is "a name in the link namespace whose link the node has
+  announced". Both are a `permits`, so every theorem below covers both modes.
 -/
 
 namespace TlsTermination
@@ -41,10 +42,11 @@ inductive Holder where
 
 structure CA where
   pod : PodId
-  permitted : List Name
+  /-- Which names this CA may issue for (its X.509 name constraints, as the
+      proxy applies them). -/
+  permits : Name → Bool
   notAfter : Time
   keyHolder : Holder
-  deriving Repr
 
 structure Leaf where
   pod : PodId
@@ -74,8 +76,8 @@ def caOf : List CA → PodId → Option CA
   | c :: rest, p => if c.pod = p then some c else caOf rest p
 
 inductive Op where
-  /-- Admission: mint pod `p`'s CA for `permitted`, until `deadline`. -/
-  | mint (p : PodId) (permitted : List Name) (deadline : Time)
+  /-- Admission: mint pod `p`'s CA for the names `permits` admits, until `deadline`. -/
+  | mint (p : PodId) (permits : Name → Bool) (deadline : Time)
   /-- A client in pod `p` opens TLS for `sni`, sends `Host: host`;
       `clientTrustsPod` says whether its trust store holds pod `p`'s CA
       (false for a pinned client). -/
@@ -85,17 +87,17 @@ inductive Op where
   | retire (p : PodId)
 
 def step (s : State) : Op → State
-  | .mint p permitted deadline =>
+  | .mint p permits deadline =>
     match caOf s.cas p with
     | some _ => s
     | none =>
-      { s with cas := ⟨p, permitted, deadline, .proxy p⟩ :: s.cas }
+      { s with cas := ⟨p, permits, deadline, .proxy p⟩ :: s.cas }
   | .handshake p sni host trusts =>
     match caOf s.cas p with
     | none => { s with journal := .refusedExpired p :: s.journal }
     | some ca =>
       if s.now > ca.notAfter then { s with journal := .refusedExpired p :: s.journal }
-      else if !ca.permitted.contains sni then
+      else if !ca.permits sni then
         { s with journal := .refusedNameNotPermitted p sni :: s.journal }
       else if !trusts then
         { s with journal := .refusedClientRejected p sni :: s.journal }
@@ -115,7 +117,7 @@ def step (s : State) : Op → State
     pod's CA permits, and expires no later than that CA. -/
 def Inv (s : State) : Prop :=
   (∀ c ∈ s.cas, c.keyHolder = .proxy c.pod) ∧
-  (∀ l ∈ s.leaves, ∃ c, caOf s.cas l.pod = some c ∧ l.name ∈ c.permitted ∧ l.notAfter ≤ c.notAfter)
+  (∀ l ∈ s.leaves, ∃ c, caOf s.cas l.pod = some c ∧ c.permits l.name = true ∧ l.notAfter ≤ c.notAfter)
 
 theorem caOf_mem {cs : List CA} {p : PodId} {c : CA} (h : caOf cs p = some c) :
     c ∈ cs ∧ c.pod = p := by
@@ -163,7 +165,7 @@ theorem caOf_cons_fresh {cs : List CA} {p q : PodId} {c : CA}
 theorem step_inv {s : State} (op : Op) (h : Inv s) : Inv (step s op) := by
   obtain ⟨hk, hl⟩ := h
   cases op with
-  | mint p permitted deadline =>
+  | mint p permits deadline =>
     simp only [step]
     split
     · exact ⟨hk, hl⟩
@@ -227,14 +229,14 @@ theorem ca_key_stays_in_proxy {s : State} (h : Inv s) (op : Op) :
     no later than the CA (so no later than the pod's deadline). -/
 theorem leaf_within_constraints {s : State} (h : Inv s) (op : Op) :
     ∀ l ∈ (step s op).leaves, ∃ c, caOf (step s op).cas l.pod = some c ∧
-      l.name ∈ c.permitted ∧ l.notAfter ≤ c.notAfter :=
+      c.permits l.name = true ∧ l.notAfter ≤ c.notAfter :=
   (step_inv op h).2
 
 /-- A handshake reaches the per-request decision only if: the pod has a live CA,
     the name is permitted, the client trusts this pod's CA, and SNI = Host. -/
 theorem decided_only_if (s : State) (p : PodId) (sni host : Name) (trusts : Bool)
     (hd : (step s (.handshake p sni host trusts)).journal.head? = some (.decided p sni)) :
-    ∃ ca, caOf s.cas p = some ca ∧ s.now ≤ ca.notAfter ∧ sni ∈ ca.permitted ∧
+    ∃ ca, caOf s.cas p = some ca ∧ s.now ≤ ca.notAfter ∧ ca.permits sni = true ∧
       trusts = true ∧ sni = host := by
   simp only [step] at hd
   split at hd
@@ -299,15 +301,20 @@ theorem expired_refused (s : State) (p : PodId) (sni host : Name) (trusts : Bool
 
 /-! ## Worked cases, decided by the kernel -/
 
-/-- Pod 1 may reach names 10 (a registry host) and 20 (a link name). -/
+/-- Pod 1 may reach name 10 (a registry host, exact) and any name from 20 up
+    (standing for the link namespace; in link mode the proxy further requires the
+    link to be announced). -/
 def admitted : State :=
-  step ⟨0, [], [], []⟩ (.mint 1 [10, 20] 100)
+  step ⟨0, [], [], []⟩ (.mint 1 (fun n => n == 10 || n ≥ 20) 100)
 
 example : (step admitted (.handshake 1 20 20 true)).journal.head? = some (.decided 1 20) := by
   decide
+/-- A name from the link namespace (the first draft refused this one). -/
+example : (step admitted (.handshake 1 25 25 true)).journal.head? = some (.decided 1 25) := by
+  decide
 /-- A name outside the CA's constraints. -/
-example : (step admitted (.handshake 1 30 30 true)).journal.head? =
-    some (.refusedNameNotPermitted 1 30) := by decide
+example : (step admitted (.handshake 1 15 15 true)).journal.head? =
+    some (.refusedNameNotPermitted 1 15) := by decide
 /-- A pinned client, or one holding another pod's CA. -/
 example : (step admitted (.handshake 1 20 20 false)).journal.head? =
     some (.refusedClientRejected 1 20) := by decide

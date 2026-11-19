@@ -6,7 +6,7 @@
   `crates/nucleus-ifc-kernel/src/extracted/tls.rs` (the same scoped run as the
   link slice, installed in `generated-link/`). This file proves it total, and
   that — fed what the proxy knows (a live CA, the clock, whether the name is
-  permitted, whether the client accepted the leaf, whether SNI = Host) — it
+  permitted (`ca.permits`), whether the client accepted the leaf, whether SNI = Host) — it
   yields exactly the outcome `TlsTermination.step` records for that handshake.
   So `decided_only_if`, `untrusting_client_refused`, `fronting_refused` and
   `expired_refused` are about the shipped decision.
@@ -55,7 +55,7 @@ theorem tls_verdict_is_step (s : TlsTermination.State) (p : TlsTermination.PodId
     (sni host : TlsTermination.Name) (trusts : Bool) (ca : TlsTermination.CA)
     (hca : TlsTermination.caOf s.cas p = some ca) (now na : Std.U64)
     (hnow : now.val = s.now) (hna : na.val = ca.notAfter) :
-    ∃ v, extracted.tls.tls_verdict true now na (ca.permitted.contains sni) trusts
+    ∃ v, extracted.tls.tls_verdict true now na (ca.permits sni) trusts
         (sni == host) = ok v ∧
       (TlsTermination.step s (.handshake p sni host trusts)).journal.head? =
         some (outcomeOf p sni host v) := by
@@ -68,7 +68,7 @@ theorem tls_verdict_is_step (s : TlsTermination.State) (p : TlsTermination.PodId
     simp [this, hlate, outcomeOf]
   · have : ¬ now > na := by rw [hgt]; exact hlate
     simp only [this, hlate, if_false, ite_true, Bool.not_eq_true']
-    cases hp : ca.permitted.contains sni <;> cases trusts <;>
+    cases hp : ca.permits sni <;> cases trusts <;>
       by_cases hs : sni = host <;> simp [hs, outcomeOf]
 
 /-- Without a CA for the pod, both the code (fed `ca_live = false`) and the model
