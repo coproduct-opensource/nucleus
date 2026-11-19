@@ -151,6 +151,7 @@ listens on `1027` and the flag is gone.
 | Credential broker | `credential_broker` | `vsock:1027` | `refused` | `vsock_transport` | `crates/nucleus-node/src/broker_transport.rs` `BrokerListener::start` |
 | Decision channel (host-decide shadow, #2702) | `decision_channel` | `vsock:1028` | `refused` | `vsock_transport` | `crates/nucleus-node/src/host_decide.rs` `DecideListener::start` |
 | Host egress proxy (ADR 0015), one `nucleus-egress-proxy` process per eval cell; no guest dials it before E4 | `egress_proxy` | `vsock:1029` | `filtered` | `in_shell_egress` | `crates/nucleus-egress-proxy/src/serve.rs` `serve` |
+| Link relay (ADR 0017): a request to another pod over a link in the node's table, decided per request; served to eval cells; nothing binds it before ADR 0017 L4 | `pod_link` | `vsock:1030` | `filtered` | `in_shell_egress` | not served yet (ADR 0017 L4) |
 | Per-pod DNS forwarder (`dnsmasq`, `no-resolv`), only when the pod names a DNS allowlist | `pod_dns` | `gateway:53` | `filtered` | `dns` | `crates/nucleus-node/src/net.rs` `start_dns_proxy` / `dnsmasq_config` |
 | Whatever the pod's `network.allow` admits | `allowlisted_egress` | `allowlist` | `filtered` | `netns_raw_socket` | `crates/nucleus-node/src/net.rs` netns iptables |
 

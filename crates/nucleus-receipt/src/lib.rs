@@ -114,6 +114,13 @@ pub enum Projection {
     /// consuming CI system; this crate keeps it as `serde_json::Value` like
     /// every other projection.
     Ci(serde_json::Value),
+    /// Link functor — one change to a node's table of links between pods (ADR
+    /// 0017): `{"op": "link", src, dst, port}`, `{"op": "unlink", …, severed}`,
+    /// or `{"op": "drop-on-exit", …, exited, severed}`. The session is the
+    /// source pod and the issuer the node. Replaying a run's link projections
+    /// onto the prior table gives the table afterwards
+    /// (`LinkTable.lean`, `receipts_replay_links`).
+    Link(serde_json::Value),
 }
 
 impl Projection {
@@ -125,6 +132,7 @@ impl Projection {
             Projection::Flow(_) => "flow",
             Projection::Economic(_) => "economic",
             Projection::Ci(_) => "ci",
+            Projection::Link(_) => "link",
         }
     }
 }
@@ -474,6 +482,55 @@ mod tests {
         assert!(v["body"].is_object());
     }
 
+    fn link_projection() -> Projection {
+        Projection::Link(serde_json::json!({
+            "op": "unlink",
+            "src": "pod-a",
+            "dst": "pod-b",
+            "port": 8080,
+            "severed": 2
+        }))
+    }
+
+    #[test]
+    fn a_link_receipt_verifies() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+        let receipt = Receipt::sign(dummy_session(), vec![link_projection()], &sk);
+        receipt.verify(&vk).expect("fresh link receipt must verify");
+    }
+
+    /// A receipt that says fewer connections were severed than were is the
+    /// forgery that matters for a link; it must not verify.
+    #[test]
+    fn a_tampered_link_body_fails_verify() {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let vk: [u8; 32] = sk.verifying_key().to_bytes();
+        let mut receipt = Receipt::sign(dummy_session(), vec![link_projection()], &sk);
+        receipt.projections[0] = Projection::Link(serde_json::json!({
+            "op": "unlink",
+            "src": "pod-a",
+            "dst": "pod-b",
+            "port": 8080,
+            "severed": 0
+        }));
+        assert!(matches!(
+            receipt.verify(&vk),
+            Err(ReceiptError::RootHashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn a_link_projection_round_trips_with_its_kind() {
+        let p = link_projection();
+        let v: serde_json::Value = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["kind"], "link");
+        assert_eq!(v["body"]["severed"], 2);
+        let back: Projection = serde_json::from_value(v).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(back.kind(), "link");
+    }
+
     #[test]
     fn projection_kind_strings_are_stable() {
         // External code may dispatch on `kind()` — assert wire names.
@@ -491,6 +548,7 @@ mod tests {
             "economic"
         );
         assert_eq!(Projection::Ci(serde_json::Value::Null).kind(), "ci");
+        assert_eq!(Projection::Link(serde_json::Value::Null).kind(), "link");
     }
 
     #[test]
