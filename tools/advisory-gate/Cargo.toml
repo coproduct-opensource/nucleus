@@ -1,0 +1,18 @@
+# The `cargo-deny` gate's runner: verify the pinned RustSec advisory snapshot, then run cargo-deny
+# against it with no network. See `src/main.rs` and `.gatehouse/advisory-db.toml`.
+#
+# Outside the workspace and with no dependencies, like tools/test-shard: the gate compiles this one
+# package and nothing else, so its cost is the check, not a workspace build. A TOML or git library
+# here would be a dependency the gate's pod would have to vendor and compile for a few lines of
+# parsing; the closed formats below are parsed by hand and refuse anything they do not name.
+[package]
+name = "nucleus-advisory-gate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Run cargo-deny offline against a pinned, verified RustSec advisory snapshot."
+
+[dependencies]
+
+# Self-contained workspace, explicitly NOT part of the parent.
+[workspace]
