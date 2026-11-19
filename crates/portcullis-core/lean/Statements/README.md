@@ -21,7 +21,8 @@ request.
 | `settlement` | once `settled`: an opaque reference string, not interpreted here |
 
 The statement's export is `lean4export` 3.1.0 (Lean 4.30.0) run on the module
-with the permitted axioms and the claim as roots, then converted to the export
+with the permitted axioms, then the claim, then `Nat` as roots (so a proof never
+has to declare `Nat` itself), then converted to the export
 format's v2 encoding. Anyone can recompute it from a commit.
 
 ## Status only moves forward
