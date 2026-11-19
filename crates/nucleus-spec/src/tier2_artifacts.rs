@@ -381,7 +381,7 @@ pub enum GuestCapability {
     EgressProxyTrust,
 }
 
-/// A use of the guest) that depends on capabilities the node does not need for
+/// A use of the guest that depends on capabilities the node does not need for
 /// every pod. A capability whose demand is [`Demand::When`] is checked only
 /// for a caller that names the use (see [`guest_skew_for`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

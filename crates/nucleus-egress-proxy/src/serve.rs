@@ -388,7 +388,7 @@ where
                 // The handshake did not complete: the kernel says why, in the
                 // model's order (no CA or expired, name, then the client).
                 Ok(Err(_)) | Err(_) => {
-                    let verdict = t.ca.verdict(now, sni.as_deref(), false, true);
+                    let verdict = t.verdict(now, sni.as_deref(), false, true);
                     self.record(sni, verdict);
                     return Err(Stop::Told(refusal_for(verdict)));
                 }
@@ -410,7 +410,7 @@ where
         let agree = sni.as_deref().is_some_and(|name| {
             connect_origin.host == Host::Name(name.to_string()) && request.origin == connect_origin
         });
-        let verdict = t.ca.verdict(now, sni.as_deref(), true, agree);
+        let verdict = t.verdict(now, sni.as_deref(), true, agree);
         self.record(sni.clone(), verdict);
         let outcome = match (verdict, sni.as_deref()) {
             (TlsVerdict::Decided, Some(name)) => {

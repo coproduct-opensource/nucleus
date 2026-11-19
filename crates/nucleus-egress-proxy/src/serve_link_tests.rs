@@ -19,9 +19,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::link::{Control, LinkTarget, Links, Route, link_name, parse_uuid};
+use crate::link::{Control, LINK_SUBTREE, LinkTarget, Links, Route, link_name, parse_uuid};
 use crate::refusal::REFUSAL_HEADER;
-use crate::tls::{PodCa, Termination, now_unix, test_ca};
+use crate::tls::{PodCa, now_unix, test_ca};
 
 const DST: &str = "0123abcd-0000-4000-8000-00000000beef";
 const GUEST_PORT: u32 = 1031;
@@ -364,13 +364,16 @@ async fn a_broken_control_channel_severs_live_connections() {
 #[tokio::test]
 async fn tls_over_a_link_is_terminated_and_delivered() {
     let name = link_name(dst());
-    let (cert, key) = test_ca::mint(&[name.as_str()], FAR);
+    // The CA as the node mints it: the link namespace as one subtree. Which
+    // link name is good is decided by the announced table, not the CA.
+    let (cert, key) = test_ca::mint(&[LINK_SUBTREE], FAR);
     let ca = PodCa::from_bundle(&PodCa::to_bundle(&cert, &key)).unwrap();
-    let termination = Termination::new(ca, RootCertStore::empty(), now_unix).unwrap();
     let (proxy_end, node_end) = UnixStream::pair().unwrap();
     let asked = Arc::new(AtomicUsize::new(0));
     node(node_end, None, Arc::clone(&asked));
     let links = Arc::new(Links::default());
+    let termination =
+        crate::link::termination(ca, RootCertStore::empty(), now_unix, &links).unwrap();
     let proxy = Arc::new(
         Proxy::link(
             SharedDecider::new(proxy_end, Duration::from_secs(2)),
@@ -519,4 +522,64 @@ async fn the_egress_proxy_refuses_a_link_name() {
         Some("link_not_here")
     );
     assert_eq!(asked.load(Ordering::SeqCst), 0);
+}
+
+/// TLS to a link name the node never announced: no leaf is minted, the
+/// handshake fails, and the node is never asked (`Links::permits`).
+#[tokio::test]
+async fn tls_to_an_unannounced_link_name_gets_no_leaf() {
+    let name = link_name(dst());
+    let (cert, key) = test_ca::mint(&[LINK_SUBTREE], FAR);
+    let ca = PodCa::from_bundle(&PodCa::to_bundle(&cert, &key)).unwrap();
+    let (proxy_end, node_end) = UnixStream::pair().unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    node(node_end, None, Arc::clone(&asked));
+    let links = Arc::new(Links::default());
+    let termination =
+        crate::link::termination(ca, RootCertStore::empty(), now_unix, &links).unwrap();
+    let proxy = Arc::new(
+        Proxy::link(
+            SharedDecider::new(proxy_end, Duration::from_secs(2)),
+            Arc::clone(&links),
+        )
+        .with_tls(termination),
+    );
+    let (mut g, p) = tokio::io::duplex(1 << 20);
+    let served = tokio::spawn({
+        let proxy = Arc::clone(&proxy);
+        async move { proxy.connection(p).await }
+    });
+    g.write_all(format!("CONNECT {name}:443 HTTP/1.1\r\nHost: {name}:443\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut established = [0u8; 39];
+    g.read_exact(&mut established).await.unwrap();
+    let mut roots = RootCertStore::empty();
+    roots.add(CertificateDer::from(cert.clone())).unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let handshake = tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from(name.clone()).unwrap(), g)
+        .await;
+    assert!(handshake.is_err(), "no leaf for an unannounced link");
+    let _ = served.await;
+    assert_eq!(proxy.tls.as_ref().unwrap().minter.minted(), 0);
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        proxy.tls_journal()[0].verdict,
+        nucleus_ifc_kernel::extracted::tls::TlsVerdict::RefusedNameNotPermitted
+    );
+}
+
+/// A CA that does not permit the link namespace cannot terminate for links:
+/// the proxy refuses to start rather than mint leaves no guest would accept.
+#[test]
+fn a_ca_without_the_link_subtree_is_refused_for_link_mode() {
+    let (cert, key) = test_ca::mint(&["api.test"], FAR);
+    let ca = PodCa::from_bundle(&PodCa::to_bundle(&cert, &key)).unwrap();
+    let links = Arc::new(Links::default());
+    assert!(crate::link::termination(ca, RootCertStore::empty(), now_unix, &links).is_err());
 }

@@ -371,6 +371,30 @@ impl EgressDecider {
         frame: GuestFrame,
         now: u64,
     ) -> Result<(Vec<u8>, Decided), Close> {
+        let (seq, digest, summary) = self.begin(frame)?;
+        let routed = self
+            .routes
+            .route(&summary)
+            .map(|route| (route.name.clone(), route.charge))
+            .map_err(|reason| {
+                (
+                    reason,
+                    format!("{} {}", summary.method.as_str(), summary.origin),
+                )
+            });
+        self.finish(seq, digest, &summary, routed, now)
+    }
+
+    /// The first half of a step: the frame is a `Decide` for the proxy's one
+    /// operation, its number is next, its digest is the node's own over its
+    /// subject (C-2), and the subject is a canonical summary.
+    ///
+    /// # Errors
+    /// A [`Close`]: the channel ends and the proxy refuses what it asked.
+    pub(crate) fn begin(
+        &mut self,
+        frame: GuestFrame,
+    ) -> Result<(Seq, nucleus_decision_protocol::ArgsDigest, Summary), Close> {
         let GuestFrame::Decide {
             seq,
             op,
@@ -392,7 +416,25 @@ impl EgressDecider {
             return Err(Close::DigestMismatch);
         }
         let summary = Summary::parse(subject.as_str()).map_err(Close::Summary)?;
-        match self.decide(&summary, digest, now) {
+        Ok((seq, digest, summary))
+    }
+
+    /// The second half: given where the request is routed (the operator's
+    /// egress registry, or for a link proxy the node's link table), ask the
+    /// pod's policy and answer. Only an allow that was journaled and whose id
+    /// was redeemed is `Allowed`.
+    ///
+    /// # Errors
+    /// A [`Close`]: the channel ends and the proxy refuses what it asked.
+    pub(crate) fn finish(
+        &mut self,
+        seq: Seq,
+        digest: nucleus_decision_protocol::ArgsDigest,
+        summary: &Summary,
+        routed: Result<(String, CallCharge), (DenyReason, String)>,
+        now: u64,
+    ) -> Result<(Vec<u8>, Decided), Close> {
+        match routed.and_then(|(name, charge)| self.decide(summary, digest, now, name, charge)) {
             Ok(route) => self.allow(seq, digest, route),
             Err((reason, detail)) => {
                 let reply = HostFrame::Verdict {
@@ -406,20 +448,16 @@ impl EgressDecider {
         }
     }
 
-    /// The decision: the operator's route, then the pod's policy. Only an
-    /// `Ok` is an allow, and it has been journaled.
+    /// The decision for a routed request: the pod's policy. Only an `Ok` is an
+    /// allow, and it has been journaled.
     fn decide(
         &self,
         summary: &Summary,
         digest: nucleus_decision_protocol::ArgsDigest,
         now: u64,
+        route: String,
+        charge: CallCharge,
     ) -> Result<String, (DenyReason, String)> {
-        let route = self.routes.route(summary).map_err(|reason| {
-            (
-                reason,
-                format!("{} {}", summary.method.as_str(), summary.origin),
-            )
-        })?;
         let permit = {
             let mut policy = self.policy.lock().map_err(|_| {
                 (
@@ -433,7 +471,7 @@ impl EgressDecider {
                     summary::OPERATION,
                     &summary.url(),
                     now,
-                    route.charge,
+                    charge,
                     false,
                 )
                 .map_err(|e| (DenyReason::NotGranted, e))?
@@ -449,7 +487,7 @@ impl EgressDecider {
         // The record is durable; the in-process right ends here. The proxy
         // performs on the verdict, not on a token.
         drop(permit);
-        Ok(route.name.clone())
+        Ok(route)
     }
 
     /// Mint the decision id, encode the allow, and redeem the id by value
@@ -559,9 +597,6 @@ impl EgressProxy {
     /// Any step, named. A proxy that started but is not confined as
     /// required is killed before this returns.
     pub(crate) async fn start(launch: Launch<'_>) -> Result<Self, String> {
-        use std::os::fd::OwnedFd;
-        use std::process::Stdio;
-
         let Launch {
             binary,
             vsock_path,
@@ -571,74 +606,33 @@ impl EgressProxy {
             decider,
             ca,
         } = launch;
-        let (listener, socket_path) = crate::guest_socket::bind_guest_listener(
-            vsock_path,
-            nucleus_ifc_kernel::VsockListener::EgressProxy,
-            jail_owner,
-        )
-        .map_err(|e| format!("egress proxy socket: {e}"))?;
-        let listener = listener
-            .into_std()
-            .map_err(|e| format!("egress proxy socket: {e}"))?;
-        let (node_end, proxy_end) = std::os::unix::net::UnixStream::pair()
-            .map_err(|e| format!("egress proxy decision channel: {e}"))?;
-        let log = std::fs::File::create(pod_dir.join(PROXY_LOG))
-            .map_err(|e| format!("egress proxy log: {e}"))?;
-
-        let mut cmd = std::process::Command::new(binary);
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
         for net in crate::net::NODE_DENY_FLOOR {
-            cmd.arg("--deny-floor").arg(net.to_string());
+            args.push("--deny-floor".into());
+            args.push(net.to_string().into());
         }
         // The CA bundle arrives on the decision channel before the first
         // `Decide`, not at an inherited descriptor: the confinement hook marks
         // every descriptor from 3 up close-on-exec (`pod_ca`, module docs).
         if ca.is_some() {
-            cmd.arg("--tls-ca-channel");
+            args.push("--tls-ca-channel".into());
         }
-        cmd.env_clear()
-            .current_dir("/")
-            .stdin(Stdio::from(OwnedFd::from(listener)))
-            .stdout(Stdio::from(OwnedFd::from(proxy_end)))
-            .stderr(Stdio::from(log));
-        let confinement = nucleus::ChildConfinement::isolated_service(uid, gid)
-            .map_err(|e| format!("egress proxy confinement: {e}"))?;
-        // The proxy never runs a program and does open inet sockets: exec is
-        // denied on top of the denylist, inet is not.
-        let caps = portcullis::CapabilityLattice {
-            run_bash: portcullis::CapabilityLevel::Never,
-            web_fetch: portcullis::CapabilityLevel::Always,
-            ..portcullis::CapabilityLattice::default()
-        };
-        let syscalls = portcullis::SeccompPolicy::from_capabilities(
-            &caps,
-            portcullis::NetworkEgress::Declared,
-        );
-        match confinement.apply(
-            &mut cmd,
-            nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
-            syscalls,
-        ) {
-            nucleus::SpawnHardening::Hardened(_) => {}
-            nucleus::SpawnHardening::Unhardened(why) => {
-                return Err(format!("egress proxy cannot be hardened here: {why:?}"));
-            }
-        }
-        let mut child = tokio::process::Command::from(cmd)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("egress proxy spawn: {e}"))?;
-        if let Err(e) = verify(&child) {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            return Err(format!("egress proxy not confined: {e}"));
-        }
-        let mut node_end = tokio::net::UnixStream::from_std({
-            node_end
-                .set_nonblocking(true)
-                .map_err(|e| format!("egress proxy decision channel: {e}"))?;
-            node_end
+        let Spawned {
+            child,
+            mut node_end,
+            socket_path,
+        } = spawn_confined(Spawn {
+            what: "egress proxy",
+            binary,
+            vsock_path,
+            listener: nucleus_ifc_kernel::VsockListener::EgressProxy,
+            log: &pod_dir.join(PROXY_LOG),
+            jail_owner,
+            run_as: (uid, gid),
+            args,
         })
-        .map_err(|e| format!("egress proxy decision channel: {e}"))?;
+        .await?;
+        let mut child = child;
         // The key's one hop: node to this pod's proxy, by value, wiped here
         // whatever the outcome (`MintedCa::hand_over`).
         if let Some(ca) = ca {
@@ -768,6 +762,109 @@ pub(crate) fn mint_for_pod(
                 .map_err(|e| crate::ApiError::Driver(format!("eval cell refused: egress CA: {e}")))
         }
     }
+}
+
+/// What [`spawn_confined`] needs: which proxy, its guest listener, its log,
+/// who it runs as, and its arguments (never a secret: argv is world-readable).
+pub(crate) struct Spawn<'a> {
+    pub what: &'static str,
+    pub binary: &'a Path,
+    pub vsock_path: &'a Path,
+    pub listener: nucleus_ifc_kernel::VsockListener,
+    pub log: &'a Path,
+    pub jail_owner: Option<(u32, u32)>,
+    pub run_as: (u32, u32),
+    pub args: Vec<std::ffi::OsString>,
+}
+
+/// A confined proxy child, verified from outside: the child, the node's end
+/// of its decision channel, and the guest listener's socket path.
+pub(crate) struct Spawned {
+    pub child: tokio::process::Child,
+    pub node_end: tokio::net::UnixStream,
+    pub socket_path: PathBuf,
+}
+
+/// Bind the guest's listener, spawn the proxy binary confined (fresh network
+/// namespace, unprivileged uid, no capabilities, `no_new_privs`, the syscall
+/// filter), and verify that confinement from `/proc` before returning. One
+/// path for the egress proxy and the link proxy (ADR 0017 L4b), so the two
+/// cannot be confined differently.
+///
+/// # Errors
+/// Any step, named. A child that started but is not confined as required is
+/// killed before this returns.
+pub(crate) async fn spawn_confined(spawn: Spawn<'_>) -> Result<Spawned, String> {
+    use std::os::fd::OwnedFd;
+    use std::process::Stdio;
+
+    let Spawn {
+        what,
+        binary,
+        vsock_path,
+        listener,
+        log,
+        jail_owner,
+        run_as: (uid, gid),
+        args,
+    } = spawn;
+    let (listener, socket_path) =
+        crate::guest_socket::bind_guest_listener(vsock_path, listener, jail_owner)
+            .map_err(|e| format!("{what} socket: {e}"))?;
+    let listener = listener
+        .into_std()
+        .map_err(|e| format!("{what} socket: {e}"))?;
+    let (node_end, proxy_end) = std::os::unix::net::UnixStream::pair()
+        .map_err(|e| format!("{what} decision channel: {e}"))?;
+    let log = std::fs::File::create(log).map_err(|e| format!("{what} log: {e}"))?;
+
+    let mut cmd = std::process::Command::new(binary);
+    cmd.args(args)
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::from(OwnedFd::from(listener)))
+        .stdout(Stdio::from(OwnedFd::from(proxy_end)))
+        .stderr(Stdio::from(log));
+    let confinement = nucleus::ChildConfinement::isolated_service(uid, gid)
+        .map_err(|e| format!("{what} confinement: {e}"))?;
+    // The proxy never runs a program and does open inet sockets: exec is
+    // denied on top of the denylist, inet is not.
+    let caps = portcullis::CapabilityLattice {
+        run_bash: portcullis::CapabilityLevel::Never,
+        web_fetch: portcullis::CapabilityLevel::Always,
+        ..portcullis::CapabilityLattice::default()
+    };
+    let syscalls =
+        portcullis::SeccompPolicy::from_capabilities(&caps, portcullis::NetworkEgress::Declared);
+    match confinement.apply(
+        &mut cmd,
+        nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
+        syscalls,
+    ) {
+        nucleus::SpawnHardening::Hardened(_) => {}
+        nucleus::SpawnHardening::Unhardened(why) => {
+            return Err(format!("{what} cannot be hardened here: {why:?}"));
+        }
+    }
+    let mut child = tokio::process::Command::from(cmd)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("{what} spawn: {e}"))?;
+    if let Err(e) = verify(&child) {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        return Err(format!("{what} not confined: {e}"));
+    }
+    node_end
+        .set_nonblocking(true)
+        .map_err(|e| format!("{what} decision channel: {e}"))?;
+    let node_end = tokio::net::UnixStream::from_std(node_end)
+        .map_err(|e| format!("{what} decision channel: {e}"))?;
+    Ok(Spawned {
+        child,
+        node_end,
+        socket_path,
+    })
 }
 
 /// The proxy's confinement, read from the kernel: its status through the

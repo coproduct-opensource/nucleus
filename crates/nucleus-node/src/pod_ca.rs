@@ -49,8 +49,9 @@ use zeroize::Zeroizing;
 
 /// The DNS subtree every ADR 0017 link name lives under. `.invalid` (RFC
 /// 6761) never resolves publicly, so a link name cannot be mistaken for, or
-/// fronted as, a real host.
-pub(crate) const LINK_SUBTREE: &str = "link.nucleus.invalid";
+/// fronted as, a real host. The proxy's constant, so the CA the node mints and
+/// the subtree the link proxy requires are one fact (ADR 0007 G-1).
+pub(crate) use nucleus_egress_proxy::link::LINK_SUBTREE;
 
 /// The TLS name of the link to pod `dst`: `<dst-uuid>.link.nucleus.invalid`.
 #[must_use]
@@ -211,6 +212,22 @@ impl MintedCa {
     #[must_use]
     pub(crate) fn not_after(&self) -> u64 {
         self.not_after
+    }
+
+    /// Split one CA into two holders, consuming it: one for the pod's egress
+    /// proxy and one for its link proxy (ADR 0017 L4b). Both are the same
+    /// pod's proxies, which is what `ca_key_stays_in_proxy` allows (its
+    /// `Holder.proxy p` names the pod, not a process). Each half is still
+    /// handed over by value and wiped; there is no `Clone`.
+    #[must_use]
+    pub(crate) fn split(self) -> (MintedCa, MintedCa) {
+        let twin = MintedCa {
+            cert_der: self.cert_der.clone(),
+            key_der: Zeroizing::new(self.key_der.to_vec()),
+            permitted: self.permitted.clone(),
+            not_after: self.not_after,
+        };
+        (self, twin)
     }
 
     /// Write the `nucleus-pod-ca/1` bundle (the proxy's

@@ -245,6 +245,7 @@ impl Run {
             broker: Mutex::new(None),
             decide: Mutex::new(None),
             egress_proxy: Mutex::new(None),
+            link_proxy: Mutex::new(None),
             snapshot: None,
         };
         let mut spec: nucleus_spec::PodSpec =

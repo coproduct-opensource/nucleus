@@ -20,11 +20,16 @@
 //! domain, written `""`. So a federated tenant's pod and a node-local pod never
 //! share a domain, and are never linked.
 //!
-//! # What this does not do yet
+//! # The data plane (L4b)
 //!
-//! Nothing carries a byte: the relay is L4b and the guest relays L4c. Until
-//! then a link is a row in the table with signed receipts, and the table holds
-//! no connections, so an unlink severs none.
+//! A pod with a link proxy (`link_proxy`) has a [`Relay`]: the control socket
+//! its proxy reads `LINK`/`SEVER` lines from, and its own Firecracker vsock
+//! socket, which is where a link TO it is dialled. Making a link writes `LINK`
+//! to the source's relay; unmaking it, or either end exiting, writes `SEVER`
+//! **before** the receipt is signed, so a receipt that says "unlinked" is never
+//! signed while the proxy can still carry bytes on it. Both are written under
+//! the table lock. Each request the link proxy asks about is recorded in the
+//! table as `connect` then `request` (`link_proxy::LinkDecider`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +38,7 @@ use axum::extract::{Path as AxumPath, State};
 use axum::routing::{delete, post};
 use axum::{Extension, Json, Router};
 use nucleus_ifc_kernel::extracted::link::{Link, names};
-use nucleus_ifc_kernel::links::{Effect, LinkTable, Outcome, Scope};
+use nucleus_ifc_kernel::links::{Conn, Effect, LinkTable, Outcome, Scope};
 use nucleus_receipt::{Projection, Receipt};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -47,6 +52,8 @@ use crate::{NodeState, PodHandle, PodState};
 pub(crate) struct Links {
     table: LinkTable,
     drops: HashMap<Uuid, Vec<Receipt>>,
+    /// Each running pod's link proxy control socket and vsock path (L4b).
+    relays: HashMap<Uuid, crate::link_proxy::Relay>,
 }
 
 /// `NodeState.links`. An async lock: [`cancel_unlinked`] holds it across a
@@ -58,7 +65,64 @@ pub(crate) fn shared() -> SharedLinks {
     Arc::new(tokio::sync::Mutex::new(Links {
         table: LinkTable::empty(),
         drops: HashMap::new(),
+        relays: HashMap::new(),
     }))
+}
+
+impl Links {
+    /// Whether the table holds exactly this row (the link proxy's route).
+    pub(crate) fn has_row(&self, row: Link) -> bool {
+        self.table.links().contains(&row)
+    }
+
+    /// Record one request the link proxy asked about: a connection on the row
+    /// (`LinkTable::connect`), then the request with the host's answer
+    /// (`LinkTable::request`). The table's own predicates decide both.
+    pub(crate) fn record_request(&mut self, id: u64, row: Link, admitted: bool) {
+        let connected = self.table.connect(id, row);
+        if connected.outcome == Outcome::Done {
+            let _ = self.table.request(Conn { id, link: row }, admitted);
+        }
+    }
+
+    /// Write `LINK` for `row` to its source's relay, naming the destination's
+    /// vsock socket. Nothing to write when either end has no link proxy.
+    async fn announce(&self, row: Link) {
+        let (Some(src), Some(dst)) = (
+            self.relays.get(&uuid_of(row.src)),
+            self.relays.get(&uuid_of(row.dst)),
+        ) else {
+            return;
+        };
+        let line = format!(
+            "LINK {} {} {} {}",
+            uuid_of(row.dst),
+            row.port,
+            nucleus_spec::LINK_RELAY_GUEST_PORT,
+            dst.vsock.display()
+        );
+        if let Err(e) = src.control.send(&line).await {
+            tracing::warn!(error = %e, src = %uuid_of(row.src), "link proxy control: LINK not written");
+        }
+    }
+
+    /// Write `SEVER` for `row` to its source's relay. Called before the
+    /// receipt is signed; a relay that is gone carries nothing to sever.
+    async fn sever(&self, row: Link) {
+        let Some(src) = self.relays.get(&uuid_of(row.src)) else {
+            return;
+        };
+        let line = format!("SEVER {} {}", uuid_of(row.dst), row.port);
+        if let Err(e) = src.control.send(&line).await {
+            tracing::warn!(error = %e, src = %uuid_of(row.src), "link proxy control: SEVER not written");
+        }
+    }
+}
+
+/// A pod's link proxy came up: record its relay, so links to and from it reach
+/// the data plane.
+pub(crate) async fn relay_started(state: &NodeState, pod: Uuid, relay: crate::link_proxy::Relay) {
+    state.links.lock().await.relays.insert(pod, relay);
 }
 
 pub(crate) fn routes() -> Router<NodeState> {
@@ -149,6 +213,14 @@ async fn link_pods(
     AxumPath(src): AxumPath<Uuid>,
     Json(req): Json<LinkBody>,
 ) -> Result<Json<Receipt>, ApiError> {
+    // A link port is a TCP port: the proxy's control line and its target
+    // carry it as one, and a line it cannot parse severs every link.
+    if req.port == 0 || req.port > u32::from(u16::MAX) {
+        return Err(ApiError::InvalidSpec(format!(
+            "link port {} is not a TCP port (1..=65535)",
+            req.port
+        )));
+    }
     let (s, d) = both(&state, &caller, src, req.dst).await?;
     let mut links = state.links.lock().await;
     if !(running(&s).await && running(&d).await) {
@@ -165,7 +237,10 @@ async fn link_pods(
     };
     let r = links.table.link(&Scope::NodeWide, link);
     match r.outcome {
-        Outcome::Done => Ok(Json(sign(&state, &r.effect, None)?)),
+        Outcome::Done => {
+            links.announce(link).await;
+            Ok(Json(sign(&state, &r.effect, None)?))
+        }
         Outcome::Refused => Err(ApiError::Conflict(
             "link refused: the pods are in different trust domains, are the same pod, or are \
              already linked on this port"
@@ -191,7 +266,11 @@ async fn unlink_pods(
     };
     let r = links.table.unlink(&Scope::NodeWide, link);
     match r.outcome {
-        Outcome::Done => Ok(Json(sign(&state, &r.effect, None)?)),
+        Outcome::Done => {
+            // Severed before the receipt that says so is signed.
+            links.sever(link).await;
+            Ok(Json(sign(&state, &r.effect, None)?))
+        }
         Outcome::Refused => Err(ApiError::NotFound),
     }
 }
@@ -249,6 +328,7 @@ pub(crate) async fn cancel_unlinked(state: &NodeState, pod: &PodHandle) -> Resul
     pod.cancel().await?;
     // No link names it, so this drops nothing; it only forgets the pod.
     let dropped = links.table.exit(pod.id.as_u128());
+    links.relays.remove(&pod.id);
     debug_assert!(dropped.is_empty());
     Ok(())
 }
@@ -270,6 +350,9 @@ pub(crate) async fn pod_gone(state: &NodeState, id: Uuid) {
         let Effect::Drop(link) = &r.effect else {
             continue;
         };
+        // Severed before the drop receipt is signed. If the exited pod was
+        // the source, its proxy is going with it.
+        links.sever(*link).await;
         let survivor = if uuid_of(link.src) == id {
             uuid_of(link.dst)
         } else {
@@ -280,6 +363,7 @@ pub(crate) async fn pod_gone(state: &NodeState, id: Uuid) {
             Err(error) => tracing::error!(pod = %id, %error, "drop receipt not signed"),
         }
     }
+    links.relays.remove(&id);
 }
 
 #[cfg(all(test, feature = "local-driver"))]

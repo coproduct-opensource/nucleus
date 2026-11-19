@@ -685,6 +685,12 @@ pub struct ImageSpec {
     pub data_digest: Option<ArtifactDigest>,
 }
 
+/// The guest vsock port the in-guest link relay listens on for inbound link
+/// connections (ADR 0017 L4c; the tool-proxy binds it, the host link relay
+/// dials it). A pod spec may not claim it for its own control port
+/// (`spec.vsock.port`): the node refuses that at create.
+pub const LINK_RELAY_GUEST_PORT: u32 = 1031;
+
 /// Vsock configuration for VM communication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

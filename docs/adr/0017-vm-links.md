@@ -451,6 +451,71 @@ different upstream (`crates/nucleus-egress-proxy/src/link.rs`).
   HTTP links are unaffected. Fixing it means the model, the extracted verdict and the proxy
   agreeing on subtree semantics for the link namespace, with the per-link check left to the table.
 
+**What L4b delivered, node half, and the two hand-over repairs (2026-11-19).** L4b is built.
+
+- **The proxy's carriers** (`crates/nucleus-egress-proxy`). `--tls-ca-fd` and
+  `--link-control-fd` are gone. The CA bundle is read off the head of the decision channel
+  (`--tls-ca-channel`, `tls::read_bundle`: the magic and two length-prefixed fields, bounded by
+  `MAX_BUNDLE`, never a byte past the bundle). Control lines come over
+  `--link-control-socket PATH`: a Unix socket the node binds in the pod directory, owns
+  (`chown` to the proxy uid, mode 0600) and accepts exactly one connection on; the proxy
+  connects once, before Landlock. The path is the node's, never the guest's.
+- **TLS names in link mode.** `tls::Termination` carries one name predicate (`NamePermit`) that
+  the leaf minter and the verdict both consult. Egress mode: exactly one of the CA's permitted
+  names, as before. Link mode (`link::termination`): `<uuid>.link.nucleus.invalid` whose
+  destination the node has announced a live `LINK` to (`Links::permits`), under a CA whose
+  constraints include `link.nucleus.invalid` (checked at start, or the proxy refuses to start).
+  This resolves the exact-names tension recorded above in the code; the Lean model's predicate
+  form is the main session's.
+- **The node half** (`crates/nucleus-node/src/link_proxy.rs`). Every Firecracker pod on a node
+  with `--egress-proxy-bin` gets a link proxy, spawned and verified by the same
+  `egress_proxy::spawn_confined` as the egress one, so the two cannot be confined differently.
+  `LinkDecider` is the egress decider's `begin` and `finish` around one different route: the
+  summary's origin must be the link name of a destination this pod has a row to on that port in
+  `NodeState.links`, otherwise `RouteRefused` and the proxy connects nothing; then
+  `authorize_effect` and the redeemed decision id exactly as egress. Each request asked about is
+  recorded as `LinkTable::connect` then `LinkTable::request`. The table lock is held across the
+  decision, so a row cannot be unmade between the check and the record.
+- **Control lines** (`pod_links`). Making a link writes `LINK <dst> <port> 1031 <dst vsock.sock>`
+  to the source's relay; unlink, and either end's exit, write `SEVER <dst> <port>` before the
+  receipt is signed. A link port must be 1..=65535 (a port the proxy cannot carry would make its
+  control line unparseable, and an unparseable line severs every link).
+- **The CA's second holder.** An eval cell's CA is split by value (`MintedCa::split`): one half
+  to the egress proxy, one to the link proxy, each handed over and wiped. Both holders are the
+  same pod's proxies, which is what `ca_key_stays_in_proxy`'s `proxy p` names.
+- **Port 1031** is `nucleus_spec::LINK_RELAY_GUEST_PORT`, one constant for the tool-proxy's
+  relay and the node; a spec claiming it as `vsock.port` is refused at create
+  (`PostureRefused::GuestPortReserved`).
+- **TLS over a link uses port 443.** A source dials `CONNECT <name>:443`, so the row is
+  `(src, dst, 443)` and the destination relay delivers the decided request in clear to the
+  workload's `127.0.0.1:443`.
+- **Tests on macOS** (`link_proxy_tests.rs`, the real link-mode proxy over a socketpair to the
+  real `LinkDecider`, the real routes, control lines over a real Unix socket, a fake Firecracker
+  mux): a request over a made link is decided by the table and the policy and delivered with
+  `CONNECT 1031` and `PORT 8080`; a route the proxy holds but the table does not is refused by
+  the node and the destination sees zero connections; unlink closes a held connection through
+  the control socket and the proxy forgets the route; a link port of 0 or 70000 is refused
+  before any control line; the node's CA half arrives over a socketpair, `read_bundle` stops at
+  the bundle, and link termination admits a link name only once it is announced. Proxy crate: a
+  TLS handshake for an unannounced link name mints no leaf and asks nothing; a CA without the
+  link subtree is refused for link mode; `read_bundle` round-trips and refuses short, wrong and
+  oversized channels. Spec: 1031 refused, 1030 and 1032 admitted.
+- **Driven red:** a decider that routes without the table check failed
+  `a_link_not_in_the_table_is_refused_by_the_node_and_nothing_is_connected`; an unlink that does
+  not write `SEVER` failed `unlink_severs_a_live_connection_through_the_control_socket`; link-mode
+  TLS that ignores announcements failed `tls_to_an_unannounced_link_name_gets_no_leaf` and
+  `the_ca_arrives_on_the_channel_and_tls_admits_only_announced_links`. Each restored, green.
+- **Only Linux can show:** that `harden_child` leaves stdin and stdout intact (both carriers ride
+  them); that the confined proxy, as its unprivileged uid inside its namespaces, can `connect(2)`
+  the control socket (the pod directory must be traversable by that uid; the socket is chowned
+  to it) and, after Landlock, each destination's `vsock.sock` (the jail's; a group grant may be
+  needed); that the proxy reads the CA before it connects the control socket, matching the
+  node's order (hand over, then accept). None of `link_proxy::start_for_pod`, `LinkProxy::start`
+  or the proxy's Linux `run` has been compiled for Linux here.
+- **Found:** the table records one connection per request and has no `close`, so `conns` grows
+  with every request on a long-lived link until unlink or exit clears it. The Lean model has no
+  close transition either; adding one is a model change first.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.

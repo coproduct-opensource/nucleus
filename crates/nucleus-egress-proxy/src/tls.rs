@@ -20,12 +20,22 @@
 //!
 //! # How the key arrives
 //!
-//! `--tls-ca-fd N`: the node writes the bundle into a pipe, closes its write
-//! end, and leaves the read end at descriptor `N` in the proxy. The proxy reads
-//! it once, through `/proc/self/fd/N` before Landlock removes the filesystem,
-//! and closes nothing else. The key is never in argv, the environment, a file
-//! or the guest (ADR 0015 §4: the CA key goes only to that pod's proxy). The
-//! node side of the handover is not built yet (ADR 0017 L4b).
+//! `--tls-ca-channel`: the node writes the bundle as the first bytes on its end
+//! of the decision channel, before the first `Decide`, and the proxy reads
+//! exactly one bundle ([`read_bundle`]) before it serves. An inherited
+//! descriptor cannot carry it: the confinement hook marks every descriptor
+//! from 3 up close-on-exec (`nucleus::hardening`, found by E3's node side).
+//! The key is never in argv, the environment, a file or the guest (ADR 0015
+//! §4: the CA key goes only to that pod's proxy).
+//!
+//! # Which names a leaf is minted for
+//!
+//! [`Termination`] carries one predicate, [`NamePermit`], that both the leaf
+//! minter and the verdict consult. Egress mode: exactly one of the CA's
+//! permitted names. Link mode (ADR 0017): `<uuid>.link.nucleus.invalid` for a
+//! destination the node has announced a live `LINK` to
+//! (`crate::link::Links::permits`), under a CA whose constraints include the
+//! link namespace.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -179,27 +189,51 @@ impl PodCa {
         self.permitted.contains(&name)
     }
 
-    /// The verdict for a handshake for `sni` at `now`, before and after the
-    /// client's answer and the request's `Host`.
+    /// Whether the CA's constraints include `subtree` (for a link proxy: the
+    /// link namespace, so a minted link leaf stays inside what the guest's
+    /// trust store accepts).
     #[must_use]
-    pub fn verdict(
-        &self,
-        now: u64,
-        sni: Option<&str>,
-        accepted: bool,
-        sni_matches_host: bool,
-    ) -> TlsVerdict {
-        let permitted = sni.is_some_and(|n| self.name_permitted(n));
-        tls_verdict(
-            true,
-            now,
-            self.not_after,
-            permitted,
-            accepted,
-            sni_matches_host,
-        )
+    pub fn permits_subtree(&self, subtree: &str) -> bool {
+        self.name_permitted(subtree)
     }
 }
+
+/// Read one bundle from the head of the decision channel: the magic, then the
+/// two length-prefixed fields, never more than [`MAX_BUNDLE`] bytes in all,
+/// and not one byte past the bundle (what follows belongs to the decision
+/// protocol). The format is self-delimiting, so nothing else is needed.
+///
+/// # Errors
+/// [`CaError::Bundle`] for a short read, a wrong magic, or a bundle over the
+/// bound.
+pub fn read_bundle<R: std::io::Read>(channel: &mut R) -> Result<Vec<u8>, CaError> {
+    let mut out = vec![0u8; BUNDLE_MAGIC.len()];
+    channel.read_exact(&mut out).map_err(|_| CaError::Bundle)?;
+    if out != BUNDLE_MAGIC {
+        return Err(CaError::Bundle);
+    }
+    for _field in 0..2 {
+        let mut len = [0u8; 4];
+        channel.read_exact(&mut len).map_err(|_| CaError::Bundle)?;
+        let n = usize::try_from(u32::from_be_bytes(len)).map_err(|_| CaError::Bundle)?;
+        let total = out
+            .len()
+            .checked_add(4)
+            .and_then(|t| t.checked_add(n))
+            .filter(|t| *t <= MAX_BUNDLE)
+            .ok_or(CaError::Bundle)?;
+        out.extend_from_slice(&len);
+        let start = out.len();
+        out.resize(total, 0);
+        let field = out.get_mut(start..).ok_or(CaError::Bundle)?;
+        channel.read_exact(field).map_err(|_| CaError::Bundle)?;
+    }
+    Ok(out)
+}
+
+/// Which TLS names this proxy mints leaves for and decides: one predicate that
+/// the minter and the verdict both consult, so they cannot disagree.
+pub type NamePermit = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Seconds since the epoch, for the CA's deadline.
 #[must_use]
@@ -214,6 +248,7 @@ pub fn now_unix() -> u64 {
 pub struct LeafMinter {
     ca: Arc<PodCa>,
     clock: fn() -> u64,
+    permits: NamePermit,
     cache: Mutex<HashMap<String, Arc<CertifiedKey>>>,
 }
 
@@ -227,10 +262,11 @@ impl fmt::Debug for LeafMinter {
 
 impl LeafMinter {
     #[must_use]
-    pub fn new(ca: Arc<PodCa>, clock: fn() -> u64) -> LeafMinter {
+    pub fn new(ca: Arc<PodCa>, clock: fn() -> u64, permits: NamePermit) -> LeafMinter {
         LeafMinter {
             ca,
             clock,
+            permits,
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -266,7 +302,7 @@ impl ResolvesServerCert for LeafMinter {
             true,
             (self.clock)(),
             self.ca.not_after,
-            self.ca.name_permitted(&name),
+            (self.permits)(&name),
         ) {
             return None;
         }
@@ -288,10 +324,12 @@ pub struct Termination {
     pub server: Arc<ServerConfig>,
     pub upstream: Arc<rustls::ClientConfig>,
     pub clock: fn() -> u64,
+    permits: NamePermit,
 }
 
 impl Termination {
-    /// Termination for `ca`, verifying upstreams against `upstream_roots`
+    /// Termination for `ca` in egress mode: a leaf only for exactly one of the
+    /// CA's permitted names. Upstreams are verified against `upstream_roots`
     /// (the webpki roots in production, [`Termination::webpki`]).
     ///
     /// # Errors
@@ -302,7 +340,27 @@ impl Termination {
         clock: fn() -> u64,
     ) -> Result<Termination, String> {
         let ca = Arc::new(ca);
-        let minter = Arc::new(LeafMinter::new(Arc::clone(&ca), clock));
+        let exact = Arc::clone(&ca);
+        let permits: NamePermit = Arc::new(move |name: &str| exact.name_permitted(name));
+        Termination::with_names(ca, upstream_roots, clock, permits)
+    }
+
+    /// Termination for `ca` whose leaves and verdicts admit exactly the names
+    /// `permits` admits (link mode: `crate::link::Links::permits`).
+    ///
+    /// # Errors
+    /// A rustls configuration error, as text.
+    pub fn with_names(
+        ca: Arc<PodCa>,
+        upstream_roots: RootCertStore,
+        clock: fn() -> u64,
+        permits: NamePermit,
+    ) -> Result<Termination, String> {
+        let minter = Arc::new(LeafMinter::new(
+            Arc::clone(&ca),
+            clock,
+            Arc::clone(&permits),
+        ));
         let provider = Arc::new(ring::default_provider());
         let mut server = ServerConfig::builder_with_provider(Arc::clone(&provider))
             .with_safe_default_protocol_versions()
@@ -322,7 +380,30 @@ impl Termination {
             server: Arc::new(server),
             upstream: Arc::new(upstream),
             clock,
+            permits,
         })
+    }
+
+    /// The verdict for a handshake for `sni` at `now`, before and after the
+    /// client's answer and the request's `Host`: the kernel's extracted
+    /// [`tls_verdict`], with this proxy's one name predicate.
+    #[must_use]
+    pub fn verdict(
+        &self,
+        now: u64,
+        sni: Option<&str>,
+        accepted: bool,
+        sni_matches_host: bool,
+    ) -> TlsVerdict {
+        let permitted = sni.is_some_and(|n| (self.permits)(&n.to_ascii_lowercase()));
+        tls_verdict(
+            true,
+            now,
+            self.ca.not_after,
+            permitted,
+            accepted,
+            sni_matches_host,
+        )
     }
 
     /// The webpki roots, for production.
@@ -374,6 +455,43 @@ mod tests {
         assert!(
             format!("{ca:?}").find("key").is_none(),
             "the key is never printed"
+        );
+    }
+
+    /// The bundle is read off the head of the decision channel and not one
+    /// byte more: what follows is the decision protocol's.
+    #[test]
+    fn read_bundle_takes_exactly_the_bundle_from_the_channel() {
+        let (cert, key) = test_ca::mint(&["api.test"], 4_000_000_000);
+        let bundle = PodCa::to_bundle(&cert, &key);
+        let mut channel = bundle.clone();
+        channel.extend_from_slice(b"NEXT-FRAME");
+        let mut reader = std::io::Cursor::new(channel);
+        assert_eq!(read_bundle(&mut reader).unwrap(), bundle);
+        let mut rest = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut rest).unwrap();
+        assert_eq!(rest, b"NEXT-FRAME");
+        assert!(PodCa::from_bundle(&bundle).is_ok());
+    }
+
+    #[test]
+    fn read_bundle_refuses_a_short_a_wrong_or_an_oversized_channel() {
+        let (cert, key) = test_ca::mint(&["api.test"], 4_000_000_000);
+        let bundle = PodCa::to_bundle(&cert, &key);
+        let short = bundle.get(..bundle.len() - 1).unwrap().to_vec();
+        assert_eq!(
+            read_bundle(&mut std::io::Cursor::new(short)),
+            Err(CaError::Bundle)
+        );
+        assert_eq!(
+            read_bundle(&mut std::io::Cursor::new(b"junk".to_vec())),
+            Err(CaError::Bundle)
+        );
+        let mut huge = BUNDLE_MAGIC.to_vec();
+        huge.extend_from_slice(&u32::try_from(MAX_BUNDLE).unwrap().to_be_bytes());
+        assert_eq!(
+            read_bundle(&mut std::io::Cursor::new(huge)),
+            Err(CaError::Bundle)
         );
     }
 

@@ -41,9 +41,10 @@
 //!
 //! # Not yet
 //!
-//! Credential injection; the node minting the CA at admission and handing it
-//! over (`--tls-ca-fd`); the guest installing the CA certificate
-//! (`EgressProxyTrust`); an outbound path (the resolver is `NoOutboundPath`).
+//! Credential injection; an outbound path (the resolver is `NoOutboundPath`).
+//! The CA arrives at the head of the decision channel (`--tls-ca-channel`,
+//! `tls::read_bundle`); the node mints it and the guest installs its
+//! certificate (E3 node side).
 
 #![forbid(unsafe_code)]
 // Declared panic-free for the shipped build (the scorecard's `tot` family):

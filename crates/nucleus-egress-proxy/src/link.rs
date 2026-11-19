@@ -130,11 +130,48 @@ pub fn link_dst(host: &Host) -> Option<u128> {
     }
 }
 
-/// The link name for a destination pod (what the node puts in the CA's
-/// name constraints for E3).
+/// The link name for a destination pod: the TLS name a source dials
+/// (`CONNECT <name>:443`) and the leaf the link proxy mints for it.
 #[must_use]
 pub fn link_name(dst: u128) -> String {
     format!("{}{LINK_SUFFIX}", uuid_string(dst))
+}
+
+/// The subtree a pod CA must permit for a link proxy to terminate TLS: the
+/// node mints every CA with it (`pod_ca`), and the guest's trust store accepts
+/// a link leaf only under it. Which link a name is, is the table's decision.
+pub const LINK_SUBTREE: &str = "link.nucleus.invalid";
+
+/// TLS termination for a link proxy: leaves and verdicts only for announced
+/// link names ([`Links::permits`]).
+///
+/// # Errors
+/// A CA whose constraints do not include [`LINK_SUBTREE`] (a leaf it signed
+/// for a link name would be refused by the guest's trust store, so the proxy
+/// would mint what no client accepts), or a rustls configuration error.
+pub fn termination(
+    ca: crate::tls::PodCa,
+    upstream_roots: rustls::RootCertStore,
+    clock: fn() -> u64,
+    links: &std::sync::Arc<Links>,
+) -> Result<crate::tls::Termination, String> {
+    if !ca.permits_subtree(LINK_SUBTREE) {
+        return Err(format!(
+            "the pod CA does not permit {LINK_SUBTREE}: it cannot vouch for a link name"
+        ));
+    }
+    crate::tls::Termination::with_names(
+        std::sync::Arc::new(ca),
+        upstream_roots,
+        clock,
+        Links::permits(links),
+    )
+}
+
+/// The destination a TLS name (an SNI, lower-cased) names, if it is a link name.
+#[must_use]
+pub fn link_dst_of_name(name: &str) -> Option<u128> {
+    name.strip_suffix(LINK_SUFFIX).and_then(parse_uuid)
 }
 
 /// One line from the node.
@@ -254,6 +291,26 @@ impl Links {
         routes
             .get(&target)
             .map(|(route, tx)| (route.clone(), tx.subscribe()))
+    }
+
+    /// Whether the node has announced a live link to `dst` on any port.
+    #[must_use]
+    pub fn has_dst(&self, dst: u128) -> bool {
+        self.routes
+            .lock()
+            .map(|r| r.keys().any(|t| t.dst == dst))
+            .unwrap_or(false)
+    }
+
+    /// The link proxy's TLS name predicate (`tls::NamePermit`): a link name
+    /// whose destination the node has announced a live `LINK` to. Consulted
+    /// for the leaf and for the verdict, so a severed link stops minting too.
+    #[must_use]
+    pub fn permits(links: &std::sync::Arc<Links>) -> crate::tls::NamePermit {
+        let links = std::sync::Arc::clone(links);
+        std::sync::Arc::new(move |name: &str| {
+            link_dst_of_name(name).is_some_and(|dst| links.has_dst(dst))
+        })
     }
 
     /// How many links are live.

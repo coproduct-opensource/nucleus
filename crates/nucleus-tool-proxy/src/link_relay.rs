@@ -50,7 +50,7 @@ pub(crate) const LINK_PROXY_ENV: &str = "NUCLEUS_LINK_PROXY";
 /// (1027–1030, 15012–15013); it must differ from the tool-proxy's own control
 /// port, which the pod spec names (`spec.vsock.port`).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) const INBOUND_LINK_PORT: u32 = 1031;
+pub(crate) const INBOUND_LINK_PORT: u32 = nucleus_spec::LINK_RELAY_GUEST_PORT;
 
 /// The longest preamble line accepted, newline included: `PORT 65535\n` is 11.
 const MAX_PREAMBLE: usize = 16;

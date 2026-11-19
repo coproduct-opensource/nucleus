@@ -119,6 +119,7 @@ mod jail_reclaim;
 mod jailer_limits;
 mod launch_resources;
 mod lifecycle;
+mod link_proxy;
 mod node_drain;
 mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
@@ -691,6 +692,8 @@ struct FirecrackerPod {
     /// The host egress proxy for an eval cell (ADR 0015 E2), owned so teardown kills it and
     /// unlinks its socket, which is derived from the pod's vsock path like the others.
     egress_proxy: Mutex<Option<egress_proxy::EgressProxy>>,
+    /// The pod's link relay (ADR 0017 L4b), owned so teardown kills it.
+    link_proxy: Mutex<Option<link_proxy::LinkProxy>>,
     /// The jail this pod runs in, when launched via the jailer. Held so teardown
     /// can remove it — a jail left behind leaks disk and, because writable drives
     /// are hard-linked in, keeps a reference to the caller's image alive.
@@ -2166,6 +2169,7 @@ async fn spawn_firecracker_pod(
             config: firecracker_config::FirecrackerConfig,
             workload_filesystem: net::confinement::WorkloadFilesystem,
             egress_proxy: Option<egress_proxy::EgressProxy>,
+            link_proxy: Option<link_proxy::LinkProxy>,
         }
 
         // From here every resource the launch acquires is moved into one handle the moment it
@@ -2423,6 +2427,7 @@ async fn spawn_firecracker_pod(
                 // certificate goes to the guest; its key only to the proxy (`pod_ca`).
                 let egress_ca = egress_proxy::mint_for_pod(state, spec, id)?;
                 let egress_ca_pem = egress_ca.as_ref().map(pod_ca::MintedCa::certificate_pem);
+                let (egress_ca, link_ca) = egress_ca.map(pod_ca::MintedCa::split).unzip();
                 let prepared_pod = async {
                     let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
                         measured,
@@ -2476,6 +2481,12 @@ async fn spawn_firecracker_pod(
                     egress_ca,
                 )
                 .await?;
+                let link_owner = jail_layout
+                    .as_ref()
+                    .map(|_| (state.jailer_uid.get(), state.jailer_gid));
+                let link_proxy =
+                    link_proxy::start_for_pod(state, id, &vsock_path, pod_dir, link_owner, link_ca)
+                        .await?;
                 command.stdout(log_stdout).stderr(log_stderr);
                 let vmm = launch.start(|command| prepared_pod.spawn(command)).await?;
                 let pid = vmm.pid();
@@ -2626,6 +2637,7 @@ async fn spawn_firecracker_pod(
                     config,
                     workload_filesystem,
                     egress_proxy,
+                    link_proxy,
                 })
             })
             .await?;
@@ -2637,6 +2649,7 @@ async fn spawn_firecracker_pod(
             config,
             workload_filesystem,
             egress_proxy,
+            link_proxy,
         } = booted;
         let launch_resources::Committed {
             permit,
@@ -2737,6 +2750,7 @@ async fn spawn_firecracker_pod(
             broker: Mutex::new(broker),
             decide: Mutex::new(decide),
             egress_proxy: Mutex::new(egress_proxy),
+            link_proxy: Mutex::new(link_proxy),
             snapshot: verdict.found().map(|v| config.snapshot_inputs(v)),
         };
 
