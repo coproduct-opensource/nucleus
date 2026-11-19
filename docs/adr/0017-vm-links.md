@@ -169,9 +169,9 @@ give "no row names an absent pod".
 
 | route | operation | answer |
 |---|---|---|
-| `POST /v1/pods/{src}/links` with `{dst, port}` | `Operation::LinkPods` | 201 with the link id and the signed receipt; 404 or 409 as in §2 |
-| `DELETE /v1/pods/{src}/links/{id}` | `Operation::UnlinkPods` | 200 with the signed receipt, after severing |
-| `GET /v1/pods/{src}/links` | `Operation::ListPodLinks` | the rows whose source is `src`, filtered by scope |
+| `POST /v1/pods/{src}/links` with `{dst, port}` | `Operation::LinkPods` | 200 with the signed receipt; 404 or 409 as in §2. A link is named by its row `(src, dst, port)`; it has no separate id |
+| `DELETE /v1/pods/{src}/links/{dst}/{port}` | `Operation::UnlinkPods` | 200 with the signed receipt, after severing; 404 when the row is not there |
+| `GET /v1/pods/{src}/links` | `Operation::ListLinks` | the rows naming `src` at either end, and the drop receipts signed for it |
 
 - Each route is mapped in `operation_for_route` (`auth.rs:634`), which refuses an unmapped
   route. It is pinned by `operation_for_route_matches_every_declared_route_and_nothing_else`
@@ -270,6 +270,10 @@ constant.
 | L1 | `LinkTable.lean` with the theorems in §7; this record accepted | no |
 | L2 | the `Projection::Link` variant and its receipt tests; the `PodLink` listener variant and its inventory row | no |
 | L3 | the table, the two-pod predicate and the relay's admit function, extracted; the `proof-obligations.toml` rows | no (no route yet) |
+| L4a | the control plane: the link routes, their authorization, signed receipts, a cancel of a linked pod refused (409), and links dropped with receipts on an exit the node did not request | only the cancel of a linked pod (now 409); no byte crosses a link yet |
+| L4b | the host link relay (the data plane): the `PodLink` listener, admit along a link, decide each HTTP/1.1 request with the pod policy, sever on unlink and exit | yes, for the host half |
+| L4c | the guest relays on both ends, behind their capability rows | yes: links become possible |
+| L5 | measurement on a node (§9); C2's artifact list updated | no |
 
 **What L1–L3 delivered (2026-11-19).**
 
@@ -294,8 +298,47 @@ constant.
   is Linux-only, a test calls it unconditionally), which predates this record.
 - The workflow change (`aeneas-ifc-scoped.yml`) is a guardrail path: it needs the owner's
   hardware-key approval before it merges.
-| L4 | the routes, the teardown step, and the guest relays behind their capability rows | yes: links become possible |
-| L5 | measurement on a node (§9); C2's artifact list updated | no |
+
+**What L4a delivered (2026-11-19).**
+
+- `crates/nucleus-node/src/pod_links.rs`, merged by its own `routes()`:
+  `POST /v1/pods/{src}/links` `{dst, port}`, `DELETE /v1/pods/{src}/links/{dst}/{port}` and
+  `GET /v1/pods/{src}/links` (the links naming the pod and its drop receipts).
+  `auth::Operation` gains `LinkPods`, `UnlinkPods` and `ListLinks`, mapped in
+  `operation_for_route` and granted to tenants, CI identities and pods as the per-pod operations
+  are; WHICH pods stays the caller scope's.
+- Authorization stays the node's: a link resolves both ends through `get_pod_for_caller`, so an
+  end outside the caller's scope is the same 404 whichever end it is. Only then does the table
+  decide (both running, one trust domain, no self link, no duplicate), and its refusal is 409.
+  An unlink resolves only its source (`may_unlink`), so it never answers whether the
+  destination exists.
+- Trust domain: the one a pod's certificate root was issued in (`lineage_tenant`). A pod with no
+  federated owner is in the node-local domain, written `""`, so a tenant's pod and a node-local
+  pod are never linked.
+- Pods enter the table when a link names them and both are running, not at create, so
+  `create_pod` is unchanged. The table's lock is async and held across a cancel, so no link is
+  made between "no link names it" and the teardown.
+- Receipts: `Projection::Link`, signed by `workload_result::sign_projection` (factored out of
+  `sign_claim`, so the two cannot sign differently), the session being the source pod.
+- Cancel through HTTP or gRPC refuses a linked pod: `ApiError::Conflict` (409),
+  `FAILED_PRECONDITION` over gRPC. The reaper's timeout, exit cleanup and cascade, the drain, and
+  an abandoned launch call `pod_gone`, which drops the pod's links and gives each surviving end a
+  signed `drop-on-exit` receipt.
+- Tests (`pod_links::tests`, the `handler_tests` fixture): receipts verify for link, unlink and
+  drop; a node-wide caller cannot link two trust domains (409); a tenant naming another
+  tenant's pod gets 404 as source or destination; a linked pod's cancel is 409 and changes
+  nothing; the route-pinning test covers the three routes and two near misses. Driven red:
+  resolving the destination without the caller's scope turned the cross-tenant 404 into a 409
+  (the existence oracle); a cancel without the linked check failed
+  `cancel_of_a_linked_pod_is_refused`.
+- §5 changed to what was built: a link is named by its row, not an id, so `DELETE` takes
+  `{dst}/{port}`; the operation is `ListLinks`; `GET` lists both ends' rows plus drop receipts;
+  a made link answers 200, like the other signed-receipt routes.
+- Found on the way: `nucleus-node`'s test target now builds on macOS (the write-extent test is
+  gated to Linux, where its function exists); `cargo clippy --no-deps -D warnings` on macOS
+  reports dead-code lints in Linux-only code (`landlock.rs`, `egress_proxy.rs`, `upstreams.rs`,
+  `jailer_limits.rs`, `host_decide.rs`), none in files this step touched; CI runs clippy on
+  Linux.
 
 ## Consequences
 

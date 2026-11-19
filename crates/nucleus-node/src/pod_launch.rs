@@ -56,6 +56,7 @@ impl Drop for Delivery {
                 loop {
                     match pod.cancel().await {
                         Ok(()) => {
+                            crate::pod_links::pod_gone(&state, id).await;
                             state.authority.release_child(id).await;
                             break;
                         }

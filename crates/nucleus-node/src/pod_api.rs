@@ -318,7 +318,7 @@ pub(crate) async fn cancel_pod(
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let pod = get_pod_for_caller(&state, id, &caller).await?;
-    pod.cancel().await?;
+    crate::pod_links::cancel_unlinked(&state, &pod).await?;
     Ok(Json(serde_json::json!({"status": "cancelled"})))
 }
 
@@ -1308,6 +1308,7 @@ pub(crate) mod handler_tests {
             lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
             lockdowns: Arc::default(),
             eval_cells: crate::eval_cell::Admitted::none(),
+            links: crate::pod_links::shared(),
         }
     }
 
@@ -1411,7 +1412,7 @@ pub(crate) mod handler_tests {
     }
 
     /// [`register`], with the certificate root identity the node recorded.
-    pub(super) async fn register_as(
+    pub(crate) async fn register_as(
         st: &NodeState,
         parent: Option<uuid::Uuid>,
         owner: Option<&str>,

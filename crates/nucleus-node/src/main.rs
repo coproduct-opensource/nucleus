@@ -60,6 +60,7 @@ mod pod_boot_identity;
 mod pod_caller_identity;
 mod pod_identity_files;
 mod pod_launch;
+mod pod_links;
 mod pod_receipt;
 mod pod_resources;
 mod pod_view;
@@ -582,6 +583,8 @@ struct NodeState {
     lockdowns: Arc<std::sync::Mutex<lockdown::Active>>,
     /// The eval cells admitted by this process (ADR 0013), for their children.
     eval_cells: eval_cell::Admitted,
+    /// Links between pods (ADR 0017): the table and its drop receipts.
+    links: pod_links::SharedLinks,
 }
 
 #[derive(Debug)]
@@ -1008,6 +1011,7 @@ async fn main() -> Result<(), ApiError> {
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
         lockdowns: Arc::default(),
         eval_cells: crate::eval_cell::Admitted::none(),
+        links: pod_links::shared(),
     };
 
     // From here a SIGTERM/SIGINT is queued for the drain below rather than killing the node.
@@ -1090,6 +1094,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .merge(workload_result::routes())
         .merge(pod_api::effect_approvals::routes())
+        .merge(pod_links::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -3004,9 +3009,7 @@ impl NodeService for GrpcService {
 
         let (md, ext, req) = request.into_parts();
         let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
-        pod.cancel()
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        pod_links::grpc_cancel(&self.state, &pod).await?;
         Ok(GrpcResponse::new(proto::CancelPodResponse {
             status: "cancelled".to_string(),
         }))

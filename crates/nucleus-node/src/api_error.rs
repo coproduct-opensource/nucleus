@@ -43,6 +43,11 @@ pub(crate) enum ApiError {
     Authority(String),
     #[error("request body error: {0}")]
     Body(String),
+    /// The request is well formed and authorized, and the node's current state
+    /// refuses it: a cancel of a pod a link names, or a link the table refuses
+    /// (ADR 0017).
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 impl IntoResponse for ApiError {
@@ -59,6 +64,7 @@ impl IntoResponse for ApiError {
             ApiError::Authorization(_) => StatusCode::FORBIDDEN,
             ApiError::Authority(_) => StatusCode::FORBIDDEN,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
         };
         let body = Json(ErrorBody {
             error: self.to_string(),
