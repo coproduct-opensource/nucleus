@@ -1643,6 +1643,7 @@ fn the_jailer_applies_the_node_resource_limits_before_exec() {
 
 /// What the `fsize` limit must leave room for: the widest WRITABLE drive, or the memory size
 /// (a snapshot's memory file), whichever is larger. A read-only drive is only read.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_write_extent_is_the_widest_writable_drive_or_the_memory() {
     let dir = tempfile::tempdir().unwrap();
