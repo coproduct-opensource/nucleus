@@ -55,8 +55,15 @@ fn main() -> ExitCode {
 
 /// `--deny-floor <cidr>`, repeated. At least one: the node always passes
 /// its floor, so an empty one is a broken spawn, not an empty policy.
-fn deny_floor() -> Result<Vec<IpNet>, String> {
+///
+/// `--tls-ca-fd <n>`, at most once (ADR 0015 E3): descriptor `n` is the read
+/// end of a pipe holding the pod CA bundle (`tls::PodCa::from_bundle`). It
+/// is read once, before Landlock, through `/proc/self/fd/n` (this crate has
+/// no `unsafe`, so it cannot adopt a raw descriptor). Without it, `CONNECT`
+/// is refused as in E2. The key is never in argv, the environment or a file.
+fn deny_floor() -> Result<(Vec<IpNet>, Option<u32>), String> {
     let mut floor = Vec::new();
+    let mut tls_ca_fd: Option<u32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -67,13 +74,24 @@ fn deny_floor() -> Result<Vec<IpNet>, String> {
                         .map_err(|e| format!("--deny-floor {net}: {e}"))?,
                 );
             }
+            "--tls-ca-fd" => {
+                let n = args.next().ok_or("--tls-ca-fd needs a descriptor")?;
+                let fd = n
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|fd| *fd > 2)
+                    .ok_or_else(|| format!("--tls-ca-fd {n}: not a descriptor above stderr"))?;
+                if tls_ca_fd.replace(fd).is_some() {
+                    return Err("--tls-ca-fd given twice".into());
+                }
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
     if floor.is_empty() {
         return Err("no --deny-floor given".into());
     }
-    Ok(floor)
+    Ok((floor, tls_ca_fd))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -95,7 +113,7 @@ fn run() -> Result<(), String> {
     use nucleus_egress_proxy::resolve::NoOutboundPath;
     use nucleus_egress_proxy::serve::Proxy;
 
-    let floor = deny_floor()?;
+    let (floor, tls_ca_fd) = deny_floor()?;
 
     // What the node did, read from the kernel before Landlock takes /proc.
     let status = std::fs::read_to_string("/proc/self/status")
@@ -119,6 +137,12 @@ fn run() -> Result<(), String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     decisions.set_nonblocking(true).map_err(|e| e.to_string())?;
 
+    // The pod CA (E3), read once while /proc is still reachable.
+    let termination = match tls_ca_fd {
+        None => None,
+        Some(fd) => Some(read_pod_ca(fd)?),
+    };
+
     no_filesystem()?;
     tracing::info!(uid = confined.uid(), floor = ?floor, "egress proxy confined and serving");
 
@@ -135,9 +159,40 @@ fn run() -> Result<(), String> {
             NoOutboundPath,
             floor,
         );
+        let proxy = match termination {
+            Some(t) => proxy.with_tls(t),
+            None => proxy,
+        };
         Arc::new(proxy).serve(listener).await;
         Ok(())
     })
+}
+
+/// Read the pod CA bundle from descriptor `fd` once, bounded, and build TLS
+/// termination with the webpki roots upstream. Not gated to Linux, so it is
+/// compiled (and type-checked) on every platform; only `run` calls it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn read_pod_ca(fd: u32) -> Result<nucleus_egress_proxy::tls::Termination, String> {
+    use std::io::Read;
+
+    use nucleus_egress_proxy::tls::{MAX_BUNDLE, PodCa, Termination, now_unix};
+
+    let file = std::fs::File::open(format!("/proc/self/fd/{fd}"))
+        .map_err(|e| format!("--tls-ca-fd {fd}: {e}"))?;
+    let mut bundle = Vec::new();
+    let limit = u64::try_from(MAX_BUNDLE)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    file.take(limit)
+        .read_to_end(&mut bundle)
+        .map_err(|e| format!("--tls-ca-fd {fd}: {e}"))?;
+    if bundle.len() > MAX_BUNDLE {
+        return Err(format!(
+            "--tls-ca-fd {fd}: bundle larger than {MAX_BUNDLE} bytes"
+        ));
+    }
+    let ca = PodCa::from_bundle(&bundle).map_err(|e| format!("--tls-ca-fd {fd}: {e}"))?;
+    Termination::new(ca, Termination::webpki(), now_unix)
 }
 
 /// Landlock with every filesystem right handled and none granted: no open,

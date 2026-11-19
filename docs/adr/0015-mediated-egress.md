@@ -396,6 +396,54 @@ Order: E1 ∥ E2 → E3 → E4 → E5 → E6 → E7. E2's per-request decision i
 per-pod ledger (S5). If S5 has not landed, E2 calls `PodPolicy::decide_effect` directly,
 the one decider either way, and S5 adds the id.
 
+**E3, proxy side: landed 2026-11-19** (branch `adr/vm-links`, ahead of ADR 0017's links,
+which need it; owner decision of that date).
+
+- **Proved:**
+  - `crates/portcullis-core/lean/TlsTermination.lean` (core Lean, axioms `propext` and
+    `Quot.sound` only) proves the CA key never leaves its pod's proxy, leaves are issued only
+    for permitted names and never past the CA's deadline, a handshake is decided only with a
+    live CA, a permitted name, a client that accepted the leaf and SNI = `Host`, and an
+    untrusting client is refused, never tunnelled.
+  - The handshake decision the proxy runs, `nucleus_ifc_kernel::extracted::tls::tls_verdict`
+    (with `may_issue_leaf`), is Aeneas-extracted and proved equal to that model's outcome
+    (`TlsTerminationExtracted.lean::tls_verdict_is_step`), bound in `proof-obligations.toml`.
+- **Tested** (`crates/nucleus-egress-proxy/src/serve_tls_tests.rs`, in-process, any OS; a real
+  rustls client), each case checking the journalled verdict:
+  - a permitted name reaches the node's decision as `https://name:443/…`;
+  - a name outside the CA's constraints is refused and no leaf is minted;
+  - a client trusting another CA is refused as `client_rejected_interception`, with its name;
+  - SNI ≠ `Host`, and a `CONNECT` authority ≠ SNI, are `fronting`;
+  - an expired CA terminates nothing;
+  - an h2-only client gets no h2 (the handshake fails);
+  - a `CONNECT` that does not speak TLS is `not_tls`;
+  - without a CA, `CONNECT` is refused as in E2;
+  - the upstream client verifies roots and name.
+- **Driven red:** dropping the `Host` comparison failed the fronting test; a leaf minter
+  that ignored the permitted names failed the out-of-constraints test.
+- **Choices made here:**
+  - the permitted names and the deadline are read from the CA certificate itself
+    (`nameConstraints` permitted DNS subtrees, `notAfter`), never passed beside it;
+  - leaves are minted only for an exact permitted name, while the X.509 constraint, which also
+    admits subdomains, stays the client's ceiling;
+  - one request per terminated tunnel, as in E2;
+  - the key arrives on `--tls-ca-fd N`, a pipe the proxy reads once through
+    `/proc/self/fd/N` before Landlock. The crate forbids `unsafe`, so it cannot adopt a raw
+    descriptor. The key is never in argv, the environment or a file.
+- **Left for E3:**
+  - the node minting the per-pod CA at admission (P-256, name constraints from the pod's
+    registry hosts and ADR 0017 link names, `notAfter` ≤ the pod's timeout) and writing the
+    bundle to the proxy's pipe;
+  - the `trust_boundary` row `EgressCaKeyNeverServed`;
+  - credential injection;
+  - the guest installing the CA certificate (`EgressProxyTrust`, E4);
+  - an outbound path (the production resolver is still `NoOutboundPath`);
+  - the node's registry accepting `https://` origins (today it refuses them, so a terminated
+    request is denied `not_registered` at the node, which fails closed).
+- **Not verified here:** the Linux-only start path (`--tls-ca-fd` read and Landlock) was not
+  compiled for Linux on this Mac. The cross build needs a C toolchain for `ring`.
+  `read_pod_ca` itself compiles on every platform.
+
 ## Consequences
 
 - No pod changes behaviour when this record is accepted. Before E4, everything is

@@ -105,6 +105,24 @@ pub enum Refusal {
     TooManyConnections,
     /// The guest took too long to send its request head.
     HeadTimeout,
+
+    // ── TLS termination (E3, tls.rs; the verdict is the kernel's) ──────────
+    /// Inside a terminated tunnel, a target that is not origin-form.
+    NotOriginForm,
+    /// After `CONNECT`, the client's first bytes are not a TLS ClientHello:
+    /// no raw tunnels (ADR 0015 §4).
+    NotTls,
+    /// `TlsVerdict::RefusedExpired`: no live CA for the pod.
+    TlsExpired,
+    /// `TlsVerdict::RefusedNameNotPermitted`: the TLS name is outside the
+    /// CA's constraints; no leaf is minted.
+    TlsNameNotPermitted,
+    /// `TlsVerdict::RefusedClientRejected`: the client did not accept the
+    /// leaf (pinned, or trusting another CA). Recorded, never tunnelled.
+    ClientRejectedInterception,
+    /// `TlsVerdict::RefusedFronting`: the TLS name, the `CONNECT` authority
+    /// and the `Host` header do not all agree.
+    Fronting,
 }
 
 impl Refusal {
@@ -119,6 +137,9 @@ impl Refusal {
             | Refusal::AmbiguousPath
             | Refusal::BadContentLength
             | Refusal::BadHeaderValue
+            | Refusal::NotOriginForm
+            | Refusal::NotTls
+            | Refusal::Fronting
             | Refusal::Incomplete => (400, "Bad Request"),
             Refusal::RequestLineTooLong => (414, "URI Too Long"),
             Refusal::HeadersTooLarge | Refusal::TooManyHeaders | Refusal::SummaryTooLong => {
@@ -143,6 +164,9 @@ impl Refusal {
             | Refusal::PrivateAddress
             | Refusal::UpstreamUnreachable => (502, "Bad Gateway"),
             Refusal::HeadTimeout => (408, "Request Timeout"),
+            Refusal::TlsExpired
+            | Refusal::TlsNameNotPermitted
+            | Refusal::ClientRejectedInterception => (403, "Forbidden"),
         }
     }
 
@@ -191,6 +215,12 @@ impl Refusal {
             Refusal::UpstreamUnreachable => "upstream_unreachable",
             Refusal::TooManyConnections => "too_many_connections",
             Refusal::HeadTimeout => "head_timeout",
+            Refusal::NotOriginForm => "not_origin_form",
+            Refusal::NotTls => "not_tls",
+            Refusal::TlsExpired => "tls_expired",
+            Refusal::TlsNameNotPermitted => "tls_name_not_permitted",
+            Refusal::ClientRejectedInterception => "client_rejected_interception",
+            Refusal::Fronting => "fronting",
         }
     }
 
