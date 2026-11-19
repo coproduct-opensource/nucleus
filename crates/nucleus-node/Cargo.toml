@@ -63,6 +63,11 @@ rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 webpki-roots = "1.0"
 base64 = { workspace = true }
+# The per-pod egress CA (ADR 0015 E3, `pod_ca.rs`): minted at admission, its key
+# wiped once handed to the pod's proxy.
+rcgen = { version = "0.14", features = ["x509-parser"] }
+time = { version = "0.3", default-features = false }
+zeroize = "1"
 # `alloc` is required (alongside `pkcs8`) for the EncodePrivateKey/DecodePrivateKey
 # (`to_pkcs8_der`/`from_pkcs8_der`) impls — dalek 3 split alloc out of `pkcs8`.
 # Version comes from the workspace pin (=3.0.0); only the extra features

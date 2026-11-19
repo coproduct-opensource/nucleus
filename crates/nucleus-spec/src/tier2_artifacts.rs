@@ -372,6 +372,13 @@ pub enum GuestCapability {
     /// unreleased row): a guest without it relays nothing, so a link to or from
     /// its pod carries no bytes, which refuses nothing the host decided.
     PodLinkRelay,
+    /// guest-init fetches the pod egress CA CERTIFICATE (`FETCH_EGRESS_CA`, ADR
+    /// 0015 E3) and writes a trust bundle (the guest's roots plus that CA) the
+    /// tool-proxy hands the workload, so the pod's egress proxy can terminate
+    /// its TLS. [`Demand::Optional`] while unreleased: a guest without it trusts
+    /// no proxy leaf, so every TLS handshake through the proxy is refused
+    /// (`client_rejected_interception`), never tunnelled.
+    EgressProxyTrust,
 }
 
 /// A use of the guest) that depends on capabilities the node does not need for
@@ -427,7 +434,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 22] = [
+    pub const ALL: [GuestCapability; 23] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -450,6 +457,7 @@ impl GuestCapability {
         GuestCapability::HostDecideTelemetry,
         GuestCapability::HostApprovalRedeem,
         GuestCapability::PodLinkRelay,
+        GuestCapability::EgressProxyTrust,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -491,6 +499,7 @@ impl GuestCapability {
             GuestCapability::HostDecideTelemetry => Demand::Optional,
             GuestCapability::HostApprovalRedeem => Demand::Optional,
             GuestCapability::PodLinkRelay => Demand::Optional,
+            GuestCapability::EgressProxyTrust => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -560,6 +569,7 @@ impl GuestCapability {
             GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
             GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
             GuestCapability::PodLinkRelay => FirstShipped::NotYet,
+            GuestCapability::EgressProxyTrust => FirstShipped::NotYet,
         }
     }
 
@@ -689,6 +699,11 @@ impl GuestCapability {
                  port for the workload and a host-only vsock listener for inbound links; an older \
                  guest relays nothing, so its pod's links carry no bytes (the node does not \
                  require it)"
+            }
+            GuestCapability::EgressProxyTrust => {
+                "ADR 0015 E3 has guest-init install the pod egress CA certificate into a trust \
+                 bundle for the workload; an older guest trusts no proxy leaf, so its TLS through \
+                 the proxy is refused, never tunnelled (the node does not require it)"
             }
         }
     }
@@ -1112,6 +1127,7 @@ mod tests {
             GuestCapability::HostDecideTelemetry,
             GuestCapability::HostApprovalRedeem,
             GuestCapability::PodLinkRelay,
+            GuestCapability::EgressProxyTrust,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1290,7 +1306,8 @@ mod tests {
                 GuestCapability::SharedSecretTierRetired => GuestCapability::HostDecideTelemetry,
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
                 GuestCapability::HostApprovalRedeem => GuestCapability::PodLinkRelay,
-                GuestCapability::PodLinkRelay => GuestCapability::CaBundle,
+                GuestCapability::PodLinkRelay => GuestCapability::EgressProxyTrust,
+                GuestCapability::EgressProxyTrust => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

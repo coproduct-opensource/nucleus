@@ -7388,6 +7388,7 @@ dependencies = [
  "spiffe",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-rustls",
  "tokio-stream",
@@ -7402,6 +7403,7 @@ dependencies = [
  "webpki-roots 1.0.9",
  "wiremock",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]

@@ -525,7 +525,11 @@ fn footprint(letter: Letter) -> Footprint<Resource> {
                 Cmd::FetchTaskToken => fp.update(Resource::Served(OneShot::TaskToken)),
                 Cmd::FetchPodCertificate => fp.update(Resource::Served(OneShot::PodCertificate)),
                 Cmd::FetchDlcAdmission => fp.update(Resource::Served(OneShot::DlcAdmission)),
-                Cmd::FetchBundle | Cmd::Ping | Cmd::FetchPodSpec | Cmd::PodList => fp,
+                Cmd::FetchBundle
+                | Cmd::Ping
+                | Cmd::FetchPodSpec
+                | Cmd::FetchEgressCa
+                | Cmd::PodList => fp,
             }
         }
         Letter::Unknown => Footprint::pure(),

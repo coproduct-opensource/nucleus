@@ -16,6 +16,13 @@
 
   Holding a key is authority, so who holds each CA key is part of the state, and
   the theorems say no step moves it. Mathlib-free, like `LinkTable.lean`.
+
+  Note (2026-11-19, E3 node side): links are made after admission, so the node
+  mints the CA with the link namespace as one DNS subtree (`link.nucleus.invalid`)
+  and leaves "which link" to the link table. `permitted` here is exact names
+  (`permitted.contains`), which is also what the proxy grants, so a link name is
+  never permitted as modelled. Subtree semantics for that namespace is open
+  (ADR 0017 §10).
 -/
 
 namespace TlsTermination

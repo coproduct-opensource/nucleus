@@ -444,6 +444,37 @@ which need it; owner decision of that date).
   compiled for Linux on this Mac. The cross build needs a C toolchain for `ring`.
   `read_pod_ca` itself compiles on every platform.
 
+**E3, node and guest sides: landed 2026-11-19** (branch `adr/vm-links`).
+
+- **Node, `crates/nucleus-node/src/pod_ca.rs`:** at admission an eval cell on a node with a
+  proxy gets a CA (`egress_proxy::mint_for_pod`): P-256, `nameConstraints` exactly the
+  registry's `https://` hosts plus the link subtree `link.nucleus.invalid`, `notAfter` = admission
+  + the pod's `timeout_seconds`. A CA that cannot be minted refuses the eval cell.
+- **The key's one hop** is the proxy's decision channel, not `--tls-ca-fd`: the confinement hook
+  (`nucleus::hardening`, `harden_child`) marks every descriptor from 3 up close-on-exec, so no
+  inherited descriptor above stderr survives a confined exec, and stdin and stdout are already
+  the guest listener and the decision channel. `EgressProxy::start` passes `--tls-ca-channel` and
+  writes the `nucleus-pod-ca/1` bundle as the first bytes on its end of the socket pair, before
+  any decision. `MintedCa` keeps the key in a `Zeroizing` buffer, is not `Clone`, and
+  `hand_over` takes it by value, so the node's copy is wiped when the write returns.
+- **The proxy's half is not built:** it reads `--tls-ca-fd` and refuses an unknown argument, so
+  until it reads the bundle from its decision channel under `--tls-ca-channel`, an eval cell on
+  a node with `--egress-proxy-bin` fails to start. That is a refusal by name, not a weaker proxy.
+- **Registry:** `https://` origins are routed; an https origin that is an address literal is
+  refused at load (a CA constrains names). The constraints are the node-wide registry's https
+  hosts: the registry is not per pod today.
+- **Guest:** `FETCH_EGRESS_CA` (workload API, personalising, not once-only) serves the
+  certificate only. guest-init (`egress_trust.rs`) checks it is one PEM certificate with no key,
+  appends it to the guest's roots in `/run/nucleus/egress-trust.pem`, and exports the path to the
+  tool-proxy as `NUCLEUS_EGRESS_TRUST_BUNDLE`; pointing the workload at it is the tool-proxy's.
+  `GuestCapability::EgressProxyTrust`, `NotYet`, Optional.
+- **Tested on macOS:** constraints read back from the certificate equal the https hosts plus the
+  link subtree; `notAfter` is the pod deadline; the bundle the node writes is the one
+  `PodCa::from_bundle` parses; no guest-facing or logged rendering contains the key; the guest
+  fetch has one field. Driven red: a CA valid an hour past the pod; constraints that drop the
+  registry hosts. **Not compiled for Linux** (`mint_for_pod`, the handover in `start`, the
+  `main.rs` wiring): the cross check fails on `ring`'s and `aws-lc-sys`'s C build.
+
 ## Consequences
 
 - No pod changes behaviour when this record is accepted. Before E4, everything is

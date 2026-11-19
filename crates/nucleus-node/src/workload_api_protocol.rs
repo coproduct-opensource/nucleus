@@ -221,6 +221,12 @@ pub enum WorkloadApiCommand {
     /// one job, and snapshotting after that point publishes a base nobody else
     /// can use. The barrier exists to take the base BEFORE this.
     FetchPodSpec,
+    /// `FETCH_EGRESS_CA` — the CERTIFICATE of this pod's egress CA (ADR 0015 E3),
+    /// which guest-init installs into the guest's trust store so the pod's proxy can
+    /// terminate its TLS. Never the key: the key is handed only to the pod's proxy,
+    /// over the proxy's decision channel (`pod_ca`). Per-pod, so it personalises the
+    /// VM; public, so it is not once-only.
+    FetchEgressCa,
     /// `SHIP_RECEIPT` — stream one signed `MediationReceipt` to the host for
     /// durable, completeness-bounded collection (see [`crate::mediation_receipt_collector`]).
     ///
@@ -291,7 +297,10 @@ impl WorkloadApiCommand {
             | Self::FetchMediationKey
             // The command this pod runs. See the variant's own note: this is
             // what makes a base per-job instead of per-toolchain.
-            | Self::FetchPodSpec => true,
+            | Self::FetchPodSpec
+            // This pod's CA certificate: public, but it names THIS pod's CA, and a
+            // clone trusting it would trust another pod's interception.
+            | Self::FetchEgressCa => true,
             // Not per-pod: the trust bundle is the same for everyone, a ping says nothing, a
             // pod listing is a read-only view of the node, and shipping a receipt moves data
             // guest -> host rather than the reverse.
@@ -331,6 +340,7 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::PodList => "POD_LIST",
             WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
+            WorkloadApiCommand::FetchEgressCa => "FETCH_EGRESS_CA",
             WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
             WorkloadApiCommand::ShipSpend => "SHIP_SPEND",
             WorkloadApiCommand::ShipClearing => "SHIP_CLEARING",
@@ -405,6 +415,7 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "FETCH_MEDIATION_KEY" => Ok(WorkloadApiCommand::FetchMediationKey),
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
         "FETCH_POD_SPEC" => Ok(WorkloadApiCommand::FetchPodSpec),
+        "FETCH_EGRESS_CA" => Ok(WorkloadApiCommand::FetchEgressCa),
         "SHIP_RECEIPT" => Ok(WorkloadApiCommand::ShipReceipt),
         "SHIP_SPEND" => Ok(WorkloadApiCommand::ShipSpend),
         "SHIP_CLEARING" => Ok(WorkloadApiCommand::ShipClearing),
@@ -591,6 +602,7 @@ mod tests {
                 WorkloadApiCommand::FetchMediationKey => "FETCH_MEDIATION_KEY",
                 WorkloadApiCommand::PodList => "POD_LIST",
                 WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
+                WorkloadApiCommand::FetchEgressCa => "FETCH_EGRESS_CA",
                 WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
                 WorkloadApiCommand::ShipSpend => "SHIP_SPEND",
                 WorkloadApiCommand::ShipClearing => "SHIP_CLEARING",
@@ -638,6 +650,7 @@ mod tests {
             WorkloadApiCommand::FetchAuditCredentials,
             WorkloadApiCommand::FetchMediationKey,
             WorkloadApiCommand::FetchPodSpec,
+            WorkloadApiCommand::FetchEgressCa,
             WorkloadApiCommand::PodList,
             WorkloadApiCommand::ShipReceipt,
             WorkloadApiCommand::ShipSpend,
@@ -658,6 +671,7 @@ mod tests {
             "FETCH_AUDIT_CREDENTIALS",
             "FETCH_MEDIATION_KEY",
             "FETCH_POD_SPEC",
+            "FETCH_EGRESS_CA",
             "POD_LIST",
             "SHIP_RECEIPT",
             "SHIP_SPEND",
@@ -683,7 +697,7 @@ mod tests {
         // the natural way to add a command — leaves this number alone, so it
         // reds and the two lists above get read. Raise it in the same change
         // that adds a command, never separately.
-        const DECLARED_COMMANDS: usize = 16;
+        const DECLARED_COMMANDS: usize = 17;
         assert_eq!(
             surface.len(),
             DECLARED_COMMANDS,
@@ -716,6 +730,7 @@ mod tests {
             FetchBrokerSecret,
             FetchAuditCredentials,
             FetchMediationKey,
+            FetchEgressCa,
         ] {
             assert!(
                 cmd.personalizes_the_vm(),

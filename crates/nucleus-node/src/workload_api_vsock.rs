@@ -89,6 +89,7 @@ pub(crate) enum Material {
     MediationKey,
     AuditCredentials,
     PodSpec,
+    EgressCa,
     DlcAdmission,
     PodCertificate,
     TaskToken,
@@ -259,6 +260,7 @@ impl std::fmt::Display for Refusal {
                 Material::MediationKey => "no mediation key provisioned for this pod",
                 Material::AuditCredentials => "no audit credentials provisioned for this pod",
                 Material::PodSpec => "no pod spec provisioned for this pod",
+                Material::EgressCa => "no egress CA was minted for this pod",
                 Material::DlcAdmission => "no dlc admission provisioned for this pod",
                 Material::PodCertificate => "no certificate was issued for this pod",
                 Material::TaskToken => "no task token was minted for this pod",
@@ -419,6 +421,11 @@ pub struct PodMaterial {
     /// image carries — which is the behaviour every pod has today, so a node
     /// that never sets this is unchanged.
     pub pod_spec_yaml: Option<String>,
+    /// This pod's egress CA CERTIFICATE, PEM (ADR 0015 E3, `pod_ca`): what
+    /// guest-init installs into the guest's trust store. `None` for a pod with
+    /// no egress proxy. The CA key is never here: it goes only to the pod's
+    /// proxy, over the proxy's decision channel.
+    pub egress_ca_pem: Option<String>,
     /// Whether the guest has announced it is at its snapshot barrier — booted, and having asked
     /// for nothing that would make it one pod.
     ///
@@ -797,6 +804,16 @@ fn handle_fetch_pod_spec(spec: Option<&str>) -> Reply {
     }
 }
 
+/// Handle `FETCH_EGRESS_CA`: this pod's egress CA certificate, PEM. The reply
+/// carries one field, the certificate; there is no key in [`PodMaterial`] to
+/// leak.
+fn handle_fetch_egress_ca(pem: Option<&str>) -> Reply {
+    match pem {
+        Some(pem) => Ok(serde_json::json!({ "certificate": pem }).to_string()),
+        None => Err(Refusal::NotProvisioned(Material::EgressCa)),
+    }
+}
+
 /// Handle `SHIP_RECEIPT`: read the receipt body frame (its own larger bound) and
 /// durably collect it under this pod's node-side dir.
 ///
@@ -1162,6 +1179,11 @@ where
             debug!("workload API FETCH_POD_SPEC for pod {}", pod_id);
             handle_fetch_pod_spec(material.pod_spec_yaml.as_deref())
         }
+        Ok(WorkloadApiCommand::FetchEgressCa) => {
+            // Public and per-pod, like the pod certificate: not once-only.
+            debug!("workload API FETCH_EGRESS_CA for pod {}", pod_id);
+            handle_fetch_egress_ca(material.egress_ca_pem.as_deref())
+        }
         Ok(WorkloadApiCommand::SnapshotReady) => {
             debug!("workload API SNAPSHOT_READY for pod {}", pod_id);
             // Recorded, not acted on. Taking the snapshot here would make every boot wait on
@@ -1372,6 +1394,42 @@ mod receipt_ack_tests {
             .await
             .unwrap();
         assert!(receipt_collected(kept, &log, "{\"r\":3}").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod egress_ca_serving_tests {
+    use super::*;
+
+    /// The guest is served the pod CA's certificate and nothing else; a pod
+    /// with no egress CA gets a refusal, never an empty certificate.
+    #[test]
+    fn the_guest_fetch_returns_the_certificate_only() {
+        let ca = crate::pod_ca::MintedCa::mint(uuid::Uuid::from_u128(9), &[], 1_800_000_000, 300)
+            .unwrap();
+        let pem = ca.certificate_pem();
+        let material = PodMaterial {
+            egress_ca_pem: Some(pem.clone()),
+            ..PodMaterial::default()
+        };
+        let v: serde_json::Value = serde_json::from_str(&wire(&handle_fetch_egress_ca(
+            material.egress_ca_pem.as_deref(),
+        )))
+        .unwrap();
+        let fields: Vec<&String> = v.as_object().unwrap().keys().collect();
+        assert_eq!(fields, vec!["certificate"], "one field: the certificate");
+        assert_eq!(v["certificate"], pem.as_str());
+        assert!(!pem.contains("PRIVATE KEY"));
+
+        let none: serde_json::Value =
+            serde_json::from_str(&wire(&handle_fetch_egress_ca(None))).unwrap();
+        assert!(none.get("certificate").is_none());
+        assert!(none["error"].is_string());
+        use crate::workload_api_protocol::{WorkloadApiCommand, parse_command};
+        assert_eq!(
+            parse_command(b"FETCH_EGRESS_CA\n").unwrap(),
+            WorkloadApiCommand::FetchEgressCa
+        );
     }
 }
 

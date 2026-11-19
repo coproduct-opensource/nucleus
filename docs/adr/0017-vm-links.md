@@ -435,6 +435,22 @@ different upstream (`crates/nucleus-egress-proxy/src/link.rs`).
    destination's `vsock.sock` after Landlock (ABI V2 handles no connect right) from inside its
    namespaces as its unprivileged uid; jail ownership of that socket may need a group grant.
 
+**Found by E3's node side (2026-11-19): two contracts above cannot hold as written.**
+
+- **No inherited descriptor above stderr survives a confined exec.** The confinement hook marks
+  every descriptor from 3 up close-on-exec (`nucleus::hardening`, `harden_child`). So
+  `--link-control-fd N` cannot work any more than `--tls-ca-fd N` could. E3's CA now rides the
+  decision channel (`--tls-ca-channel`, ADR 0015 §14); link control lines need the same kind of
+  carrier (the decision channel, or a second socket the proxy connects to), not a pipe at fd N.
+- **The CA cannot list future link names, and the proxy grants exact names only.** A link is made
+  after admission, so the pod CA permits the link namespace as one DNS subtree,
+  `link.nucleus.invalid`, and the table decides which link. But `TlsTermination.lean` models
+  `permitted` as exact names (`permitted.contains`), and the proxy mints a leaf only for a name
+  that is exactly a permitted entry (`PodCa::name_permitted`). So no leaf is ever minted for
+  `<dst-uuid>.link.nucleus.invalid`, and TLS over a link is refused `NameNotPermitted`. Plain
+  HTTP links are unaffected. Fixing it means the model, the extracted verdict and the proxy
+  agreeing on subtree semantics for the link namespace, with the per-link check left to the table.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.

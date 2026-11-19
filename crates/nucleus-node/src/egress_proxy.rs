@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use nucleus_decision_protocol::host::{DecisionLedger, SeqGate};
 use nucleus_decision_protocol::{DenyReason, GuestFrame, HostFrame, Seq, Verdict};
-use nucleus_egress_proxy::request::{Method, Origin, parse_authority};
+use nucleus_egress_proxy::request::{Host, Method, Origin, Scheme, parse_authority_in};
 use nucleus_egress_proxy::summary::{self, Summary};
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -178,14 +178,26 @@ impl EgressRoutes {
             if name.trim().is_empty() || !names.insert(name.clone()) {
                 return Err(format!("egress entry {name:?}: empty or repeated name"));
             }
-            let authority = origin.strip_prefix("http://").ok_or_else(|| {
-                format!(
-                    "egress {name:?}: origin {origin:?} must be http://host[:port] \
-                     (https needs the proxy's TLS termination, ADR 0015 E3)"
-                )
-            })?;
-            let origin = parse_authority(authority)
+            let (scheme, authority) = if let Some(a) = origin.strip_prefix("http://") {
+                (Scheme::Http, a)
+            } else if let Some(a) = origin.strip_prefix("https://") {
+                (Scheme::Https, a)
+            } else {
+                return Err(format!(
+                    "egress {name:?}: origin {origin:?} must be http:// or https://host[:port]"
+                ));
+            };
+            let origin = parse_authority_in(scheme, authority)
                 .map_err(|e| format!("egress {name:?}: origin {origin:?}: {e}"))?;
+            // An https origin is terminated with a leaf the pod CA mints for
+            // its NAME, and the CA's constraints are DNS subtrees: an address
+            // literal has no name to constrain, so the proxy could never
+            // vouch for it (ADR 0015 §4).
+            if origin.scheme == Scheme::Https && !matches!(origin.host, Host::Name(_)) {
+                return Err(format!(
+                    "egress {name:?}: https origin {origin} must name a host, not an address"
+                ));
+            }
             if methods.is_empty() || paths.is_empty() {
                 return Err(format!(
                     "egress {name:?}: methods and paths must each name at least one"
@@ -232,6 +244,20 @@ impl EgressRoutes {
     /// How many routes there are.
     pub(crate) fn len(&self) -> usize {
         self.by_origin.len()
+    }
+
+    /// The host names of the `https://` routes: what a pod CA's name
+    /// constraints permit besides the link namespace (`pod_ca`). Read from the
+    /// routes themselves, so the CA and the ACL cannot disagree (G-1).
+    pub(crate) fn https_hosts(&self) -> Vec<String> {
+        self.by_origin
+            .keys()
+            .filter(|o| o.scheme == Scheme::Https)
+            .filter_map(|o| match &o.host {
+                Host::Name(n) => Some(n.clone()),
+                Host::Ipv4(_) | Host::Ipv6(_) => None,
+            })
+            .collect()
     }
 
     /// The route that admits `summary`, or why none does.
@@ -512,6 +538,9 @@ pub(crate) struct Launch<'a> {
     /// Who the proxy runs as. Never 0.
     pub run_as: (u32, u32),
     pub decider: EgressDecider,
+    /// The pod's egress CA, handed to the proxy by value and wiped on the
+    /// node once written (`pod_ca`). `None`: the proxy terminates no TLS.
+    pub ca: Option<crate::pod_ca::MintedCa>,
 }
 
 /// A running proxy, owned by its pod.
@@ -540,6 +569,7 @@ impl EgressProxy {
             jail_owner,
             run_as: (uid, gid),
             decider,
+            ca,
         } = launch;
         let (listener, socket_path) = crate::guest_socket::bind_guest_listener(
             vsock_path,
@@ -558,6 +588,12 @@ impl EgressProxy {
         let mut cmd = std::process::Command::new(binary);
         for net in crate::net::NODE_DENY_FLOOR {
             cmd.arg("--deny-floor").arg(net.to_string());
+        }
+        // The CA bundle arrives on the decision channel before the first
+        // `Decide`, not at an inherited descriptor: the confinement hook marks
+        // every descriptor from 3 up close-on-exec (`pod_ca`, module docs).
+        if ca.is_some() {
+            cmd.arg("--tls-ca-channel");
         }
         cmd.env_clear()
             .current_dir("/")
@@ -596,13 +632,22 @@ impl EgressProxy {
             let _ = child.wait().await;
             return Err(format!("egress proxy not confined: {e}"));
         }
-        let node_end = tokio::net::UnixStream::from_std({
+        let mut node_end = tokio::net::UnixStream::from_std({
             node_end
                 .set_nonblocking(true)
                 .map_err(|e| format!("egress proxy decision channel: {e}"))?;
             node_end
         })
         .map_err(|e| format!("egress proxy decision channel: {e}"))?;
+        // The key's one hop: node to this pod's proxy, by value, wiped here
+        // whatever the outcome (`MintedCa::hand_over`).
+        if let Some(ca) = ca {
+            if let Err(e) = ca.hand_over(&mut node_end).await {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(format!("egress proxy CA handover: {e}"));
+            }
+        }
         let decisions = tokio::spawn(async move {
             if let Err(e) = serve_decisions(node_end, decider).await {
                 tracing::warn!(error = %e, "egress proxy decision channel closed by the node");
@@ -657,6 +702,7 @@ pub(crate) async fn start_for_pod(
     vsock_path: &Path,
     pod_dir: &Path,
     jail_owner: Option<(u32, u32)>,
+    ca: Option<crate::pod_ca::MintedCa>,
 ) -> Result<Option<EgressProxy>, crate::ApiError> {
     use nucleus_spec::isolation_profile::IsolationProfile;
     let profile = IsolationProfile::of(spec)
@@ -687,11 +733,41 @@ pub(crate) async fn start_for_pod(
         jail_owner,
         run_as: (uid, gid),
         decider,
+        ca,
     })
     .await
     .map_err(refuse)?;
     tracing::info!(pod = %pod, socket = %proxy.socket_path.display(), "egress proxy confined and listening");
     Ok(Some(proxy))
+}
+
+/// Mint the pod's egress CA at admission (ADR 0015 E3), for exactly the pods
+/// [`start_for_pod`] starts a proxy for: an eval cell on a node with one.
+/// Its permitted names are the registry's https hosts plus the link namespace;
+/// its deadline is the pod's timeout from now (`pod_ca`).
+///
+/// # Errors
+/// A CA that cannot be minted refuses the eval cell: it would otherwise run
+/// with a proxy that terminates nothing while its guest was told to trust it.
+#[cfg(target_os = "linux")]
+pub(crate) fn mint_for_pod(
+    state: &crate::NodeState,
+    spec: &nucleus_spec::PodSpec,
+    pod: Uuid,
+) -> Result<Option<crate::pod_ca::MintedCa>, crate::ApiError> {
+    use nucleus_spec::isolation_profile::IsolationProfile;
+    let profile = IsolationProfile::of(spec)
+        .map_err(|e| crate::ApiError::Driver(format!("egress CA: {e}")))?;
+    match (profile, &state.egress_proxy) {
+        (IsolationProfile::Standard, _)
+        | (IsolationProfile::EvalCell, ProxyConfig::NotConfigured) => Ok(None),
+        (IsolationProfile::EvalCell, ProxyConfig::Binary { .. }) => {
+            let hosts = state.authority.egress_routes().https_hosts();
+            crate::pod_ca::MintedCa::mint(pod, &hosts, now_unix(), spec.spec.timeout_seconds)
+                .map(Some)
+                .map_err(|e| crate::ApiError::Driver(format!("eval cell refused: egress CA: {e}")))
+        }
+    }
 }
 
 /// The proxy's confinement, read from the kernel: its status through the

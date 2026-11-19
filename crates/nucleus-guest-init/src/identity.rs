@@ -618,6 +618,45 @@ fn parse_pod_certificate(response: &str) -> Result<Option<PodCertificateResponse
     )))
 }
 
+/// Fetch this pod's egress CA certificate (ADR 0015 E3), PEM. A pod with no
+/// egress CA gets an `{"error": ...}` reply: `Ok(None)`.
+pub fn fetch_egress_ca(port: u32) -> Result<Option<String>, FetchError> {
+    let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
+        .map_err(|e| format!("failed to connect to workload API: {e}"))?;
+    stream
+        .write_all(b"FETCH_EGRESS_CA\n")
+        .map_err(|e| format!("failed to send FETCH_EGRESS_CA: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("failed to flush: {e}"))?;
+    let mut reader = BufReader::new(&mut stream);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|e| format!("failed to read egress CA response: {e}"))?;
+    parse_egress_ca(&response)
+}
+
+/// Parse the `FETCH_EGRESS_CA` reply: `{"certificate": PEM}` or an error.
+fn parse_egress_ca(response: &str) -> Result<Option<String>, FetchError> {
+    let v: serde_json::Value = serde_json::from_str(response).map_err(|e| {
+        format!(
+            "failed to parse egress CA response ({e}): {}",
+            response.trim()
+        )
+    })?;
+    if let Some(pem) = v.get("certificate").and_then(|c| c.as_str()) {
+        return Ok(Some(pem.to_string()));
+    }
+    if v.get("error").and_then(|e| e.as_str()).is_some() {
+        return Ok(None);
+    }
+    Err(FetchError::Failed(format!(
+        "egress CA response had neither a certificate nor an error: {}",
+        response.trim()
+    )))
+}
+
 /// Fetches the workload certificate from the host via vsock.
 ///
 /// This connects to the host's Workload API server, fetches the X.509 SVID,
@@ -972,5 +1011,21 @@ mod identity_location_tests {
             "{} must stay hardened",
             mount.target
         );
+    }
+}
+
+#[cfg(test)]
+mod egress_ca_tests {
+    use super::*;
+
+    #[test]
+    fn the_certificate_reply_is_the_pem_and_an_error_is_none() {
+        let pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        let reply = serde_json::json!({ "certificate": pem }).to_string();
+        assert_eq!(parse_egress_ca(&reply).unwrap().as_deref(), Some(pem));
+        // The node's NotProvisioned text, verbatim.
+        let none = r#"{"error":"no egress CA was minted for this pod"}"#;
+        assert_eq!(parse_egress_ca(none).unwrap(), None);
+        assert!(matches!(parse_egress_ca("{}"), Err(FetchError::Failed(_))));
     }
 }

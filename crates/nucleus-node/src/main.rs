@@ -57,6 +57,7 @@ mod node_evidence;
 mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
+mod pod_ca;
 mod pod_caller_identity;
 mod pod_identity_files;
 mod pod_launch;
@@ -2418,6 +2419,10 @@ async fn spawn_firecracker_pod(
                 let command = launch.command_mut();
                 firecracker_config::apply_seccomp_flags(command, spec, jail_layout.is_some())?;
                 let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
+                // ADR 0015 E3: the eval cell's egress CA, minted at admission. Its
+                // certificate goes to the guest; its key only to the proxy (`pod_ca`).
+                let egress_ca = egress_proxy::mint_for_pod(state, spec, id)?;
+                let egress_ca_pem = egress_ca.as_ref().map(pod_ca::MintedCa::certificate_pem);
                 let prepared_pod = async {
                     let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
                         measured,
@@ -2438,6 +2443,7 @@ async fn spawn_firecracker_pod(
                         // resolved sink, never the node's own (#3160).
                         audit_creds: audit
                             .map(audit_sink::credentials::AuditGrant::served_credentials),
+                        egress_ca_pem,
                     })
                     .await?;
                     identity
@@ -2467,6 +2473,7 @@ async fn spawn_firecracker_pod(
                     jail_layout
                         .as_ref()
                         .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                    egress_ca,
                 )
                 .await?;
                 command.stdout(log_stdout).stderr(log_stderr);

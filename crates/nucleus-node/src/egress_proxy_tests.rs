@@ -268,9 +268,18 @@ fn the_registry_refuses_what_it_cannot_mean() {
         "call_charge_micro_usd = 0",
     );
     assert!(UpstreamRegistry::from_toml_str(&ok).is_ok());
+    // ADR 0015 E3: an https origin is routed, and names the pod CA's constraint.
+    let tls = entry(
+        "https://a.example",
+        "[\"GET\"]",
+        "[\"/x\"]",
+        "call_charge_micro_usd = 0",
+    );
+    assert!(UpstreamRegistry::from_toml_str(&tls).is_ok());
     for bad in [
+        // An https address literal has no name a CA can be constrained to.
         entry(
-            "https://a.example",
+            "https://10.0.0.1",
             "[\"GET\"]",
             "[\"/x\"]",
             "call_charge_micro_usd = 0",
@@ -409,4 +418,30 @@ async fn the_real_proxy_runs_confined_with_no_route_out() {
     let log = std::fs::read_to_string(dir.path().join(PROXY_LOG)).unwrap();
     assert!(log.contains("egress proxy confined and serving"), "{log}");
     proxy.shutdown().await;
+}
+
+/// The names a pod CA is constrained to are exactly the registry's https hosts:
+/// an http route, however named, is not one (ADR 0015 E3, `pod_ca`).
+#[test]
+fn https_hosts_are_the_https_routes_only() {
+    let toml = r#"
+[[egress]]
+name    = "plain"
+origin  = "http://plain.example"
+methods = ["GET"]
+paths   = ["/x"]
+call_charge_micro_usd = 0
+
+[[egress]]
+name    = "tls"
+origin  = "https://Api.Example"
+methods = ["GET"]
+paths   = ["/x"]
+call_charge_micro_usd = 0
+"#;
+    let registry = UpstreamRegistry::from_toml_str(toml).unwrap();
+    assert_eq!(
+        registry.egress().https_hosts(),
+        vec!["api.example".to_string()]
+    );
 }
