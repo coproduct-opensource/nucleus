@@ -63,6 +63,10 @@ structure Node where
   secret : PodId → Nat
   /-- What each pod has received over relayed connections. -/
   inbox : PodId → List Nat
+  /-- The host's decision on one request over a link (ADR 0014: the host
+      decides; ADR 0015: every request is a decision). Abstract here: the
+      theorems hold for ANY decision function. -/
+  decide : Link → Nat → Bool
 
 def tenantOf : List (PodId × Tenant) → PodId → Option Tenant
   | [], _ => none
@@ -85,6 +89,8 @@ inductive Effect where
   /-- An unlink, naming the connections it severed. -/
   | unlink (l : Link) (severed : List Nat)
   | connect (c : Conn)
+  /-- One request over a connection, with the host's decision. -/
+  | request (c : Conn) (v : Nat)
   | cancel (p : PodId)
   /-- A link dropped because a pod exited on its own. -/
   | drop (l : Link)
@@ -103,6 +109,10 @@ inductive Op where
   | unlink (caller : Scope) (l : Link)
   /-- A guest dials the relay along `l`; the host admits or refuses. -/
   | connect (id : Nat) (l : Link)
+  /-- A workload sends request `v` over connection `c`; the host decides it
+      before the relay delivers a byte (owner decision 2026-11-19: links are
+      per-request, so eval cells keep ADR 0015's promise). -/
+  | request (c : Conn) (v : Nat)
   | cancel (caller : Scope) (p : PodId)
   /-- Environment: the pod exited without being asked to. -/
   | exit (p : PodId)
@@ -128,6 +138,11 @@ def step (n : Node) : Op → Node × List Receipt
     if n.links.contains l then
       ({ n with conns := ⟨i, l⟩ :: n.conns }, [⟨.connect ⟨i, l⟩, true⟩])
     else (n, [⟨.connect ⟨i, l⟩, false⟩])
+  | .request c v =>
+    if n.conns.contains c && n.decide c.link v then
+      ({ n with inbox := fun q => if q = c.link.dst then n.inbox q ++ [v] else n.inbox q },
+       [⟨.request c v, true⟩])
+    else (n, [⟨.request c v, false⟩])
   | .cancel s p =>
     if manages s n p && !n.links.any (names p) then
       ({ n with pods := removePod n.pods p }, [⟨.cancel p, true⟩])
@@ -217,6 +232,9 @@ theorem step_inv {n : Node} (op : Op) (h : Inv n) : Inv (step n op).1 := by
       · exact List.contains_iff_mem.mp hin
       · exact hc c hm
     · exact ⟨hc, hl⟩
+  | request c v =>
+    simp only [step]
+    split <;> exact ⟨hc, hl⟩
   | cancel s p =>
     simp only [step]
     split
@@ -335,6 +353,7 @@ theorem receipts_replay_links (n : Node) (op : Op) :
   | link s l => simp only [step]; split <;> simp [replay]
   | unlink s l => simp only [step]; split <;> simp [replay]
   | connect i l => simp only [step]; split <;> simp [replay]
+  | request c v => simp only [step]; split <;> simp [replay]
   | cancel s p => simp only [step]; split <;> simp [replay]
   | exit p =>
     simp only [step]
@@ -351,37 +370,47 @@ theorem receipts_replay_links (n : Node) (op : Op) :
 /-- What pod `q` can observe: its own holding and what it has received. -/
 def view (q : PodId) (n : Node) : Nat × List Nat := (n.secret q, n.inbox q)
 
-/-- Pod `p`'s workload sends `v` on every connection it holds open: the relay
-    delivers it to each connection's destination. -/
-def send (p : PodId) (v : Nat) (n : Node) : Node :=
-  { n with inbox := fun q =>
-      if n.conns.any (fun c => c.link.src == p && c.link.dst == q) then n.inbox q ++ [v]
-      else n.inbox q }
-
 /-- Output consistency: what `q` observes is determined by its view. -/
 theorem output_consistency (q : PodId) (n₁ n₂ : Node) (h : view q n₁ = view q n₂) :
     n₁.inbox q = n₂.inbox q := by
   simp only [view, Prod.mk.injEq] at h; exact h.2
 
+/-- Every byte a pod receives over a link is a request the host decided: if a
+    request step changes what `q` holds, the connection was live, `q` is its
+    destination, and the host's decision admitted that request. -/
+theorem request_is_a_decision (n : Node) (c : Conn) (v : Nat) (q : PodId)
+    (hchg : (step n (.request c v)).1.inbox q ≠ n.inbox q) :
+    c ∈ n.conns ∧ n.decide c.link v = true ∧ q = c.link.dst := by
+  simp only [step] at hchg
+  split at hchg
+  · rename_i hok
+    simp only [Bool.and_eq_true, List.contains_iff_mem] at hok
+    by_cases hq : q = c.link.dst
+    · exact ⟨hok.1, hok.2, hq⟩
+    · simp [hq] at hchg
+  · exact absurd rfl hchg
+
 /-- Local respect, with the link table as the policy: if no link runs from `p`
-    to `q`, nothing `p` sends changes what `q` observes. -/
-theorem noninterference_unlinked {n : Node} (h : Inv n) (p q : PodId) (v : Nat)
-    (hno : ∀ l ∈ n.links, ¬ (l.src = p ∧ l.dst = q)) :
-    view q (send p v n) = view q n := by
-  have hany : n.conns.any (fun c => c.link.src == p && c.link.dst == q) = false := by
-    rw [List.any_eq_false]
-    intro c hc hpq
-    simp only [Bool.and_eq_true, beq_iff_eq] at hpq
-    exact hno c.link (h.1 c hc) hpq
-  simp only [view, send]
-  rw [hany]
-  simp
+    to `q`, no request `p` sends changes what `q` observes, whatever the host
+    decides. -/
+theorem noninterference_unlinked {n : Node} (h : Inv n) (p q : PodId) (c : Conn) (v : Nat)
+    (hsrc : c.link.src = p) (hno : ∀ l ∈ n.links, ¬ (l.src = p ∧ l.dst = q)) :
+    view q (step n (.request c v)).1 = view q n := by
+  simp only [view, step]
+  split
+  · rename_i hok
+    simp only [Bool.and_eq_true, List.contains_iff_mem] at hok
+    have hq : q ≠ c.link.dst := fun hq => hno c.link (h.1 c hok.1) ⟨hsrc, hq.symm⟩
+    simp [hq]
+  · rfl
 
 /-! ## Worked cases, decided by the kernel -/
 
 def demo : Node :=
   { pods := [(1, 7), (2, 7), (3, 8)], links := [], conns := [],
-    secret := fun _ => 0, inbox := fun _ => [] }
+    secret := fun _ => 0, inbox := fun _ => [],
+    -- an example decision: requests under 1000 are admitted
+    decide := fun _ v => decide (v < 1000) }
 
 /-- Tenant 7 links its pods 1 → 2. -/
 example : (step demo (.link (.tenant 7) ⟨1, 2, 80⟩)).2.all (·.ok) = true := by decide
@@ -398,5 +427,10 @@ example : (step linked (.unlink (.tenant 7) ⟨1, 2, 80⟩)).1.conns.length = 0 
 /-- Cancelling a linked pod is refused; its exit drops the link instead. -/
 example : (step linked (.cancel (.tenant 7) 2)).2.all (·.ok) = false := by decide
 example : (step linked (.exit 2)).1.links.length = 0 := by decide
+/-- A request over the link is delivered only when the host admits it. -/
+example : ((step linked (.request ⟨5, ⟨1, 2, 80⟩⟩ 42)).1.inbox 2) = [42] := by decide
+example : ((step linked (.request ⟨5, ⟨1, 2, 80⟩⟩ 5000)).1.inbox 2) = [] := by decide
+/-- No connection, no delivery, whatever the decision. -/
+example : ((step demo (.request ⟨5, ⟨1, 2, 80⟩⟩ 42)).1.inbox 2) = [] := by decide
 
 end LinkTable

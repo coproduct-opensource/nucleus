@@ -1,4 +1,4 @@
-# ADR 0017 — Links between pods: a connection from one pod to another is a host decision, made per connection
+# ADR 0017 — Links between pods: every request from one pod to another is a host decision
 
 - Status: **proposed** (2026-11-19). Design only: this record moves no enforcement and adds
   no route. Nothing below runs until the owner accepts it, and the first implementation
@@ -13,6 +13,11 @@
   - **Exit:** an exit the node did not request (a crash, a timeout, the reaper) drops the
     pod's links and signs a receipt for each. A cancel through the API is refused while a
     link names the pod (§4). The runner-up was to leave links dangling.
+  - **Per request, eval cells included:** the host admits a connection only along a link,
+    and then decides every request over it before the relay delivers a byte, with the unit
+    ADR 0015 decides (one HTTP/1.1 request). So links are served to eval cells and ADR 0015's
+    promise holds for them unchanged (§1, §8). The runners-up were to keep eval cells
+    link-free, or to decide eval-cell links per connection and amend ADR 0015's promise.
 - Rests on:
   - [ADR 0001](0001-trust-domain-tenancy.md): a tenant is a trust domain, a non-owner is
     answered 404, and sharing across tenants is an explicit delegation;
@@ -87,8 +92,15 @@ What this keeps unchanged:
 
 - No netns, iptables or host-link rule is added, so the drift baseline does not move.
 - Pods without a NIC can be linked. A link needs only the vsock device.
-- The decision is per connection, at connect time. It is taken by the host, from host
-  state, and never by either guest (ADR 0014).
+- The decision is per request. At connect time the host admits the connection only along a
+  link in the table; after that the relay parses each HTTP/1.1 request, as ADR 0015's proxy
+  does, and asks the host's pod policy (`host_decide`, the entry the egress proxy calls)
+  before it delivers a byte. A refused request is answered by the relay and never reaches
+  the destination. The decision is taken by the host, from host state, and never by either
+  guest (ADR 0014).
+- What a link carries is therefore what ADR 0015 can decide: HTTP/1.1, with TLS terminated
+  at the relay when the source dials TLS. A raw byte stream or another protocol is not
+  linkable; it is refused by name rather than relayed undecided.
 
 **Runner-up: IP routing between namespaces.** Give each linked pod a routable link address,
 and add FORWARD and DNAT rules for each link in the host namespace. It is weaker for four
@@ -193,7 +205,10 @@ give "no row names an absent pod".
 - the table;
 - live connections, each carried by one link;
 - caller scopes;
-- the transitions `link`, `unlink`, `connect`, `cancel` and `exit`, each with its receipt.
+- the transitions `link`, `unlink`, `connect`, `request`, `cancel` and `exit`, each with its
+  receipt;
+- the host's per-request decision, as an arbitrary function: every theorem holds for any
+  decision the policy makes.
 
 | theorem | what it states |
 |---|---|
@@ -203,7 +218,9 @@ give "no row names an absent pod".
 | `cancel_refuses_linked` | a cancel through the API never removes a pod that a link names |
 | `exit_drops_links` | after an exit, no row names the exited pod |
 | `receipts_replay_links` | replaying the receipts onto the prior table gives the table afterwards |
-| `noninterference_unlinked` | a pod with no link from `p` is unaffected by `p` |
+| `request_is_a_decision` | a request changes what a pod holds only if its connection is live, the pod is the connection's destination, and the host's decision admitted that request |
+| `noninterference_unlinked` | a pod with no link from `p` is unaffected by any request `p` sends, whatever the host decides |
+| `step_inv` | every transition keeps the invariant: connections ride links, and links join live pods of one trust domain |
 
 **At implementation (L3),** `proof-obligations.toml` gains rows binding each piece of shipped
 code to its theorem, extracted with Aeneas as the egress matcher is. The pieces are:
@@ -232,10 +249,11 @@ constant.
   and the listener answers only the links the table holds.
 - The listener table in `docs/architecture/mediated-set.md` gains the row, which
   `documented_inventory_equals_the_enum` checks.
-- **Eval cells:** `PodLink` is `NotServed` for eval cells in v1. ADR 0015 promises that every
-  byte leaving an eval cell is a request the host decided. A link decides per connection,
-  not per request, so serving it to an eval cell would weaken that promise. That needs its
-  own owner decision.
+- **Eval cells:** `PodLink` is served to eval cells (owner decision, 2026-11-19). ADR 0015
+  promises that every byte leaving an eval cell is a request the host decided. A link keeps
+  that promise because the relay decides each request, the same unit and the same entry as
+  the egress proxy (`request_is_a_decision`). An eval cell's link therefore carries HTTP/1.1
+  only, as its egress does.
 
 ### 9. Guest compatibility, latency, measurement
 
@@ -259,11 +277,14 @@ constant.
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.
-- After L4, a linked pair can open connections to the linked port and nothing else. Every
-  connection is decided by the host at connect time. Every pair that is not linked keeps
-  today's five layers, untouched.
+- After L4, a linked pair can open connections to the linked port and nothing else, and every
+  request over one is decided by the host before it is delivered. Every pair that is not
+  linked keeps today's five layers, untouched.
 - The relay is new TCB, on the host and in both guests. Its compromise is bounded to the
   links it carries. Its admit function is the proved part.
+- The relay parses HTTP/1.1 and terminates TLS, as ADR 0015's proxy does, so it reuses that
+  parser and its trust root rather than adding a second one. A link cannot carry a protocol
+  the host cannot decide per request.
 - A cancel of a linked pod now fails with 409 until the links go. A controller unlinks
   first. That is its plan's diff, stated rather than implied.
 
@@ -274,5 +295,6 @@ constant.
 - C2. It stays NOT-YET. This record narrows C2's statement to unlinked pairs. It does not
   prove the restated C2 against the running node.
 - Any figure for throughput, latency or memory (§9).
-- Links across nodes, links between tenants, or links for eval cells. Each is out of v1, and
-  each needs a decision of its own.
+- Links across nodes, or links between tenants. Each is out of v1, and each needs a decision
+  of its own.
+- Any protocol other than HTTP/1.1 over a link.
