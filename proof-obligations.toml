@@ -247,6 +247,44 @@ kind = "lean-extracted"
 artifact = "crates/portcullis-core/lean/EgressConfinementExtracted.lean::rule_matches_never_fails"
 status = "proved"
 
+# ADR 0017 L3: the link predicates. may_link, may_cancel and may_deliver are held to the
+# theorems that equate them with LinkTable.lean's decisions, not only their spec.
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::link::link_matches"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/LinkTableExtracted.lean::link_matches_spec"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::link::may_cancel"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/LinkTableExtracted.lean::may_cancel_is_step"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::link::may_deliver"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/LinkTableExtracted.lean::may_deliver_is_step"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::link::may_link"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/LinkTableExtracted.lean::may_link_is_admitLink"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::link::may_unlink"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/LinkTableExtracted.lean::may_unlink_spec"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::link::names"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/LinkTableExtracted.lean::names_spec"
+status = "proved"
+
 [[obligation]]
 function = "nucleus_ifc_kernel::extracted::identity::ident_may_deliver"
 kind = "lean-extracted"

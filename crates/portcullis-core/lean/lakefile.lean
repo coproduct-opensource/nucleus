@@ -205,6 +205,17 @@ lean_lib «PodCrossViewIdentity» where
 lean_lib «LinkTable» where
   roots := #[`LinkTable]
 
+-- ADR 0017 L3: the link predicates as Aeneas extracted them from
+-- crates/nucleus-ifc-kernel/src/extracted/link.rs (same scoped run as
+-- generated-egress; one disclosed hand-edit, the Funs.lean import retarget).
+lean_lib «PortcullisCoreLink» where
+  roots := #[`PortcullisCoreLink.Types, `PortcullisCoreLink.Funs]
+  srcDir := "generated-link"
+
+-- The extracted predicates are LinkTable.lean's decisions.
+lean_lib «LinkTableExtracted» where
+  roots := #[`LinkTableExtracted]
+
 -- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
 -- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
 -- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.

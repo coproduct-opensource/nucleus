@@ -27,4 +27,5 @@ pub mod ifc_confidentiality;
 pub mod ifc_derivation;
 pub mod ifc_integrity;
 pub mod ifc_provenance;
+pub mod link;
 pub mod mediation;
