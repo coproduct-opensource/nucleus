@@ -660,9 +660,14 @@ population_floor = 23
 # (tokio#8587). The node's two call sites hand over self-owning descriptors and keep the call
 # under two reasoned #[expect(deprecated)]s, rather than two new unsafe blocks.
 # 41/146 = 28.08%; both pins follow the tree.
-floor_bp = 2808
+# 2026-11-18 (egress decisions extractable): the broker's egress deciders, written for
+# Charon/Aeneas in nucleus-cred-protocol's `extracted` module, waive four clippy
+# suggestions whose forms Aeneas cannot translate (`RangeInclusive::contains`,
+# `Vec::is_empty`, `Option::map`'s closure) or that the crate's no-credential scan
+# forbids, under nine reasoned #[expect]s. 50/155 = 32.25%; both pins follow the tree.
+floor_bp = 3225
 floor_set = "measurement"
-population_floor = 146
+population_floor = 155
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

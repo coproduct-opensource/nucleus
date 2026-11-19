@@ -5943,6 +5943,7 @@ version = "1.0.0"
 dependencies = [
  "hex",
  "hmac 0.13.0",
+ "proptest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -6872,6 +6873,7 @@ dependencies = [
  "nucleus-yaml",
  "portcullis",
  "portcullis-core",
+ "proptest",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
