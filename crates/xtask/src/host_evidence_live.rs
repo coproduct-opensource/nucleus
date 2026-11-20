@@ -79,6 +79,7 @@ impl Live {
                 "NUCLEUS_LINKS_PODS",
                 "NUCLEUS_LINKS_SEED",
                 "NUCLEUS_LINKS_REPORT",
+                "NUCLEUS_LINKS_KEEP",
             ],
             _ => &[],
         }

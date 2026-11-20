@@ -156,6 +156,9 @@ pub fn run_setup(root: &Path, args: &Args) -> Result<()> {
         bail!("no vmlinux under /var/lib/nucleus: did `nucleus setup` install the kernel?");
     };
     let staged_kernel = stage.join("vmlinux");
+    // A re-run meets the previous run's read-only copy; replace it rather
+    // than fail with EACCES (found on the x86 gauntlet VM, 2026-11-19).
+    let _ = std::fs::remove_file(&staged_kernel);
     std::fs::copy(&kernel, &staged_kernel)?;
 
     println!("gauntlet-host-setup: ready. Run:");
