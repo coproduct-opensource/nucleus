@@ -129,7 +129,9 @@ impl Entry {
     fn of(isolation: Isolation) -> Self {
         match isolation {
             Isolation::None => Self::None,
-            Isolation::NetnsThenDrop { uid, gid, parent } => Self::NetnsThenDrop { uid, gid, parent },
+            Isolation::NetnsThenDrop { uid, gid, parent } => {
+                Self::NetnsThenDrop { uid, gid, parent }
+            }
             Isolation::PidnsThenDrop { uid, gid } => Self::PidnsThenDrop { uid, gid },
             Isolation::PidnsThenUserNetwork {
                 uid,

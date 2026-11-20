@@ -321,7 +321,8 @@ impl Isolation {
                 inner_uid: _,
                 loopback: _,
             } => PidNamespace::Own,
-            Self::None | Self::NetnsThenDrop {
+            Self::None
+            | Self::NetnsThenDrop {
                 uid: _,
                 gid: _,
                 parent: _,

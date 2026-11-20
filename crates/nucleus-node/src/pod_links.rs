@@ -389,7 +389,10 @@ pub(crate) async fn cancel_unlinked(
 }
 
 /// The gRPC form of [`cancel_unlinked`]: a linked pod is `FAILED_PRECONDITION`.
-pub(crate) async fn grpc_cancel(state: &NodeState, pod: &Arc<PodHandle>) -> Result<(), tonic::Status> {
+pub(crate) async fn grpc_cancel(
+    state: &NodeState,
+    pod: &Arc<PodHandle>,
+) -> Result<(), tonic::Status> {
     cancel_unlinked(state, pod).await.map_err(|e| match e {
         ApiError::Conflict(m) => tonic::Status::failed_precondition(m),
         other => tonic::Status::internal(other.to_string()),

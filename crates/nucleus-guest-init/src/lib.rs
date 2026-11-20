@@ -46,7 +46,7 @@
 //! ```
 
 pub mod boot;
-pub mod egress_trust;
 pub mod decisions;
+pub mod egress_trust;
 pub mod fence;
 pub mod net;
