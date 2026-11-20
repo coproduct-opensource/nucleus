@@ -653,6 +653,11 @@ fn per_request_verdict(c: &PerRequestCounts) -> Verdict {
     }
 }
 
+/// Seconds the sender of `n` requests per kind is waited for.
+fn sender_wait(n: u64) -> u64 {
+    (n / 10).max(900)
+}
+
 async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<(Item, Uuid)> {
     let args: Vec<String> = [
         "send".into(),
@@ -667,7 +672,7 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
     .into();
     // About 20 requests per kind per second were measured on x86 (2026-11-20); allow
     // ten, so a large run is waited for rather than cut short at a fixed 900 s.
-    let wait = Duration::from_secs((n / 10).max(900));
+    let wait = Duration::from_secs(sender_wait(n));
     let src = run.create("sender", wait.as_secs() + 600, &args).await?;
     run.wait_running(src).await?;
     let (s1, b1) = run.link(src, dst, 8080).await?;
@@ -994,11 +999,7 @@ async fn chaos(run: &mut Run<'_>, holder: Uuid, x: Uuid, y: Uuid) -> Result<Vec<
         .unwrap_or(-1);
     items.push(Item {
         name: "e2_concurrent_link_unlink",
-        verdict: if links_done - unlinks_done == present && (0..=1).contains(&present) {
-            Verdict::Pass
-        } else {
-            Verdict::Fail
-        },
+        verdict: race_verdict(links_done, unlinks_done, present),
         numbers: json!({"tasks": tasks, "links_done": links_done, "unlinks_done": unlinks_done, "row_present": present}),
         notes: vec![],
     });
@@ -1066,6 +1067,26 @@ async fn canary(run: &Run<'_>, canary: Uuid) -> Item {
 /// nothing. Silence is inconclusive, never a pass: before the probe reported
 /// `listening` (found 2026-11-19), a working canary and a canary whose logs
 /// were never found looked the same.
+/// Item (e2): the raced row ends consistent with the 200s the node gave. A race
+/// in which no link was ever made raced nothing, so it is not a pass.
+fn race_verdict(links_done: i64, unlinks_done: i64, present: i64) -> Verdict {
+    if links_done == 0 {
+        Verdict::Inconclusive
+    } else if links_done - unlinks_done == present && (0..=1).contains(&present) {
+        Verdict::Pass
+    } else {
+        Verdict::Fail
+    }
+}
+
+/// How long the standing pods (pool, destination, canary) live. They must outlive
+/// every item, so the lifetime grows with the run: three hours for setup, (a),
+/// (c), (d) and the chaos items, a second per differential op, and the sender's
+/// wait for (b). The run cancels them when it ends, so a long bound costs nothing.
+fn standing_lifetime(ops: u64, requests: u64) -> u64 {
+    3 * 3600 + ops + sender_wait(requests) + 600
+}
+
 fn canary_item(ev: &[Event]) -> Item {
     let got = received(ev);
     let listening = ev.iter().any(|e| matches!(e, Event::Listening { .. }));
@@ -1154,6 +1175,7 @@ async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<R
     let requests = env_u64("NUCLEUS_LINKS_REQUESTS", 200);
     let pool_size = env_u64("NUCLEUS_LINKS_PODS", 8).clamp(2, 12) as usize;
     let seed = env_u64("NUCLEUS_LINKS_SEED", 0x6a75_6e74_6c65_7400);
+    let lifetime = standing_lifetime(ops, requests);
     let mut items = Vec::new();
     let mut run = Run {
         node,
@@ -1164,15 +1186,15 @@ async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<R
     let mut pool = Vec::new();
     for i in 0..pool_size {
         pool.push(
-            run.create(&format!("pool-{i}"), 3600, &["serve".into(), "80".into()])
+            run.create(&format!("pool-{i}"), lifetime, &["serve".into(), "80".into()])
                 .await?,
         );
     }
     let dst = run
-        .create("destination", 3600, &["serve".into(), "8080".into()])
+        .create("destination", lifetime, &["serve".into(), "8080".into()])
         .await?;
     let canary_pod = run
-        .create("canary", 3600, &["serve".into(), "8080".into()])
+        .create("canary", lifetime, &["serve".into(), "8080".into()])
         .await?;
     for p in pool.iter().chain([&dst, &canary_pod]) {
         run.wait_running(*p).await?;
@@ -1364,6 +1386,24 @@ mod tests {
             ..short
         };
         assert_eq!(per_request_verdict(&full), Verdict::Pass);
+    }
+
+    /// 2026-11-20, x86, full scale: 64 raced link/unlink pairs got no 200 at all
+    /// (both pods had outlived their lifetime) and the item read "pass".
+    #[test]
+    fn a_race_in_which_nothing_was_linked_is_not_a_pass() {
+        assert_ne!(race_verdict(0, 0, 0), Verdict::Pass);
+        assert_eq!(race_verdict(40, 39, 1), Verdict::Pass);
+        assert_eq!(race_verdict(40, 40, 0), Verdict::Pass);
+        assert_eq!(race_verdict(40, 40, 1), Verdict::Fail);
+    }
+
+    /// 2026-11-20, x86: at 10,000 ops and 50,000 requests the run took about
+    /// 5,600 s; the standing pods lived 3,600 s, so (e1) found its holder gone.
+    #[test]
+    fn standing_pods_outlive_a_full_scale_run() {
+        assert!(standing_lifetime(10_000, 50_000) > 5_600 + 3_600);
+        assert!(standing_lifetime(10_000, 50_000) > sender_wait(50_000));
     }
 
     #[test]
