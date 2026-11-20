@@ -383,6 +383,7 @@ async fn the_real_proxy_runs_confined_with_no_route_out() {
         jail_owner: None,
         run_as: (65534, 65534),
         decider: EgressDecider::new(pod, registry(port), policy, 1),
+        ca: None,
     })
     .await
     .expect("the proxy starts confined");

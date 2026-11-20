@@ -53,12 +53,6 @@ use zeroize::Zeroizing;
 /// the subtree the link proxy requires are one fact (ADR 0007 G-1).
 pub(crate) use nucleus_egress_proxy::link::LINK_SUBTREE;
 
-/// The TLS name of the link to pod `dst`: `<dst-uuid>.link.nucleus.invalid`.
-#[must_use]
-pub(crate) fn link_name(dst: Uuid) -> String {
-    format!("{dst}.{LINK_SUBTREE}")
-}
-
 /// One pod's CA as the node holds it, between admission and the handover.
 pub(crate) struct MintedCa {
     cert_der: Vec<u8>,
@@ -183,6 +177,7 @@ impl MintedCa {
     }
 
     /// The CA certificate, DER. Public: this is what the guest trusts.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn certificate_der(&self) -> &[u8] {
         &self.cert_der
@@ -203,12 +198,14 @@ impl MintedCa {
     }
 
     /// The permitted subtrees the certificate carries.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn permitted(&self) -> &[String] {
         &self.permitted
     }
 
     /// The CA's deadline, unix seconds.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn not_after(&self) -> u64 {
         self.not_after

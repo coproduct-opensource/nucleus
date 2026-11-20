@@ -3,6 +3,7 @@
 //! CA cannot drift (ADR 0007 G-1).
 
 use super::*;
+use nucleus_egress_proxy::link::link_name;
 use nucleus_egress_proxy::tls::PodCa;
 use x509_parser::extensions::GeneralName;
 
@@ -101,7 +102,7 @@ fn a_deadline_past_the_clock_is_refused() {
 
 #[test]
 fn link_names_live_under_the_link_subtree() {
-    let n = link_name(Uuid::from_u128(7));
+    let n = link_name(7);
     assert!(n.ends_with(&format!(".{LINK_SUBTREE}")));
     assert!(n.ends_with(".invalid"), "never a publicly resolvable name");
 }
