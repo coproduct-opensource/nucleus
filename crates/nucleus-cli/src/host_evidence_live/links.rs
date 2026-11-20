@@ -626,6 +626,29 @@ async fn differential(run: &mut Run<'_>, pool: &mut [Uuid], ops: u64, seed: u64)
     }
 }
 
+/// What item (b) counted. Found on the x86 gauntlet (2026-11-19): 63 of 200
+/// linked requests were delivered and 137 ended 503, and the item still passed,
+/// because a linked request that was neither delivered nor decided fell into no
+/// bucket. `linked_failed` is that bucket.
+struct PerRequestCounts {
+    saw_anything: bool,
+    linked_ok: u64,
+    linked_failed: u64,
+    linked_missing: u64,
+    refused_leaked: u64,
+    undecided: usize,
+}
+
+fn per_request_verdict(c: &PerRequestCounts) -> Verdict {
+    if c.linked_failed + c.linked_missing + c.refused_leaked > 0 || c.undecided > 0 {
+        Verdict::Fail
+    } else if !c.saw_anything || c.linked_ok == 0 {
+        Verdict::Inconclusive
+    } else {
+        Verdict::Pass
+    }
+}
+
 async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<(Item, Uuid)> {
     let args: Vec<String> = [
         "send".into(),
@@ -648,6 +671,7 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
     let mut answered = BTreeSet::new();
     let (mut linked_ok, mut linked_missing, mut refused_ok, mut refused_leaked) = (0, 0, 0, 0);
     let (mut tls_ok, mut tls_other) = (0, 0);
+    let (mut linked_denied, mut linked_failed) = (0, 0);
     let mut notes = Vec::new();
     for e in &src_events {
         if let Event::Sent {
@@ -669,6 +693,17 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
                     } else {
                         linked_missing += 1;
                         notes.push(format!("answered {id} never reached the destination"));
+                    }
+                }
+                // A host decision to refuse is an answer; anything else on a made link
+                // (a 503, a dropped connection) is the link failing to carry it.
+                (8080, false) if *status == Some(403) => linked_denied += 1,
+                (8080, false) => {
+                    linked_failed += 1;
+                    if linked_failed <= 3 {
+                        notes.push(format!(
+                            "linked request {id} ended {status:?}, neither delivered nor decided"
+                        ));
                     }
                 }
                 (8081, false) => {
@@ -718,14 +753,17 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
         notes.push(format!("the destination could not bind {p}"));
     }
     let saw_anything = !src_events.is_empty();
-    let verdict = if linked_missing + refused_leaked + undecided.len() > 0 {
-        Verdict::Fail
-    } else if !saw_anything || linked_ok == 0 {
+    let verdict = per_request_verdict(&PerRequestCounts {
+        saw_anything,
+        linked_ok,
+        linked_failed,
+        linked_missing,
+        refused_leaked,
+        undecided: undecided.len(),
+    });
+    if verdict == Verdict::Inconclusive {
         notes.push("the sender's report was empty or nothing was answered".into());
-        Verdict::Inconclusive
-    } else {
-        Verdict::Pass
-    };
+    }
     if journal.is_empty() {
         notes.push(
             "no host-effect journal found for the sender; decisions not cross-checked".into(),
@@ -738,6 +776,7 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
             numbers: json!({
                 "requests_per_kind": n, "linked_delivered": linked_ok,
                 "linked_answered_but_missing": linked_missing,
+                "linked_denied_by_host": linked_denied, "linked_failed": linked_failed,
                 "unlinked_refused": refused_ok, "unlinked_leaked": refused_leaked,
                 "undecided_deliveries": undecided.len(),
                 "tls_answered": tls_ok, "tls_other": tls_other,
@@ -1257,6 +1296,27 @@ async fn links_gauntlet() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The x86 gauntlet's numbers (2026-11-19): 63 delivered, 137 ended 503 on a
+    /// made link. That is a failure, never a pass.
+    #[test]
+    fn a_503_on_a_made_link_fails_item_b() {
+        let observed = PerRequestCounts {
+            saw_anything: true,
+            linked_ok: 63,
+            linked_failed: 137,
+            linked_missing: 0,
+            refused_leaked: 0,
+            undecided: 0,
+        };
+        assert_eq!(per_request_verdict(&observed), Verdict::Fail);
+        let carried = PerRequestCounts {
+            linked_ok: 200,
+            linked_failed: 0,
+            ..observed
+        };
+        assert_eq!(per_request_verdict(&carried), Verdict::Pass);
+    }
 
     #[test]
     fn a_canary_passes_only_when_seen_listening_and_untouched() {

@@ -63,6 +63,14 @@ pub const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
 /// How long the proxy tries to reach an admitted address.
 pub const CONNECT_DEADLINE: Duration = Duration::from_secs(5);
 
+/// How long one link exchange may run once its request is delivered (ADR 0017).
+/// A destination that never closes its end would otherwise hold one of the
+/// source pod's [`MAX_CONNECTIONS`] slots forever: found on the x86 gauntlet
+/// (2026-11-19), where 63 of 200 linked requests were delivered before the
+/// slots ran out. This is the backstop; the guest relay closing on the
+/// server's end-of-stream is the fix.
+pub const LINK_EXCHANGE_DEADLINE: Duration = Duration::from_secs(30);
+
 /// How many terminated handshakes the journal keeps (oldest dropped first).
 pub const TLS_JOURNAL_LEN: usize = 1024;
 
@@ -88,6 +96,8 @@ pub struct Proxy<D, R> {
     /// Link mode (ADR 0017 L4b): the routes the node announced. `None` is
     /// the egress proxy, where a link name is refused.
     links: Option<Arc<Links>>,
+    /// [`LINK_EXCHANGE_DEADLINE`], shortened in tests.
+    link_exchange: Duration,
 }
 
 /// What a connection ended in, for the log and for tests.
@@ -135,6 +145,7 @@ where
             tls: None,
             journal: Mutex::new(VecDeque::new()),
             links: None,
+            link_exchange: LINK_EXCHANGE_DEADLINE,
         }
     }
 
@@ -326,11 +337,19 @@ where
         // Past the decision: a sever ends the exchange at once, mid-response
         // included (ADR 0017 §3). The guest stream is borrowed, so the sever
         // is a signal raced against the relay rather than a task to abort.
-        tokio::select! {
-            _ = tokio::io::copy(&mut upstream, guest) => {}
-            () = until_severed(severed) => {
-                tracing::info!(dst = %crate::link::uuid_string(target.dst), port = target.port, "link severed mid-exchange");
+        let exchange = async {
+            tokio::select! {
+                _ = tokio::io::copy(&mut upstream, &mut *guest) => {}
+                () = until_severed(severed) => {
+                    tracing::info!(dst = %crate::link::uuid_string(target.dst), port = target.port, "link severed mid-exchange");
+                }
             }
+        };
+        if tokio::time::timeout(self.link_exchange, exchange)
+            .await
+            .is_err()
+        {
+            tracing::info!(dst = %crate::link::uuid_string(target.dst), port = target.port, "link exchange deadline: the destination did not close");
         }
         drop(upstream);
         let _ = guest.shutdown().await;
@@ -454,6 +473,14 @@ where
         let mut proxy = Proxy::new(decider, NoOutboundPath, Vec::new());
         proxy.links = Some(links);
         proxy
+    }
+
+    /// A shorter [`LINK_EXCHANGE_DEADLINE`], for tests.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_link_exchange(mut self, deadline: Duration) -> Self {
+        self.link_exchange = deadline;
+        self
     }
 }
 

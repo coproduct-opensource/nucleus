@@ -724,3 +724,66 @@ async fn a_slow_answer_refuses_one_request_and_the_link_keeps_working() {
     let seen = d.seen.recv().await.unwrap();
     assert_eq!(seen.preamble, "PORT 8080");
 }
+
+/// The backstop for the x86 gauntlet's slot leak: a destination that answers
+/// part of a response and never closes is cut at the exchange deadline, and the
+/// source pod's connection slot comes back. Red without the deadline (the
+/// exchange never ends and the slot stays held).
+#[tokio::test]
+async fn a_destination_that_never_closes_releases_the_slot_after_the_deadline() {
+    let (proxy_end, node_end) = UnixStream::pair().unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    node(node_end, None, Arc::clone(&asked));
+    let links = Arc::new(Links::default());
+    let proxy = Proxy::link(
+        SharedDecider::new(proxy_end, Duration::from_secs(2)),
+        Arc::clone(&links),
+    )
+    .with_link_exchange(Duration::from_millis(300));
+    let r = Rig {
+        proxy: Arc::new(proxy),
+        links,
+        asked,
+    };
+    let mut d = dst_mux(Answer::Hold);
+    announce(&r, &d, 8080);
+    let (mut g, p) = tokio::io::duplex(1 << 16);
+    let proxy = Arc::clone(&r.proxy);
+    let served = tokio::spawn(async move { proxy.connection(p).await });
+    g.write_all(get(8080).as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), g.read_to_end(&mut out))
+        .await
+        .expect("the guest's side ends at the exchange deadline")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out).contains("part"));
+    tokio::time::timeout(Duration::from_secs(2), d.closed.recv())
+        .await
+        .expect("the destination's connection is closed")
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(2), served)
+        .await
+        .expect("the connection task ends")
+        .unwrap();
+    assert_eq!(ended, Served::Forwarded);
+    assert_eq!(r.proxy.slots.available_permits(), MAX_CONNECTIONS);
+}
+
+/// The x86 gauntlet's shape, after the relay fix: 150 sequential linked
+/// requests to a destination that closes after each answer are all delivered,
+/// and every slot comes back. (Before the fix the destination's side never
+/// closed, and the 65th request met `TooManyConnections`.)
+#[tokio::test]
+async fn one_hundred_fifty_sequential_link_requests_are_all_delivered() {
+    let r = rig(None);
+    let mut d = dst_mux(Answer::Whole);
+    announce(&r, &d, 8080);
+    for i in 0..150 {
+        let (served, out) = send(&r, &get(8080)).await;
+        assert_eq!(served, Served::Forwarded, "request {i}: {out}");
+        assert!(out.ends_with("hi"), "request {i}: {out}");
+        let _ = d.seen.recv().await.unwrap();
+    }
+    assert_eq!(d.connections.load(Ordering::SeqCst), 150);
+    assert_eq!(r.proxy.slots.available_permits(), MAX_CONNECTIONS);
+}

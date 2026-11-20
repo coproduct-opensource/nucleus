@@ -128,6 +128,39 @@ where
     }
 }
 
+/// The inbound (destination) splice: the workload is the server, and its
+/// end-of-stream means the exchange is over (one request per connection, ADR
+/// 0015 §2). Either side ending ends both: the host's, as in [`splice`] (a
+/// sever); the workload's, once its bytes are written and its half-close
+/// passed on.
+///
+/// Found on the x86 gauntlet (2026-11-19): the inbound side used [`splice`],
+/// which on the workload's EOF only half-closes toward the host and then
+/// waits for the host to close. Nothing on the host side closes first (the
+/// proxy waits for the response to end, and the guest's half-close does not
+/// surface as EOF on the host's vsock socket), so every exchange stayed open
+/// and held one of the source pod's 64 connection slots: 63 of 200 delivered.
+pub(crate) async fn splice_inbound<W, H>(workload: W, host: H)
+where
+    W: AsyncRead + AsyncWrite + Unpin,
+    H: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut wr, mut ww) = tokio::io::split(workload);
+    let (mut hr, mut hw) = tokio::io::split(host);
+    let down = async {
+        let _ = tokio::io::copy(&mut hr, &mut ww).await;
+        let _ = ww.shutdown().await;
+    };
+    let up = async {
+        let _ = tokio::io::copy(&mut wr, &mut hw).await;
+        let _ = hw.shutdown().await;
+    };
+    tokio::select! {
+        () = down => {}
+        () = up => {}
+    }
+}
+
 /// How the outbound half reaches the host's `PodLink` listener. A seam so the
 /// splice is tested without vsock; production is [`VsockHost`].
 pub(crate) trait DialHost: Clone + Send + Sync + 'static {
@@ -188,7 +221,7 @@ where
     }
     let port = read_preamble(&mut host).await?;
     match workload.dial(port).await {
-        Ok(stream) => splice(stream, host).await,
+        Ok(stream) => splice_inbound(stream, host).await,
         Err(e) => tracing::warn!(port, error = %e, "link relay: workload listener unreachable"),
     }
     Ok(())
@@ -423,6 +456,49 @@ mod tests {
         app.read_to_end(&mut back).await.unwrap();
         assert_eq!(back, b"resp");
         task.await.unwrap();
+    }
+
+    /// The destination side: a server that answers and closes ends the exchange
+    /// even though the host never closes its end. Red on [`splice`] (it waits
+    /// for the host forever), which is the x86 gauntlet's slot leak.
+    #[tokio::test]
+    async fn a_server_that_answers_and_closes_ends_the_inbound_exchange() {
+        let (workload, mut server) = duplex(64);
+        let (host, mut hostend) = duplex(64);
+        let task = tokio::spawn(splice_inbound(workload, host));
+        hostend.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+        let mut req = [0u8; 18];
+        server.read_exact(&mut req).await.unwrap();
+        server
+            .write_all(b"HTTP/1.1 200 OK\r\n\r\nok")
+            .await
+            .unwrap();
+        drop(server);
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("the exchange ends when the server closes, host still open")
+            .unwrap();
+        let mut back = Vec::new();
+        hostend.read_to_end(&mut back).await.unwrap();
+        assert_eq!(
+            back, b"HTTP/1.1 200 OK\r\n\r\nok",
+            "the whole answer arrives first"
+        );
+    }
+
+    /// The sever still holds on the inbound side.
+    #[tokio::test]
+    async fn a_closed_host_side_closes_the_inbound_workload_side() {
+        let (workload, mut app) = duplex(64);
+        let (host, cut) = duplex(64);
+        let task = tokio::spawn(splice_inbound(workload, host));
+        drop(cut);
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("ends promptly on a sever")
+            .unwrap();
+        let mut buf = [0u8; 1];
+        assert_eq!(app.read(&mut buf).await.unwrap(), 0);
     }
 
     #[derive(Clone)]

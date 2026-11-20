@@ -657,6 +657,32 @@ have (built with `COMPILER_PATH` cleared); a cgroup v2 root that still holds pro
 delegate controllers to the jailer (processes moved to a child group first); a Debian tarball made
 without the empty `/proc`, `/sys`, `/dev` mount points stops guest-init.
 
+**Connection-slot leak, found on the x86 gauntlet (2026-11-19).** Three x86 runs, one at the
+decision-channel fix, each delivered exactly 63 of 200 linked requests; the rest ended 503. The
+destination relay (`nucleus-tool-proxy` `link_relay`) used the outbound `splice`, which on the
+workload's end-of-stream only half-closes toward the host and then waits for the host to close.
+Nothing on the host side closes first: the proxy waits for the response to end, and a guest
+half-close does not surface as EOF on the host's vsock socket. So every exchange stayed open and
+held one of the source pod's 64 connection slots (`MAX_CONNECTIONS`); the 64th request on met
+`TooManyConnections`. The same shape is a denial of service: a destination that never closes
+exhausts its source's slots.
+
+- Fix: the inbound side uses `splice_inbound`, which ends the exchange when either side ends (the
+  server's end-of-stream, after its bytes are written; or the host's, the sever). Test
+  `a_server_that_answers_and_closes_ends_the_inbound_exchange`, red on the old splice (5 s
+  timeout).
+- Backstop: the link proxy bounds each delivered exchange by `LINK_EXCHANGE_DEADLINE` (30 s), so
+  a destination that never closes releases the source's slot. Test
+  `a_destination_that_never_closes_releases_the_slot_after_the_deadline`, red without the
+  deadline.
+- Guard: `one_hundred_fifty_sequential_link_requests_are_all_delivered` (proxy slot accounting).
+- **The harness counted the leak as a pass.** Item (b) failed only on missing or leaked
+  deliveries; a linked request that ended 503 or with no response fell into no bucket. It now
+  counts `linked_failed` and fails on any (`a_503_on_a_made_link_fails_item_b`, red on the old
+  rule with the observed 63 and 137).
+- Not yet shown on Linux: whether a guest-side full close surfaces promptly on the host's vsock
+  socket (the fix relies on it; the deadline bounds it if not). The next x86 run measures it.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.
