@@ -126,6 +126,8 @@ census! {
         "operator trust roots, tenant and bundle directory; read per pod, written by no pod (decision_provisioning)";
     memory => TenantShared,
         "memory spaces: by default one per (tenant, lineage root, name), so pods outside a lineage share nothing; a Workspace or TenantAll policy shares a space across lineages only when every record of it is dependency-stamped (Program C, C1), each view then withholding records above its ceiling and treating unstamped ones as Secret; over any other space, and for a migrated TenantAll-legacy store, it is refused by name (CrossRunMemoryUnavailable). Each run gets its own binding with a pinned snapshot and a private branch, receipted at delivery (memory_space, memory_binding)";
+    links => TenantShared,
+        "the link table (ADR 0017): a link joins two pods of one trust domain, made only by a caller that manages both (no_cross_tenant_link), and is the one deliberate channel between them (C2 restated over the link graph, noninterference_unlinked in LinkTable.lean). Listings are filtered to the caller's scope (404 otherwise); a pod observes another only along a link it is an end of, including that link's drop when the other exits";
     audit_minter => Secret, "holds the node's audit credential; each pod is minted only its own scoped one";
     drand_config => Structural, "operator setting";
     identity_manager => PerPod,
@@ -183,8 +185,8 @@ fn every_node_state_field_has_a_cross_pod_class() {
     assert_eq!(count(Surface::PerPod), 1);
     assert_eq!(count(Surface::LineageScoped), 2);
     assert_eq!(count(Surface::SelectorScoped), 2);
-    assert_eq!(count(Surface::TenantShared), 1);
+    assert_eq!(count(Surface::TenantShared), 2);
     assert_eq!(count(Surface::Contention), 8 + linux);
     assert_eq!(count(Surface::Unclassified), 2);
-    assert_eq!(entries.len(), 53 + local + linux);
+    assert_eq!(entries.len(), 54 + local + linux);
 }
