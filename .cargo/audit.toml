@@ -39,4 +39,26 @@ ignore = [
     # crates), so leaving it is a migration to `jiff` or `time`. Mirrors the
     # deny.toml ignore.
     "RUSTSEC-2026-0543",
+
+    # EXPIRES 2027-01-31. heapless unsound (RUSTSEC-2026-0574 through -0582),
+    # published 2026-11-18: informational "unsound", patched only in heapless
+    # 0.9.4+. heapless 0.7.17 is reachable solely via postcard 1.1.3 (the latest
+    # postcard, which still requires heapless ^0.7), the same path as the
+    # RUSTSEC-2023-0089 ignore above; postcard's dependents are wasmtime-environ,
+    # cranelift-codegen, iroh-* and nucleus-witness-gossip. No nucleus code names
+    # heapless, and nucleus's one postcard user (nucleus-witness-gossip
+    # transport.rs) calls to_allocvec / from_bytes, which use std Vec, not the
+    # heapless containers the advisories name (SortedLinkedList, Spsc, IndexMap,
+    # Deque, HistoryBuf, the pools, vec::IntoIter). cargo-deny already scopes
+    # unsound to workspace dependencies and does not flag these. Drops when
+    # postcard moves to heapless 0.9.4+.
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582",
 ]
