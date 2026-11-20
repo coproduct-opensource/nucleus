@@ -40,6 +40,7 @@
 
 use super::node::Node;
 use anyhow::{Context, Result, bail, ensure};
+use nucleus_ifc_kernel::extracted::gauntlet as rule;
 use nucleus_ifc_kernel::extracted::link::Link;
 use nucleus_ifc_kernel::links::{LinkTable, Outcome, Scope};
 use nucleus_link_probe::{AttemptOutcome, Event};
@@ -63,6 +64,36 @@ pub(crate) enum Verdict {
     Recorded,
 }
 
+// Every judged verdict is decided by the extracted slice
+// (`nucleus_ifc_kernel::extracted::gauntlet`), whose functions
+// `GauntletVerdictExtracted.lean` proves compute `GauntletVerdict.lean`.
+impl From<rule::Verdict> for Verdict {
+    fn from(v: rule::Verdict) -> Self {
+        match v {
+            rule::Verdict::Pass => Self::Pass,
+            rule::Verdict::Fail => Self::Fail,
+            rule::Verdict::Inconclusive => Self::Inconclusive,
+            rule::Verdict::Recorded => Self::Recorded,
+        }
+    }
+}
+
+impl From<Verdict> for rule::Verdict {
+    fn from(v: Verdict) -> Self {
+        match v {
+            Verdict::Pass => Self::Pass,
+            Verdict::Fail => Self::Fail,
+            Verdict::Inconclusive => Self::Inconclusive,
+            Verdict::Recorded => Self::Recorded,
+        }
+    }
+}
+
+/// A count as the slice takes it.
+fn count(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Item {
     pub name: &'static str,
@@ -80,7 +111,7 @@ impl Report {
     /// Whether any item failed. Inconclusive and recorded items do not fail
     /// the run; they are visible in the report.
     pub fn failed(&self) -> bool {
-        self.items.iter().any(|i| i.verdict == Verdict::Fail)
+        self.items.iter().any(|i| rule::fails(i.verdict.into()))
     }
 }
 
@@ -599,13 +630,7 @@ async fn differential(run: &mut Run<'_>, pool: &mut [Uuid], ops: u64, seed: u64)
         }
     }
     let bad = mismatches(&steps);
-    let verdict = if !bad.is_empty() {
-        Verdict::Fail
-    } else if !errors.is_empty() {
-        Verdict::Inconclusive
-    } else {
-        Verdict::Pass
-    };
+    let verdict: Verdict = rule::differential(count(bad.len()), count(errors.len())).into();
     let mut by_kind: BTreeMap<String, usize> = BTreeMap::new();
     for s in &steps {
         *by_kind
@@ -644,18 +669,22 @@ struct PerRequestCounts {
 }
 
 fn per_request_verdict(c: &PerRequestCounts) -> Verdict {
-    if c.linked_failed + c.linked_missing + c.refused_leaked > 0 || c.undecided > 0 {
-        Verdict::Fail
-    } else if !c.saw_anything || c.linked_ok == 0 || c.sent_fewest < c.requested {
-        Verdict::Inconclusive
-    } else {
-        Verdict::Pass
-    }
+    rule::per_request(
+        c.saw_anything,
+        c.requested,
+        c.sent_fewest,
+        c.linked_ok,
+        c.linked_failed,
+        c.linked_missing,
+        c.refused_leaked,
+        count(c.undecided),
+    )
+    .into()
 }
 
 /// Seconds the sender of `n` requests per kind is waited for.
 fn sender_wait(n: u64) -> u64 {
-    (n / 10).max(900)
+    rule::sender_wait(n)
 }
 
 async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<(Item, Uuid)> {
@@ -856,13 +885,7 @@ async fn adversary(run: &mut Run<'_>, dst: Uuid, seed: u64) -> Result<Item> {
         }
     }
     let _ = run.cancel(a).await;
-    let verdict = if fail {
-        Verdict::Fail
-    } else if table.is_empty() {
-        Verdict::Inconclusive
-    } else {
-        Verdict::Pass
-    };
+    let verdict: Verdict = rule::adversary(fail, count(table.len())).into();
     Ok(Item {
         name: "c_adversary",
         verdict,
@@ -905,11 +928,7 @@ async fn isolation(run: &mut Run<'_>, real: Uuid, k: u64) -> Item {
     let mean = |x: &[f64]| x.iter().sum::<f64>() / x.len().max(1) as f64;
     Item {
         name: "d_isolation",
-        verdict: if identical {
-            Verdict::Pass
-        } else {
-            Verdict::Fail
-        },
+        verdict: rule::isolation(identical).into(),
         numbers: json!({
             "probes": k, "statuses": statuses, "distinct_bodies": bodies.len(),
             "mean_ms_unknown_src": mean(&t_src), "mean_ms_unknown_dst": mean(&t_dst),
@@ -950,11 +969,7 @@ async fn chaos(run: &mut Run<'_>, holder: Uuid, x: Uuid, y: Uuid) -> Result<Vec<
     }
     items.push(Item {
         name: "e1_cancel_refused_then_drop_on_exit",
-        verdict: if ls == 200 && cancel == 409 && dropped {
-            Verdict::Pass
-        } else {
-            Verdict::Fail
-        },
+        verdict: rule::cancel_then_exit(ls == 200, cancel == 409, dropped).into(),
         numbers: json!({"link_status": ls, "cancel_status": cancel, "drop_receipt_seen": dropped}),
         notes: if ls == 200 { vec![] } else { vec![lb] },
     });
@@ -1070,13 +1085,14 @@ async fn canary(run: &Run<'_>, canary: Uuid) -> Item {
 /// Item (e2): the raced row ends consistent with the 200s the node gave. A race
 /// in which no link was ever made raced nothing, so it is not a pass.
 fn race_verdict(links_done: i64, unlinks_done: i64, present: i64) -> Verdict {
-    if links_done == 0 {
-        Verdict::Inconclusive
-    } else if links_done - unlinks_done == present && (0..=1).contains(&present) {
-        Verdict::Pass
-    } else {
-        Verdict::Fail
-    }
+    // `present` is -1 when the listing could not be read: no row count is
+    // consistent with it, so it is passed as one no table can have.
+    rule::race(
+        u64::try_from(links_done).unwrap_or(0),
+        u64::try_from(unlinks_done).unwrap_or(0),
+        u64::try_from(present).unwrap_or(u64::MAX),
+    )
+    .into()
 }
 
 /// How long the standing pods (pool, destination, canary) live. They must outlive
@@ -1084,24 +1100,20 @@ fn race_verdict(links_done: i64, unlinks_done: i64, present: i64) -> Verdict {
 /// (c), (d) and the chaos items, a second per differential op, and the sender's
 /// wait for (b). The run cancels them when it ends, so a long bound costs nothing.
 fn standing_lifetime(ops: u64, requests: u64) -> u64 {
-    3 * 3600 + ops + sender_wait(requests) + 600
+    // `None` only past `u64` seconds; the node refuses such a lifetime anyway.
+    rule::standing_lifetime(ops, requests).unwrap_or(u64::MAX)
 }
 
 fn canary_item(ev: &[Event]) -> Item {
     let got = received(ev);
     let listening = ev.iter().any(|e| matches!(e, Event::Listening { .. }));
-    let (verdict, notes) = if !got.is_empty() {
-        (
-            Verdict::Fail,
-            vec![format!("an unlinked pod received {} request(s)", got.len())],
-        )
-    } else if listening {
-        (Verdict::Pass, vec![])
-    } else {
-        (
-            Verdict::Inconclusive,
-            vec!["the canary never reported listening: its logs were not found".into()],
-        )
+    let verdict: Verdict = rule::canary(count(got.len()), listening).into();
+    let notes = match verdict {
+        Verdict::Fail => vec![format!("an unlinked pod received {} request(s)", got.len())],
+        Verdict::Inconclusive => {
+            vec!["the canary never reported listening: its logs were not found".into()]
+        }
+        Verdict::Pass | Verdict::Recorded => vec![],
     };
     Item {
         name: "f_canary_unlinked_pod",
@@ -1132,12 +1144,12 @@ fn receipts(collected: &[Value], key: Option<[u8; 32]>) -> Item {
     let Some(key) = key else {
         return Item {
             name: "g_offline_receipt_verification",
-            verdict: Verdict::Inconclusive,
+            verdict: rule::receipts(0, 0).into(),
             numbers: json!({"collected": collected.len()}),
             notes: vec!["the executor public key could not be exported".into()],
         };
     };
-    let (mut ok, mut bad) = (0, Vec::new());
+    let (mut ok, mut bad) = (0u64, Vec::new());
     for (i, v) in collected.iter().enumerate() {
         match serde_json::from_value::<nucleus_receipt::Receipt>(v.clone()) {
             Ok(r) if r.verify(&key).is_ok() => ok += 1,
@@ -1147,13 +1159,7 @@ fn receipts(collected: &[Value], key: Option<[u8; 32]>) -> Item {
     }
     Item {
         name: "g_offline_receipt_verification",
-        verdict: if !bad.is_empty() {
-            Verdict::Fail
-        } else if ok == 0 {
-            Verdict::Inconclusive
-        } else {
-            Verdict::Pass
-        },
+        verdict: rule::receipts(count(bad.len()), ok).into(),
         numbers: json!({"collected": collected.len(), "verified": ok}),
         notes: bad,
     }
@@ -1163,7 +1169,7 @@ fn receipts(collected: &[Value], key: Option<[u8; 32]>) -> Item {
 fn could_not_run(name: &'static str, e: &anyhow::Error) -> Item {
     Item {
         name,
-        verdict: Verdict::Fail,
+        verdict: rule::judge(true, false).into(),
         numbers: json!({}),
         notes: vec![format!("the item could not run: {e:#}")],
     }
@@ -1186,8 +1192,12 @@ async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<R
     let mut pool = Vec::new();
     for i in 0..pool_size {
         pool.push(
-            run.create(&format!("pool-{i}"), lifetime, &["serve".into(), "80".into()])
-                .await?,
+            run.create(
+                &format!("pool-{i}"),
+                lifetime,
+                &["serve".into(), "80".into()],
+            )
+            .await?,
         );
     }
     let dst = run

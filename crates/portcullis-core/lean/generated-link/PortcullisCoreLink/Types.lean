@@ -145,6 +145,16 @@ structure extracted.egress.Rule where
   port : Std.U16
   allow : Bool
 
+/-- [nucleus_ifc_kernel::extracted::gauntlet::Verdict]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 16:0-21:1
+    Visibility: public -/
+@[discriminant isize]
+inductive extracted.gauntlet.Verdict where
+| Pass : extracted.gauntlet.Verdict
+| Fail : extracted.gauntlet.Verdict
+| Inconclusive : extracted.gauntlet.Verdict
+| Recorded : extracted.gauntlet.Verdict
+
 /-- [nucleus_ifc_kernel::extracted::ifc_authority::AuthorityLevel]
     Source: 'crates/nucleus-ifc-kernel/src/extracted/ifc_authority.rs', lines 70:0-79:1
     Visibility: public -/

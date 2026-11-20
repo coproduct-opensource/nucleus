@@ -312,6 +312,82 @@ kind = "lean-extracted"
 artifact = "crates/portcullis-core/lean/DecisionChannelExtracted.lean::on_deadline_is_tick"
 status = "proved"
 
+# The links gauntlet's verdicts: the harness decides every judged item through
+# extracted::gauntlet (GauntletVerdict.lean; three x86 runs read "pass" when an
+# item had not observed what it claims).
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::judge"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::judge_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::fails"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::fails_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::differential"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::differential_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::per_request"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::per_request_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::adversary"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::adversary_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::isolation"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::isolation_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::cancel_then_exit"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::cancel_then_exit_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::race"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::race_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::canary"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::canary_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::receipts"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::receipts_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::sender_wait"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::sender_wait_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::gauntlet::standing_lifetime"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/GauntletVerdictExtracted.lean::standing_lifetime_is_model"
+status = "proved"
+
+
 [[obligation]]
 function = "nucleus_ifc_kernel::extracted::identity::ident_may_deliver"
 kind = "lean-extracted"

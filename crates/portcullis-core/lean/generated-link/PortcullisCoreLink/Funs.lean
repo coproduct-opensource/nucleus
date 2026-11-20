@@ -476,6 +476,163 @@ def extracted.egress.rule_admits
   then ok rule.allow
   else ok false
 
+/-- [nucleus_ifc_kernel::extracted::gauntlet::judge]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 25:0-33:1
+    Visibility: public -/
+def extracted.gauntlet.judge
+  (bad : Bool) (enough : Bool) : Result extracted.gauntlet.Verdict := do
+  if bad
+  then ok extracted.gauntlet.Verdict.Fail
+  else
+    if enough
+    then ok extracted.gauntlet.Verdict.Pass
+    else ok extracted.gauntlet.Verdict.Inconclusive
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::fails]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 37:0-42:1
+    Visibility: public -/
+def extracted.gauntlet.fails
+  (v : extracted.gauntlet.Verdict) : Result Bool := do
+  match v with
+  | extracted.gauntlet.Verdict.Pass => ok false
+  | extracted.gauntlet.Verdict.Fail => ok true
+  | extracted.gauntlet.Verdict.Inconclusive => ok false
+  | extracted.gauntlet.Verdict.Recorded => ok false
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::differential]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 46:0-48:1
+    Visibility: public -/
+def extracted.gauntlet.differential
+  (mismatches : Std.U64) (errors : Std.U64) :
+  Result extracted.gauntlet.Verdict
+  := do
+  extracted.gauntlet.judge (mismatches > 0#u64) (errors = 0#u64)
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::per_request]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 57:0-86:1
+    Visibility: public -/
+def extracted.gauntlet.per_request
+  (saw : Bool) (requested : Std.U64) (sent_fewest : Std.U64)
+  (linked_ok : Std.U64) (linked_failed : Std.U64) (linked_missing : Std.U64)
+  (refused_leaked : Std.U64) (undecided : Std.U64) :
+  Result extracted.gauntlet.Verdict
+  := do
+  let bad ←
+    if linked_failed > 0#u64
+    then ok true
+    else
+      if linked_missing > 0#u64
+      then ok true
+      else
+        if refused_leaked > 0#u64
+        then ok true
+        else if undecided > 0#u64
+             then ok true
+             else ok false
+  let enough ←
+    if saw
+    then
+      if linked_ok > 0#u64
+      then if sent_fewest >= requested
+           then ok true
+           else ok false
+      else ok false
+    else ok false
+  extracted.gauntlet.judge bad enough
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::adversary]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 90:0-92:1
+    Visibility: public -/
+def extracted.gauntlet.adversary
+  (any_bad : Bool) (attempts : Std.U64) :
+  Result extracted.gauntlet.Verdict
+  := do
+  extracted.gauntlet.judge any_bad (attempts > 0#u64)
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::isolation]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 96:0-98:1
+    Visibility: public -/
+def extracted.gauntlet.isolation
+  (identical : Bool) : Result extracted.gauntlet.Verdict := do
+  extracted.gauntlet.judge (¬ identical) true
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::cancel_then_exit]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 102:0-104:1
+    Visibility: public -/
+def extracted.gauntlet.cancel_then_exit
+  (link_ok : Bool) (cancel_refused : Bool) (dropped : Bool) :
+  Result extracted.gauntlet.Verdict
+  := do
+  let dropped1 ←
+    if link_ok
+    then if cancel_refused
+         then ok dropped
+         else ok false
+    else ok false
+  extracted.gauntlet.judge (¬ dropped1) true
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::race]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 110:0-122:1
+    Visibility: public -/
+def extracted.gauntlet.race
+  (links_done : Std.U64) (unlinks_done : Std.U64) (present : Std.U64) :
+  Result extracted.gauntlet.Verdict
+  := do
+  if links_done = 0#u64
+  then ok extracted.gauntlet.Verdict.Inconclusive
+  else
+    let consistent ←
+      if unlinks_done <= links_done
+      then
+        do
+        let i ← links_done - unlinks_done
+        if i = present
+        then if present <= 1#u64
+             then ok true
+             else ok false
+        else ok false
+      else ok false
+    extracted.gauntlet.judge (¬ consistent) true
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::canary]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 126:0-128:1
+    Visibility: public -/
+def extracted.gauntlet.canary
+  (received : Std.U64) (listening : Bool) :
+  Result extracted.gauntlet.Verdict
+  := do
+  extracted.gauntlet.judge (received > 0#u64) listening
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::receipts]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 132:0-134:1
+    Visibility: public -/
+def extracted.gauntlet.receipts
+  (bad : Std.U64) (verified : Std.U64) :
+  Result extracted.gauntlet.Verdict
+  := do
+  extracted.gauntlet.judge (bad > 0#u64) (verified > 0#u64)
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::sender_wait]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 138:0-141:1
+    Visibility: public -/
+def extracted.gauntlet.sender_wait (n : Std.U64) : Result Std.U64 := do
+  let scaled ← n / 10#u64
+  if scaled > 900#u64
+  then ok scaled
+  else ok 900#u64
+
+/-- [nucleus_ifc_kernel::extracted::gauntlet::standing_lifetime]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/gauntlet.rs', lines 145:0-152:1
+    Visibility: public -/
+def extracted.gauntlet.standing_lifetime
+  (ops : Std.U64) (requests : Std.U64) : Result (Option Std.U64) := do
+  let o ← lift (U64.checked_add 11400#u64 ops)
+  match o with
+  | none => ok none
+  | some a =>
+    let i ← extracted.gauntlet.sender_wait requests
+    ok (U64.checked_add a i)
+
 /-- [nucleus_ifc_kernel::extracted::identity::matcode]:
     Source: 'crates/nucleus-ifc-kernel/src/extracted/identity.rs', lines 125:0-139:1
     Visibility: public -/

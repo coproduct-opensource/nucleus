@@ -232,6 +232,15 @@ lean_lib «DecisionChannel» where
 lean_lib «DecisionChannelExtracted» where
   roots := #[`DecisionChannelExtracted]
 
+-- ADR 0017: the links gauntlet's verdicts, before the harness decides them
+-- (found three times on x86: a "pass" that had not observed what it claims).
+lean_lib «GauntletVerdict» where
+  roots := #[`GauntletVerdict]
+
+-- The extracted verdicts (`extracted::gauntlet`) are the model's.
+lean_lib «GauntletVerdictExtracted» where
+  roots := #[`GauntletVerdictExtracted]
+
 -- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
 -- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
 -- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.
