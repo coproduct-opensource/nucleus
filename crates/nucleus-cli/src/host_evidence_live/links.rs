@@ -632,6 +632,10 @@ async fn differential(run: &mut Run<'_>, pool: &mut [Uuid], ops: u64, seed: u64)
 /// bucket. `linked_failed` is that bucket.
 struct PerRequestCounts {
     saw_anything: bool,
+    /// Requests asked for, per kind.
+    requested: u64,
+    /// The fewest the sender reported sending, over the three kinds.
+    sent_fewest: u64,
     linked_ok: u64,
     linked_failed: u64,
     linked_missing: u64,
@@ -642,7 +646,7 @@ struct PerRequestCounts {
 fn per_request_verdict(c: &PerRequestCounts) -> Verdict {
     if c.linked_failed + c.linked_missing + c.refused_leaked > 0 || c.undecided > 0 {
         Verdict::Fail
-    } else if !c.saw_anything || c.linked_ok == 0 {
+    } else if !c.saw_anything || c.linked_ok == 0 || c.sent_fewest < c.requested {
         Verdict::Inconclusive
     } else {
         Verdict::Pass
@@ -661,11 +665,14 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
         "--tls".into(),
     ]
     .into();
-    let src = run.create("sender", 3600, &args).await?;
+    // About 20 requests per kind per second were measured on x86 (2026-11-20); allow
+    // ten, so a large run is waited for rather than cut short at a fixed 900 s.
+    let wait = Duration::from_secs((n / 10).max(900));
+    let src = run.create("sender", wait.as_secs() + 600, &args).await?;
     run.wait_running(src).await?;
     let (s1, b1) = run.link(src, dst, 8080).await?;
     ensure!(s1 == 200, "linking sender to 8080: {s1} {b1}");
-    let src_events = run.wait_done(src, Duration::from_secs(900)).await;
+    let src_events = run.wait_done(src, wait).await;
     let dst_events = run.events(dst).await;
     let got = received(&dst_events);
     let mut answered = BTreeSet::new();
@@ -753,8 +760,24 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
         notes.push(format!("the destination could not bind {p}"));
     }
     let saw_anything = !src_events.is_empty();
+    let sent_of = |want_port: u32, want_tls: bool| {
+        src_events
+            .iter()
+            .filter(|e| matches!(e, Event::Sent { port, tls, .. } if *port == want_port && *tls == want_tls))
+            .count() as u64
+    };
+    let sent_fewest = sent_of(8080, false)
+        .min(sent_of(8081, false))
+        .min(sent_of(8080, true));
+    if sent_fewest < n {
+        notes.push(format!(
+            "the sender reported {sent_fewest} of the {n} requests asked for, per kind"
+        ));
+    }
     let verdict = per_request_verdict(&PerRequestCounts {
         saw_anything,
+        requested: n,
+        sent_fewest,
         linked_ok,
         linked_failed,
         linked_missing,
@@ -1303,6 +1326,8 @@ mod tests {
     fn a_503_on_a_made_link_fails_item_b() {
         let observed = PerRequestCounts {
             saw_anything: true,
+            requested: 200,
+            sent_fewest: 200,
             linked_ok: 63,
             linked_failed: 137,
             linked_missing: 0,
@@ -1316,6 +1341,29 @@ mod tests {
             ..observed
         };
         assert_eq!(per_request_verdict(&carried), Verdict::Pass);
+    }
+
+    /// 2026-11-20, x86, 50,000 asked: the sender was waited on for a fixed 900 s,
+    /// 19,162 of each kind were sent, nothing failed, and the item read "pass".
+    #[test]
+    fn a_run_that_sent_fewer_than_asked_is_not_a_pass() {
+        let short = PerRequestCounts {
+            saw_anything: true,
+            requested: 50_000,
+            sent_fewest: 19_162,
+            linked_ok: 19_162,
+            linked_failed: 0,
+            linked_missing: 0,
+            refused_leaked: 0,
+            undecided: 0,
+        };
+        assert_eq!(per_request_verdict(&short), Verdict::Inconclusive);
+        let full = PerRequestCounts {
+            sent_fewest: 50_000,
+            linked_ok: 50_000,
+            ..short
+        };
+        assert_eq!(per_request_verdict(&full), Verdict::Pass);
     }
 
     #[test]
