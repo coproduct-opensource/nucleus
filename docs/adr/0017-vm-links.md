@@ -586,9 +586,72 @@ on a real KVM host. The pieces:
   identities; a second trust domain needs a federation enrolment it does not do); eval cells
   (they need an attested node: a vTPM AK pin and reference manifest, `docs/findings/
   attested-node-live-run.md`); 10,000 operations and 50,000 requests are knobs, not defaults;
-  latency and throughput are not measured. A TLS link lands on the destination workload's
-  port 443, which an unprivileged workload cannot bind; (b) records it if the destination
-  reports the bind failure.
+  latency and throughput are not measured. (A TLS link once landed on the destination
+  workload's port 443, which an unprivileged workload cannot bind; since `98aee0d22` the probe
+  dials `CONNECT <name>:<port>` on the link's own port, as the proxy always allowed.)
+
+**Local rehearsal (arm64, Apple container, nested KVM) — not the goal's x86 spot VM run
+(2026-11-19).** Run on the owner's Mac while the x86 VM waited on IAM: an Apple M5 Pro,
+`container` 1.4.1 with `--virtualization` and the L1 kernel built from
+`docker/Containerfile.l1-kernel` (6.18.35, `CONFIG_KVM=y`, `CONFIG_VHOST_VSOCK=y`), a Debian
+bookworm host container with Firecracker/jailer 1.17.0 and the pinned v2.6.0 aarch64 guest kernel,
+12 vCPUs, 24 GB. aarch64 musl binaries of this branch; the rootfs from `build-rootfs.sh` with the
+probe overlay. Nested and arm64: it says nothing about x86 timing, and it does not discharge the
+goal.
+
+- **Run 3, on `391e16f7f`, 200 operations, 6-pod pool: the gauntlet passed** (no `fail` item).
+  - (a) differential conformance: 200 operations, every answer equal to the in-process
+    `LinkTable`'s (93 done, 47 refused, 60 not found).
+  - (b) per request: 50 of 50 linked requests answered and delivered, 50 of 50 to the unlinked
+    port refused (403) with none delivered, 0 delivered unanswered. TLS over the link: 50
+    refused, because these are not eval cells and only eval cells are minted a CA (`tls_other`).
+  - (c) adversary, every attempt refused: raw `AF_VSOCK` to CID 2 ports 1030 and 1029 and to
+    CIDs 3–5 port 1031 (`EPERM`, the workload seccomp), a forged link name, CL/TE smuggling, a
+    pipelined second request, `Upgrade`, a non-TLS `CONNECT`, TLS trusting a foreign CA; the
+    64-connection cap answered, as it should below the cap.
+  - (d) 50 probes, one status (404), one body, mean 0.143 ms vs 0.147 ms, Welch's t −0.46.
+  - (e1) link 200, cancel 409, drop receipt after the exit; (e2) 64 raced link/unlink tasks
+    left the row consistent (2 links, 2 unlinks, row absent); (e3) recorded: an unlink mid-
+    stream left 6 answered, 1 refused, 1 connection closed; (e4) recorded: after a node restart
+    the listing is 404 with 0 rows. **The table is not persisted**, as expected.
+  - (f) inconclusive in this run (fixed after, below); (g) 101 of 101 receipts verified with the
+    executor public key alone.
+- **Measured** (run 2, same commit; nested, not x86): pod create to running 2.78–3.44 s wall (12 pods, the node's
+  boot breakdown); 50 linked requests sent serially in 3.32 s with refused and TLS requests
+  interleaved (150 requests, about 22 ms each end to end through guest relay, link proxy, node
+  decision, forwarder and destination relay). Link and unlink calls and sever latency were not
+  timed separately.
+- **Run 4, 2,000 operations: stopped** during item (a) after 14 minutes, when the Mac's free disk
+  fell to the 12 GB floor this run set itself. No report; nothing failed before the stop.
+
+Found by the rehearsal, each fixed with a test that fails before and passes after:
+
+- **The link proxy could not reach the destination's jail** (`391e16f7f`). Its uid (65534)
+  cannot traverse the destination's jail root (0700, the jail user's): all 103 admitted
+  requests of the first run ended `LinkUnreachable`. The node now runs a forwarder per link in
+  the source pod's directory (`link_proxy::Forwarder`); this also explains the x86 run's empty
+  sender report, which predates the fix.
+- **TLS over a link was pinned to port 443 by the probe and harness** (`d8a7ac92b`,
+  `98aee0d22`); the proxy already used the `CONNECT` port.
+- **The harness**: an unlinked canary that works reported nothing, so (f) could not pass (the
+  probe now reports `listening`); items left their pods running and exhausted the node's vCPUs;
+  an item that could not run ended the run without a report (all in `98aee0d22`).
+
+Found and **not** fixed, because it changes the decision protocol's meaning (model-first work):
+
+- **One late decision poisons a pod's links for good.** In the first run the node answered one
+  request about 2.2 s after it was asked, after 103 answers of about 10 ms, with nothing logged
+  in between; the proxy's 2 s deadline expired, and every later request on that pod was refused
+  `HostUnavailable(Poisoned)`. Poisoning is ADR 0015's rule (a late answer could be credited to
+  the wrong request). For links it turns one stall into a pod whose links never carry another
+  byte. A resynchronisation (for example, numbered answers the proxy can discard when late) is a
+  change to the decision channel's semantics and goes through its model first.
+
+Rehearsal environment only, not product defects: Debian's `musl-gcc` on aarch64 runs the repo's
+`.cargo/ld/real-ld` wrapper, which linked dynamically against a musl loader the guest does not
+have (built with `COMPILER_PATH` cleared); a cgroup v2 root that still holds processes cannot
+delegate controllers to the jailer (processes moved to a child group first); a Debian tarball made
+without the empty `/proc`, `/sys`, `/dev` mount points stops guest-init.
 
 ## Consequences
 
