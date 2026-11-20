@@ -219,8 +219,9 @@ enum Posture {
 enum Isolation {
     /// The uid, if it changes, was dropped by std before the hook.
     None,
-    /// `unshare(CLONE_NEWNET)`, then `setgroups(0)`, `setresgid`, `setresuid`.
-    NetnsThenDrop { uid: u32, gid: u32 },
+    /// `unshare(CLONE_NEWNET)`, then `setgroups(0)`, `setresgid`, `setresuid`,
+    /// then die with `parent` (the spawning process, read in the parent).
+    NetnsThenDrop { uid: u32, gid: u32, parent: u32 },
 }
 
 /// How a confined child's filesystem is held (#2696 P3c). Decided per
@@ -762,7 +763,11 @@ impl ChildConfinement {
             }
             Posture::Isolated { uid, gid } => Self::restrict(
                 cmd,
-                Isolation::NetnsThenDrop { uid, gid },
+                Isolation::NetnsThenDrop {
+                    uid,
+                    gid,
+                    parent: std::process::id(),
+                },
                 SyscallFilter::WorkloadDenylist,
                 FilesystemConfinement::NotApplied,
                 rlimits,
@@ -1115,13 +1120,35 @@ mod imp {
             // included, because the hook never sets `SECBIT_KEEP_CAPS`.
             match isolation {
                 Isolation::None => {}
-                Isolation::NetnsThenDrop { uid, gid } => {
+                Isolation::NetnsThenDrop { uid, gid, parent } => {
                     if libc::unshare(libc::CLONE_NEWNET) != 0
                         || libc::setgroups(0, std::ptr::null()) != 0
                         || libc::setresgid(gid, gid, gid) != 0
                         || libc::setresuid(uid, uid, uid) != 0
                     {
                         return Err(io::Error::last_os_error());
+                    }
+                    // A host service dies with the process that spawned it.
+                    // Found on the x86 gauntlet VM (2026-11-19): a killed node
+                    // left every proxy it had started running under PID 1,
+                    // sockets open and its binary busy (24 after one run).
+                    // AFTER the drop: a credential change clears the
+                    // parent-death signal (`commit_creds`). Then the race: if
+                    // the spawner died between fork and here, the signal will
+                    // never come, so refuse instead. It fires when the
+                    // spawning THREAD exits; see `spawn_confined`.
+                    if libc::prctl(
+                        libc::PR_SET_PDEATHSIG,
+                        libc::SIGKILL as libc::c_ulong,
+                        0,
+                        0,
+                        0,
+                    ) != 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if u32::try_from(libc::getppid()).ok() != Some(parent) {
+                        return Err(io::Error::from_raw_os_error(libc::ESRCH));
                     }
                 }
             }
@@ -1343,7 +1370,11 @@ mod imp {
         // refused here like a filter is.
         let isolated = match isolation {
             Isolation::None => false,
-            Isolation::NetnsThenDrop { uid: _, gid: _ } => true,
+            Isolation::NetnsThenDrop {
+                uid: _,
+                gid: _,
+                parent: _,
+            } => true,
         };
         match (filter, landlock_required || isolated) {
             (SyscallFilter::Unfiltered, false) => {}

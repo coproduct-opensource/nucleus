@@ -736,6 +736,20 @@ after the final run. A fix (parent-death signal on the confined child) is in pro
 **Cost:** the VM ran about three hours. At spot list prices for `n2-standard-16`, plus a
 150 GB standard disk, that is under $1, against a $10 ceiling.
 
+**Found on the VM, fixed: proxies outlived their node (2026-11-19).** When the node died or
+was killed, every confined `nucleus-egress-proxy` it had spawned (egress and `--mode link`)
+kept running under PID 1, its sockets open and its binary busy: 24 after the first run, 20
+after the diagnostic one, and the next install failed `ETXTBSY`. The fix is in the one place
+host services are confined (`harden_child`, `Isolation::NetnsThenDrop`): after the uid drop
+(a credential change clears the signal), `prctl(PR_SET_PDEATHSIG, SIGKILL)`, then the race
+check (if the spawner already died, `getppid()` is no longer it, and the spawn is refused).
+The signal fires when the spawning *thread* exits, so `spawn_confined` documents why its
+callers run on the runtime's long-lived worker threads (never `spawn_blocking`; the node has
+no `block_in_place`). Test: `a_confined_child_dies_with_its_spawner` (Linux, root), which
+SIGKILLs a spawner that started a child exactly as the node does and requires the child gone
+within 1 s. Driven red: with signal 0 in place of `SIGKILL`, the child outlived its spawner
+and the test failed.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.

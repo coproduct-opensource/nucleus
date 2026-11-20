@@ -846,6 +846,12 @@ pub(crate) async fn spawn_confined(spawn: Spawn<'_>) -> Result<Spawned, String> 
             return Err(format!("{what} cannot be hardened here: {why:?}"));
         }
     }
+    // The child dies with this process (`PR_SET_PDEATHSIG` in the hook). The
+    // signal fires when the forking THREAD exits, so this must not be called
+    // from a `spawn_blocking` thread, which tokio retires after idling: the
+    // callers (`egress_proxy::start_for_pod`, `link_proxy::start_for_pod`) are
+    // async and run on the runtime's worker threads, which live as long as the
+    // node, and the node never calls `block_in_place`.
     let mut child = tokio::process::Command::from(cmd)
         .kill_on_drop(true)
         .spawn()
