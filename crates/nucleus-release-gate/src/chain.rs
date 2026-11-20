@@ -9,15 +9,15 @@
 use std::collections::BTreeSet;
 
 use nucleus_receipt::Receipt;
-use nucleus_weight_patch::CheckpointDigest;
+use nucleus_weight_patch::{CheckpointDigest, ProgramDigest};
 use serde::{Deserialize, Serialize};
 
 use crate::body::{
     ApplyOutcome, ApplyReceipt, Approval, Body, EvalReceipt, Lineage, OpenError, Opened,
     PatchManifest, ProposalGrant, RollbackOrder, Transition, named_issuer, open,
 };
-use crate::eval::{ThresholdFailure, check_thresholds};
-use crate::keys::{ReceiptHash, RoleKey};
+use crate::eval::{EvalResults, ThresholdFailure, check_thresholds};
+use crate::keys::{ContentDigest, ReceiptHash, RoleKey};
 use crate::policy::ReleasePolicy;
 
 /// What the pointer retains for rollback.
@@ -306,6 +306,46 @@ fn inconsistent(hop: Hop, field: &str) -> Refusal {
     }
 }
 
+/// What a chain that walked says was done: the digests and results a verifier
+/// needs in order to replay the patch and recompute the scores.
+///
+/// Minted only by [`chain_facts`], from receipts that verified.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainFacts {
+    base: CheckpointDigest,
+    candidate: CheckpointDigest,
+    program: ProgramDigest,
+    transcript: ContentDigest,
+    results: EvalResults,
+}
+
+impl ChainFacts {
+    /// The checkpoint the program was applied to.
+    pub const fn base(&self) -> CheckpointDigest {
+        self.base
+    }
+
+    /// The checkpoint that resulted.
+    pub const fn candidate(&self) -> CheckpointDigest {
+        self.candidate
+    }
+
+    /// The program.
+    pub const fn program(&self) -> ProgramDigest {
+        self.program
+    }
+
+    /// The per-item outcomes the results were computed from.
+    pub const fn transcript(&self) -> ContentDigest {
+        self.transcript
+    }
+
+    /// The results the evaluator signed.
+    pub const fn results(&self) -> &EvalResults {
+        &self.results
+    }
+}
+
 /// Walks `chain` against `policy` and `pointer` as of `now_micros`.
 ///
 /// # Errors
@@ -317,6 +357,49 @@ pub fn verify_chain(
     pointer: &PointerState,
     now_micros: u64,
 ) -> Result<PointerMove, Refusal> {
+    walk(chain, policy, pointer, now_micros).map(|(granted, _)| granted)
+}
+
+/// Walks `chain` exactly as [`verify_chain`] does and returns what it says
+/// was done. For a verifier replaying a record; it grants nothing.
+///
+/// # Errors
+///
+/// The first [`Refusal`] met, in hop order.
+pub fn chain_facts(
+    chain: &ReleaseChain,
+    policy: &ReleasePolicy,
+    pointer: &PointerState,
+    now_micros: u64,
+) -> Result<ChainFacts, Refusal> {
+    walk(chain, policy, pointer, now_micros).map(|(_, facts)| facts)
+}
+
+/// The candidate a chain's apply receipt names, read without verifying
+/// anything. It is a hint for looking something up before the walk — whether
+/// the store holds the files, say — and is never evidence.
+#[must_use]
+pub fn claimed_candidate(chain: &ReleaseChain) -> Option<CheckpointDigest> {
+    chain.apply.projections.iter().find_map(|projection| {
+        let nucleus_receipt::Projection::Ci(value) = projection else {
+            return None;
+        };
+        value
+            .get("body")?
+            .get("outcome")?
+            .get("output")?
+            .as_str()?
+            .parse()
+            .ok()
+    })
+}
+
+pub(crate) fn walk(
+    chain: &ReleaseChain,
+    policy: &ReleasePolicy,
+    pointer: &PointerState,
+    now_micros: u64,
+) -> Result<(PointerMove, ChainFacts), Refusal> {
     let ReleaseChain {
         grant,
         manifest,
@@ -498,7 +581,7 @@ pub fn verify_chain(
         return Err(Refusal::Expired { hop: Hop::Approval });
     }
 
-    Ok(PointerMove {
+    let granted = PointerMove {
         from: pointer.current,
         to: candidate,
         generation: pointer.generation,
@@ -510,7 +593,15 @@ pub fn verify_chain(
             eval: eval.hash(),
             approval: approval.hash(),
         },
-    })
+    };
+    let facts = ChainFacts {
+        base: g.base,
+        candidate,
+        program: m.program,
+        transcript: e.transcript,
+        results: e.results.clone(),
+    };
+    Ok((granted, facts))
 }
 
 /// Checks a rollback order against `policy` and `pointer` as of `now_micros`.

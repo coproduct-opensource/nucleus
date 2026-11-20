@@ -280,9 +280,11 @@ population_floor = 278
 # denies all seven totality lints from its first commit. 45 of 102 = 44.11%.
 # 2026-11-20: nucleus-release-gate, which decides whether the serving pointer moves, denies
 # all seven from its first commit. 46 of 103 = 44.66%.
-floor_bp = 4466
+# 2026-11-20: nucleus-release-server, which decides what a request is answered from, denies
+# all seven from its first commit, in its library and its binary. 47 of 104 = 45.19%.
+floor_bp = 4519
 floor_set = "measurement"
-population_floor = 103
+population_floor = 104
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

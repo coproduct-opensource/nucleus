@@ -1,0 +1,36 @@
+[package]
+name = "nucleus-release-server"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The serving side of a weight-patch release: a checkpoint store that measures what it hands out, an HTTP surface that answers only from the digest the pointer names and says which digest answered, and a verifier that replays a release record — the patch, the scores and the chain — from files."
+publish = true
+
+[[bin]]
+name = "nucleus-release"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+nucleus-release-gate = { path = "../nucleus-release-gate", version = "1.0.0" }
+nucleus-weight-patch = { path = "../nucleus-weight-patch", version = "1.0.0" }
+nucleus-receipt = { path = "../nucleus-receipt", version = "1.0.0" }
+axum = { workspace = true }
+# `fs` is not used here; it is on so that the workspace clippy.toml entry for
+# `tokio::fs::OpenOptions::append` names a function this crate can reach.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+tempfile = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
