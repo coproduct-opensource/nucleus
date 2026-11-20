@@ -2254,6 +2254,7 @@ fn a_spec_asking_for_huge_pages_reaches_the_machine_config() {
             cpu_cores: Some(2),
             memory_mib: Some(12288),
             huge_pages: pages,
+            accelerators: None,
         });
         FirecrackerConfig::from_spec(
             &spec,

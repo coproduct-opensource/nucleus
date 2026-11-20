@@ -211,6 +211,7 @@ fn the_operator_flags_parse_with_finite_defaults() {
     assert_eq!(a.c.max_pod_memory_mib, DEFAULT_MAX_POD_MEMORY_MIB);
     assert_eq!(a.c.max_pod_vcpus, DEFAULT_MAX_POD_VCPUS);
     assert_eq!(a.c.pod_huge_pages, HugePagesOffer::Refused);
+    assert_eq!(a.c.max_pod_accelerators, 0);
     for bad in [
         ["n", "--max-pod-vcpus", "33"],
         ["n", "--max-pod-vcpus", "0"],
@@ -227,4 +228,62 @@ fn the_operator_flags_parse_with_finite_defaults() {
     ]);
     assert_eq!(a.c.ceilings().max_memory_mib, 16384);
     assert_eq!(a.c.ceilings().huge_pages, HugePagesOffer::Offered);
+}
+
+/// A node offers no accelerator until its operator says so, and then never more than it said.
+#[test]
+fn an_accelerator_count_above_what_the_node_offers_is_refused_by_name() {
+    let one = spec(r#"{"resources":{"accelerators":1}}"#);
+    let three = spec(r#"{"resources":{"accelerators":3}}"#);
+    let none = spec("{}");
+
+    admit(&none, &PodCeilings::defaults()).expect("a pod asking for none is not about this");
+    let e = admit(&one, &PodCeilings::defaults()).expect_err("the default offers none");
+    assert_eq!(
+        e,
+        ResourceRefused::Accelerators {
+            asked: 1,
+            ceiling: 0
+        }
+    );
+    assert!(e.to_string().contains("--max-pod-accelerators"), "{e}");
+
+    let offering_two = PodCeilings::defaults().offering_accelerators(2);
+    admit(&one, &offering_two).expect("within what is offered");
+    assert_eq!(
+        admit(&three, &offering_two),
+        Err(ResourceRefused::Accelerators {
+            asked: 3,
+            ceiling: 2
+        })
+    );
+}
+
+/// Only the container driver can attach a device. Every other driver refuses the spec, naming
+/// itself, and none runs the pod without the device.
+#[test]
+fn an_accelerator_is_refused_on_every_driver_that_cannot_attach_one() {
+    use crate::driver::DriverKind;
+    let one = spec(r#"{"resources":{"accelerators":1}}"#);
+    let none = spec("{}");
+
+    admit_accelerators(&one, &DriverKind::Container).expect("the container driver attaches it");
+    let mut cannot = vec![
+        (DriverKind::Firecracker, "firecracker"),
+        (DriverKind::AppleVz, "apple-vz"),
+    ];
+    #[cfg(feature = "local-driver")]
+    cannot.push((DriverKind::Local, "local"));
+    for (driver, name) in cannot {
+        admit_accelerators(&none, &driver).expect("a pod asking for none runs on every driver");
+        let e = admit_accelerators(&one, &driver).expect_err("no passthrough on this driver");
+        assert_eq!(
+            e,
+            ResourceRefused::AcceleratorsOnDriver {
+                asked: 1,
+                driver: name
+            }
+        );
+        assert!(e.to_string().contains("isolated as a container"), "{e}");
+    }
 }
