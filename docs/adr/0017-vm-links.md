@@ -853,6 +853,22 @@ the defect.
   reports (not committed: it names pod ids of a deleted VM). The VM ran 17:26–19:06 UTC, about
   1.7 VM-hours, and was deleted by name and confirmed absent from the instance list. The day's
   estimate stays under $7 against the $10 ceiling, from list prices as above.
+- **Again after the merge with main (2026-11-20, 20:32–21:57 UTC, commit `87454f79f`):**
+  the same full-scale run on the branch merged with main (`159e31033`) plus its fixups, on a
+  fourth throwaway x86 spot VM. Exit 0 and "no item failed", with the same numbers: (a)
+  10,000/10,000 ops (4,217 done, 3,650 refused, 2,133 not found); (b) 50,000/50,000 delivered and
+  50,000 refused, nothing failed, missing, leaked or undecided; (c), (d) (Welch t 0.85), (e1),
+  (e2) (1 link, 1 unlink, no row), (f) and (g) (4,223/4,223) pass; (e3) and (e4) recorded. Report
+  5,442 bytes, SHA-256 `4e39f252aadfa5a1c5d636361aeb7f0b3108b971d65bda4be759079ac6081797`. Before
+  it, on a separate VM: `cargo fmt --check`; CI's `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` (nucleus-verifier-service excluded: its build script needs the
+  verifier-js wasm package CI builds first); 893 and 1,294 tests passing, none failing; and
+  `cargo xtask proof-obligations` (105 rows). The merge found four places where main had added a
+  check the branch did not yet meet, each fixed in the merge's fixups: the `NodeState` census (the
+  link table is `TenantShared`), ADR 0016's TLS acceptor census (the E3 proxy acceptor is
+  `ServerAuthOnly`), main's detached cancel (now `cancel_unlinked`, one task holding the link
+  lock across teardown), and the guest-capability cycle. The two VMs ran about 2 hours together,
+  were deleted by name and confirmed absent; the day's estimate is under $9.
 
 ### Every new test driven red (2026-11-20, commit `b32cf4c91`)
 
