@@ -683,6 +683,59 @@ exhausts its source's slots.
 - Not yet shown on Linux: whether a guest-side full close surfaces promptly on the host's vsock
   socket (the fix relies on it; the deadline bounds it if not). The next x86 run measures it.
 
+### The gauntlet on x86 KVM (2026-11-20, commit `e27cc34fd`)
+
+**Host:** a throwaway GCP spot VM, `n2-standard-16` (16 vCPU, 62 GiB), us-east4-c, nested
+virtualization, shielded vTPM, Ubuntu 24.04, kernel 7.0.0-1017-gcp, no service account, deleted
+after the run. Built on the VM from the branch (`cargo xtask gauntlet-host-setup`), run with
+`NUCLEUS_LINKS_OPS=2000 cargo xtask links-live --sudo`. Report:
+`/var/tmp/links-gauntlet-e27.json` on the VM, kept outside the repository.
+
+**Result: no item failed.**
+
+| item | verdict | numbers |
+|---|---|---|
+| (a) model ↔ node differential | pass | 2,000 random operations on 8 pods, outcomes identical to `LinkTable`: 841 done, 706 refused, 453 not found |
+| (b) per-request decisions | pass | 200/200 linked requests delivered, every one with a host decision in the journal; 200/200 unlinked refused; 0 leaked; 0 delivered undecided; 0 failed |
+| (c) adversary (guest root) | pass | raw vsock to the host's 1029/1030 and to other CIDs' 1031 refused (`EPERM`); forged link name, CL/TE, pipelining, `Upgrade`, non-TLS `CONNECT`, foreign CA: refused or decided, none delivered |
+| (d) isolation | pass | 200 probes, one status (404) and one body for an unknown source or destination; Welch t = 0.31 (timing reported, not judged) |
+| (e1) cancel while linked, then exit | pass | 409, then a drop-on-exit receipt |
+| (e2) 64 concurrent link/unlink tasks | pass | the row is consistent afterwards |
+| (e3) unlink mid-request | recorded | 6 × 200, 1 × 403, 1 × closed (clocks not correlated) |
+| (e4) node restart | recorded | the table is lost (404, 0 rows): it is not persisted |
+| (f) canary with no link | pass | listening, received nothing |
+| (g) offline receipt verification | pass | 847/847 verified with the node's public key alone |
+
+**How it got there: four x86 runs, each failure a defect fixed with a red-driven test.**
+
+1. Run 1 (`66ab86b9e`): (b) and (f) inconclusive. The link proxy (uid 65534) could not enter the
+   destination's jail root (0700), so every admitted request was `LinkUnreachable`. Fixed by the
+   node's per-link forwarder (`391e16f7f`), found first by the arm64 rehearsal.
+2. Run 2 (`98aee0d22`): 63 of 200 linked requests delivered, the rest 503, and (b) still read
+   "pass". Two defects: the destination guest relay waited for the host to close first, so every
+   delivered exchange held one of the source pod's 64 slots (`e27cc34fd`: the relay ends on the
+   server's end-of-stream; `LINK_EXCHANGE_DEADLINE` bounds a destination that never closes); and
+   the harness had no bucket for a 503 (`e27cc34fd`: `linked_failed` fails the item).
+3. A diagnostic run with the decision-channel fix (`e88e8cf22`) still stopped at 63, which ruled
+   that cause out for this symptom. The fix stands on its own: one late answer had poisoned a
+   pod's channel for good in the rehearsal.
+4. Final run (`e27cc34fd`): the table above.
+
+**Found on the VM, not yet fixed:** a node that dies leaves its confined proxies running
+(reparented to PID 1, sockets open, the binary busy for the next install): 24 after run 1, 10
+after the final run. A fix (parent-death signal on the confined child) is in progress.
+
+**Not covered by this run:**
+- TLS over a link: a pod CA is minted only for eval cells, and an eval cell needs an attested node
+  (vTPM AK pin and reference manifest), which this VM did not configure. All 200 TLS requests were
+  refused, as designed; TLS link termination is tested in-process only.
+- Links across trust domains: every pod here was node-local; covered by L4a's handler tests and
+  `no_cross_tenant_link`.
+- Persistence across a node restart (e4): the next step is native Olog.
+
+**Cost:** the VM ran about three hours. At spot list prices for `n2-standard-16`, plus a
+150 GB standard disk, that is under $1, against a $10 ceiling.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.
