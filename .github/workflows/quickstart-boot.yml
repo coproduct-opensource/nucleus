@@ -80,7 +80,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
       - name: Is this change in scope?
@@ -112,7 +112,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
       - name: Is this change in scope?
@@ -223,7 +223,7 @@ jobs:
     runs-on: ${{ vars.ARM64_METAL_RUNNER }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
           targets: aarch64-unknown-linux-musl
@@ -291,7 +291,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           # `toolchain` is REQUIRED when the action is pinned by SHA: the tag name
           # is what would otherwise supply it, and a SHA carries no tag.
@@ -600,7 +600,7 @@ jobs:
 
       - name: Upload the escape lane verdict
         if: ${{ !cancelled() && steps.relevance.outputs.relevant == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: escape-lane-x86_64
           path: escape-lane.json
@@ -661,14 +661,26 @@ jobs:
       # this build would publish must predict the node binaries that ran. Every
       # check is pass/fail/could_not_run in summary.json, and could_not_run is
       # red unless named below. All logic is in `cargo xtask live-boot-evidence`.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         if: steps.relevance.outputs.relevant == 'true'
         with:
           tool: wasm-pack@0.13.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.relevance.outputs.relevant == 'true'
         with:
           node-version: "22"
+      # The node's TPM is SOFTWARE: swtpm on a loopback socket, which
+      # the collector starts, measures the node's binaries into and pins, per
+      # run, before the node starts. Evidence and results say `software_tpm`
+      # wherever they name the anchor, and a verifier accepts it only through
+      # `--allow-software-tpm-pin`. It exists so the node appraises itself
+      # Attested against this build's reference under the real admission rule
+      # (an eval cell is admitted only on an attested node), never as a
+      # hardware root. All logic is in the xtask and the collector.
+      - name: Install swtpm (the live boot node's software TPM)
+        if: steps.relevance.outputs.relevant == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq swtpm
+
       - name: Live boot evidence, verified by the public verifiers
         if: steps.relevance.outputs.relevant == 'true'
         # No check may be could_not_run: the guest prints its
@@ -676,11 +688,11 @@ jobs:
         # needs no allowance.
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo xtask live-boot-evidence --bin-dir target/x86_64-unknown-linux-musl/release --arch x86_64 --sudo --out live-boot-evidence
+          cargo xtask live-boot-evidence --bin-dir target/x86_64-unknown-linux-musl/release --arch x86_64 --sudo --software-tpm ci-swtpm --out live-boot-evidence
 
       - name: Upload the live boot evidence bundle
         if: ${{ !cancelled() && steps.relevance.outputs.relevant == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: live-boot-evidence-x86_64
           path: live-boot-evidence/

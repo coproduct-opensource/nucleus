@@ -12,9 +12,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use clap::Parser;
 use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
-use nucleus::portcullis::kernel::{DecisionToken, Kernel};
+use nucleus::portcullis::kernel::Kernel;
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
-use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
+use nucleus::{NucleusError, PodRuntime};
 use nucleus_authority_exchange::{Charger, RoundScheduler};
 use nucleus_permission_market::{PermissionDimension, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
@@ -37,6 +37,8 @@ mod authority_round;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
+mod child_reach;
+mod decision_gate;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
@@ -44,6 +46,7 @@ mod effect_gate;
 mod egress;
 mod escalate;
 mod exit_report;
+mod guest_request_proof;
 mod host_decide;
 mod host_socket;
 mod identity_fusion;
@@ -58,12 +61,15 @@ mod memory;
 mod memory_store;
 mod node_client;
 mod node_identity;
+mod owner_decision;
 mod pod_cert;
 mod pod_mgmt;
 mod policy;
 mod proposal;
+mod retired;
 mod run_gate;
 mod sandbox_proof;
+mod secret_census;
 mod session_token;
 mod spend_shipper;
 mod startup_trace;
@@ -72,6 +78,7 @@ mod telemetry;
 mod unicode_audit;
 mod url_allow;
 mod validation;
+mod workload_request_proof;
 
 use crate::api_error::ApiError;
 mod artifact;
@@ -82,7 +89,7 @@ mod workload_door;
 mod workload_supervisor;
 
 use approval::{
-    ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry, approve_operation,
+    ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry, approval_lapsed, approve_operation,
     load_approval_bundle,
 };
 use attestation::AttestationVerifier;
@@ -108,6 +115,17 @@ fn landlock_waiver(given: bool) -> nucleus::LandlockWaiver {
         nucleus::LandlockWaiver::Explicit
     } else {
         nucleus::LandlockWaiver::Absent
+    }
+}
+
+/// `--workload-network-isolated` as the confirmation it is (#3493): the flag's
+/// presence, put there by guest-init from the node's command line, is the only
+/// thing that maps to `NodeConfirmedIsolated`.
+fn workload_network(given: bool) -> ingest::WorkloadNetwork {
+    if given {
+        ingest::WorkloadNetwork::NodeConfirmedIsolated
+    } else {
+        ingest::WorkloadNetwork::Unconfirmed
     }
 }
 
@@ -137,6 +155,8 @@ fn workload_landlock_verdict(
 struct Args {
     #[command(flatten)]
     memory: memory_store::MemoryStoreArgs,
+    #[command(flatten)]
+    decisions: owner_decision::DecisionArgs,
     /// Pod spec YAML path.
     #[arg(long, env = "NUCLEUS_POD_SPEC")]
     spec: PathBuf,
@@ -171,14 +191,12 @@ struct Args {
     /// Optional vsock port override.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_VSOCK_PORT")]
     vsock_port: Option<u32>,
-    /// Shared secret for HMAC request signing.
-    /// HMAC key for the shared-secret auth tier.
-    ///
-    /// Defaults to empty because a host-verified vsock listener does not use it
-    /// — see `enforce_hmac_key_quality`, which still refuses an empty key on
-    /// every transport that can actually select the HMAC tier.
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET", default_value = "")]
-    auth_secret: String,
+    /// RETIRED (#2446 step 3). It keyed the shared-secret tier and the tier-3
+    /// sandbox token, and both are deleted. Declared only so that a launcher
+    /// still passing it (flag or env) is refused by name at startup
+    /// (`retired::refuse_auth_secret`) instead of being silently ignored.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET", hide = true)]
+    auth_secret: Option<String>,
     /// Maximum allowed clock skew (seconds) for signed requests.
     #[arg(
         long,
@@ -193,9 +211,18 @@ struct Args {
         default_value = "/var/log/nucleus/audit.log"
     )]
     audit_log: PathBuf,
-    /// HMAC secret for the Article 12 log and its shipper. It no longer keys
-    /// the audit log at `--audit-log`: that log is signed with an Ed25519 key
-    /// this process generates and holds (`audit_log`, #3293).
+    /// Privileged workload proof state, outside the workload tree. The default
+    /// survives proxy restarts within a guest boot; use a private persistent
+    /// mount when recovery across guest boots is required.
+    #[arg(
+        long,
+        env = "NUCLEUS_WORKLOAD_PROOF_STATE",
+        default_value = "/run/nucleus-workload-proof"
+    )]
+    workload_proof_state: PathBuf,
+    /// HMAC secret for the Article 12 shipper's channel to the host. It keys
+    /// neither log: the audit log (#3293) and the Article 12 log (#3309) are
+    /// signed with an Ed25519 key this process generates and holds (`audit_log`).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
     audit_secret: Option<String>,
     /// Path for the EU AI Act Article 12 record-keeping log (JSONL, hash-chained).
@@ -264,7 +291,9 @@ struct Args {
     )]
     web_fetch_max_bytes: usize,
     /// Require attestation for all requests.
-    /// When enabled, requests must include valid VM attestation.
+    /// When enabled, a network caller must present an mTLS client certificate
+    /// whose launch chains to `--trust-bundle`; without `--mtls` every request
+    /// outside the workload door is refused.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_ATTESTATION")]
     require_attestation: bool,
     /// Explicit opt-in to the bare host tier (owner decisions, 2026-10-02):
@@ -303,6 +332,23 @@ struct Args {
         )
     )]
     workload_without_landlock: nucleus::LandlockWaiver,
+    /// The node's confirmation that this VM has no network interface, no
+    /// egress proxy and no credentialed upstream (#3493). With it, a `run`
+    /// command the egress classifier flags does not label the session
+    /// adversarial: it cannot have reached anything outside. guest-init passes it when the node put
+    /// `nucleus.workload_network=isolated` on the command line.
+    ///
+    /// A flag only, never an env var: ambient configuration is not a
+    /// confirmation.
+    #[arg(
+        long = "workload-network-isolated",
+        action = clap::ArgAction::SetTrue,
+        value_parser = clap::builder::TypedValueParser::map(
+            clap::builder::BoolValueParser::new(),
+            workload_network
+        )
+    )]
+    workload_network_isolated: ingest::WorkloadNetwork,
     /// Comma-separated list of allowed kernel hashes (SHA-256, hex).
     /// If empty, any kernel hash is accepted when attestation is present.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_KERNEL_HASHES")]
@@ -406,6 +452,19 @@ struct Args {
     /// the cert it already fetches for sandbox proof (tier 1/2).
     #[arg(long, env = "NUCLEUS_IDENTITY_KEY")]
     identity_key: Option<std::path::PathBuf>,
+
+    /// The pod's private key arrives on stdin instead (#3471): the launcher
+    /// wrote it whole and closed the pipe. Read to its end once, at startup,
+    /// after the runtime sealed itself and before anything is spawned, and
+    /// held only in this process's memory. The local driver hands an
+    /// orchestrator pod its key this way, so no key file exists at a uid the
+    /// proxy's children share.
+    #[arg(
+        long,
+        env = nucleus_identity::pod_files::KEY_ON_STDIN_ENV,
+        conflicts_with = "identity_key"
+    )]
+    identity_key_on_stdin: bool,
 
     /// Trust bundle (the node's CA root) used to validate nucleus-node's
     /// server certificate when calling its pod-management HTTP API and
@@ -519,6 +578,8 @@ struct Args {
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    guest_proof: Option<Arc<guest_request_proof::Gate>>,
+    workload_proof: Option<Arc<workload_request_proof::Gate>>,
     pub(crate) runtime: Arc<PodRuntime>,
     approvals: Arc<ApprovalRegistry>,
     audit: Arc<AuditLog>,
@@ -537,7 +598,6 @@ pub(crate) struct AppState {
     /// expressible. It becomes real when the log gains durable backing. See
     /// `docs/production-delta.md`, "Receipt log resilience (FM-3)".
     receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
-    auth: AuthConfig,
     approval_auth: AuthConfig,
     /// Approver PUBLIC keys for signature-based approvals. `Some` makes the
     /// Ed25519 tier the ONLY way into `/v1/approve` (the HMAC approval tier
@@ -553,6 +613,10 @@ pub(crate) struct AppState {
     /// fallback is not consulted. It is a fact about how the server was bound,
     /// never something a request can claim.
     host_verified_transport: bool,
+    /// What the node confirmed about the workload's network (#3493), from the
+    /// `--workload-network-isolated` flag only. Decides the integrity label of
+    /// `run` output (`ingest::CommandIngest`).
+    pub(crate) workload_network: ingest::WorkloadNetwork,
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
     pub(crate) web_client: reqwest::Client,
@@ -688,6 +752,9 @@ pub(crate) struct AppState {
     /// Deterministic transforms used to recompute-verify `Deterministic` memory
     /// records. Empty by default ⇒ deterministic records fail closed (`Invalid`).
     pub(crate) memory_transforms: Arc<nucleus_provenance_memory::TransformRegistry>,
+    /// Verified owner decisions (`owner_decision.rs`). `None` when no trust roots are
+    /// provisioned, and then the decision routes do not exist.
+    pub(crate) decisions: Option<Arc<owner_decision::DecisionDesk>>,
     /// The governor keys that verify a token or cosign a memory declassification
     /// (`NUCLEUS_DECLASSIFY_TRUSTED_KEYS`); empty or withheld from an eval cell ⇒
     /// every declassify fails closed (ADR 0013 rule 8).
@@ -750,57 +817,23 @@ pub(crate) fn core_capabilities(
 }
 
 /// Extract an ActorIdentity from the auth context for verdict recording.
-/// Refuse a world-known HMAC key — but only on transports that can select the
-/// HMAC tier.
-///
-/// An EMPTY `auth_secret` satisfies "present" while being a key anyone can
-/// compute: an attacker signs with `HMAC(∅, msg)` and every signed request and
-/// sandbox token becomes forgeable. That has always been fail-closed here.
-///
-/// What changed is that on a **host-verified vsock listener** the HMAC tier is
-/// unreachable — `auth::select_auth_tier` returns `HostVsock`, and the peer's
-/// identity comes from a CID the guest kernel sets and no guest process can
-/// forge. On that transport the key is not weak, it is *unused*, and demanding
-/// one would force a secret onto the kernel command line for nothing. That
-/// command line is world-readable inside the guest, which is the exposure this
-/// whole change exists to remove.
-///
-/// So: still fail closed wherever the key can be reached, and stay silent only
-/// where it provably cannot be.
-fn enforce_hmac_key_quality(auth_secret: &str, host_verified_transport: bool) {
-    if host_verified_transport {
-        if !auth_secret.trim().is_empty() {
-            warn!(
-                "an HMAC auth secret was supplied but this server is bound to a host-verified \
-                 listener, where the HMAC tier is unreachable; it keys only the tier-3 \
-                 sandbox token (#2446 step 3 removes both)"
-            );
-        }
-        return;
-    }
-    if auth_secret.trim().is_empty() {
-        error!(
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is empty — refusing to start: an empty HMAC key is \
-             world-known and makes sandbox tokens and request auth forgeable (fail-closed)"
-        );
-        std::process::exit(1);
-    }
-    if auth_secret.len() < nucleus_client::MIN_AUTH_SECRET_LEN {
-        warn!(
-            secret_len = auth_secret.len(),
-            min = nucleus_client::MIN_AUTH_SECRET_LEN,
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is shorter than the recommended minimum — weak HMAC key"
-        );
-    }
-}
-
 /// Thin adapter from `Args`' individual path fields to `node_identity::require`,
 /// which takes plain paths so it can be unit-tested without a full `Args`.
-fn require_node_identity(args: &Args, flag_hint: &str) -> node_identity::NodeIdentityPem {
+fn require_node_identity(
+    args: &Args,
+    delivered: Option<&node_identity::DeliveredKey>,
+    flag_hint: &str,
+) -> node_identity::NodeIdentityPem {
+    // `--identity-key` and `--identity-key-on-stdin` conflict (clap), so at
+    // most one of these is set.
+    let key = delivered.map(node_identity::KeySource::Delivered).or(args
+        .identity_key
+        .as_ref()
+        .map(node_identity::KeySource::File));
     node_identity::require(
         args.identity_cert.as_ref(),
         args.tls_cert.as_ref(),
-        args.identity_key.as_ref(),
+        key,
         args.identity_trust_bundle.as_ref(),
         args.trust_bundle.as_ref(),
         flag_hint,
@@ -1059,6 +1092,16 @@ fn console_line(msg: &str) {
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+    // First, before a secret is read or a child spawned (#3461): no process at
+    // this uid may open /proc/<pid>/environ, mem or fd. (No descriptor this
+    // process holds survives into a child: every spawn sweeps them.)
+    let seal = match nucleus::seal_runtime() {
+        Ok(seal) => seal,
+        Err(e) => {
+            eprintln!("FATAL: could not seal the runtime against its own children: {e}");
+            std::process::exit(78);
+        }
+    };
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
     let mut st = startup_trace::Startup::new();
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1087,22 +1130,40 @@ async fn main() -> Result<(), ApiError> {
     #[cfg(feature = "otel")]
     let _memory_metrics = telemetry::init_memory_metrics().map_err(ApiError::Spec)?;
 
-    let args = Args::parse();
+    // The matches are kept: where clap found a secret (flag or environment)
+    // decides who can read it (`secret_census`).
+    let matches = <Args as clap::CommandFactory>::command().get_matches();
+    let args =
+        <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     st.mark("args_parse");
 
-    // === Auth-secret sanity (fail-closed on a world-known key) ===
-    // `auth_secret` is a required arg, but an EMPTY string satisfies "present"
-    // while being a world-known HMAC key — an empty key makes sandbox tokens and
-    // signed requests trivially forgeable (an attacker computes HMAC(∅, msg)).
-    // Refuse to start rather than authenticate against it. Legit deployments
-    // always provide a real secret, so this never affects them.
-    // `.trim().is_empty()` (matching nucleus-node) also rejects a whitespace-only
-    // secret, which is effectively unset.
-    // MOVED, not removed — see `enforce_hmac_key_quality` below. The check needs
-    // to know whether this server will be bound to a host-verified vsock
-    // listener, and that is only known once the spec is loaded. Refusing an
-    // empty key here would make the secretless vsock path impossible; refusing
-    // it nowhere would fail open on the transports that still need HMAC.
+    // The pod key a launcher delivered on stdin (#3471), read now: the runtime
+    // is sealed, and nothing has been spawned to inherit stdin.
+    let delivered_key = match node_identity::DeliveredKey::from_stdin(args.identity_key_on_stdin) {
+        Ok(key) => key,
+        Err(why) => {
+            eprintln!("FATAL: {why}");
+            std::process::exit(78);
+        }
+    };
+
+    // === Retired shared secret (#2446 step 3) ===
+    // The shared-secret tier and the tier-3 token it keyed are deleted. A
+    // launcher still handing this process a secret is refused by name rather
+    // than started with a credential that does nothing.
+    if let Err(why) = retired::refuse_auth_secret(args.auth_secret.as_deref()) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
+    // On stderr, like the other startup notices: it must reach the boot log
+    // whatever the tracing filter is.
+    if let Some(notice) = sandbox_proof::retired_token_notice(
+        std::env::var(sandbox_proof::RETIRED_SANDBOX_TOKEN_ENV)
+            .ok()
+            .as_deref(),
+    ) {
+        eprintln!("WARNING: {notice}");
+    }
     // Move B: requests to nucleus-node (pod management HTTP, lockdown gRPC)
     // now authenticate over mTLS with this pod's own SVID — there is no
     // node-auth secret left to sanity-check here. See `load_node_identity`.
@@ -1119,8 +1180,6 @@ async fn main() -> Result<(), ApiError> {
             .spire_socket
             .clone()
             .or_else(|| std::env::var("SPIFFE_ENDPOINT_SOCKET").ok()),
-        sandbox_token: std::env::var("NUCLEUS_SANDBOX_TOKEN").ok(),
-        auth_secret: args.auth_secret.as_bytes().to_vec(),
     };
     let sandbox_proof = match st
         .timed(
@@ -1141,7 +1200,10 @@ async fn main() -> Result<(), ApiError> {
         .timed("spec_read", tokio::fs::read_to_string(&args.spec))
         .await?;
     let mut spec: PodSpec =
-        serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
+        nucleus_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
+
+    let guest_proof_config = guest_request_proof::Config::from_spec(&spec)?;
+    let guest_proof_path = args.audit_log.with_extension("request-proofs.olog");
 
     // This pod's certificate of authority: verified ONCE, against the pinned
     // anchor (never the token's own embedded key). Present-but-invalid is
@@ -1200,6 +1262,41 @@ async fn main() -> Result<(), ApiError> {
     ) {
         console_line(&verdict.line());
     }
+    // The children this proxy can spawn, from the deciders their spawns ask,
+    // and everything it holds that they must not reach (#3454, #3461). Before
+    // any of it is opened or created: a refusal names the item.
+    let children = child_reach::ChildReach::of(
+        spec.spec.workload.as_ref(),
+        containment,
+        args.unsandboxed,
+        args.workload_without_landlock,
+    );
+    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    let held = secret_census::held(
+        &args,
+        &matches,
+        &secret_census::Facts {
+            guest_proof: guest_proof_config.is_some(),
+            workload: spec.spec.workload.is_some(),
+            env_set: &env_set,
+        },
+    );
+    if let Err(why) = children.admit(&held, &seal) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
+    let declared = children.declared(&held);
+    if !declared.is_empty() {
+        console_line(&format!(
+            "[nucleus-tool-proxy] bare host tier: a child at this proxy's uid can read or \
+             replace {}",
+            declared
+                .iter()
+                .map(|h| h.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let runtime = pod_mgmt::build_runtime(
         &spec,
         containment,
@@ -1214,11 +1311,7 @@ async fn main() -> Result<(), ApiError> {
         std::process::exit(78);
     }
 
-    let approver = CallbackApprover::new({
-        let approvals = approvals.clone();
-        move |request: &ApprovalRequest| approvals.consume(request.operation())
-    });
-    let runtime = runtime.with_approver(Arc::new(approver))?;
+    let runtime = runtime.with_approver(Arc::new(approval::effect_approver(approvals.clone())))?;
     // Every refusal from here on is redacted against this root (#2402).
     api_error::register_sandbox_root(runtime.sandbox().root_path())
         .map_err(|e| ApiError::Spec(e.to_string()))?;
@@ -1246,11 +1339,6 @@ async fn main() -> Result<(), ApiError> {
         }
         None => (None, None, None),
     };
-
-    let auth = AuthConfig::new(
-        args.auth_secret.as_bytes(),
-        Duration::from_secs(args.auth_max_skew_secs),
-    );
 
     // Build drand config for approval signatures
     let drand_config = if args.drand_enabled {
@@ -1348,8 +1436,18 @@ async fn main() -> Result<(), ApiError> {
     )
     .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
 
-    // Build attestation verifier
-    let attestation_verifier = AttestationVerifier::new(startup_trace::attestation_config(&args));
+    // The mTLS listener's config, built once: the listener verifies client
+    // certificates against its trust bundle, and the attestation requirement
+    // checks a client certificate's launch against the same bundle (G-1).
+    let mtls_config = if args.mtls {
+        Some(build_mtls_config(&args).await?)
+    } else {
+        None
+    };
+    let attestation_verifier = AttestationVerifier::new(
+        startup_trace::attestation_config(&args),
+        attestation::LaunchRoots::of(mtls_config.as_ref()),
+    );
 
     // Build policy engine for identity-based authorization
     let policy_engine = if let Some(policy_path) = &args.policy_file {
@@ -1416,7 +1514,7 @@ async fn main() -> Result<(), ApiError> {
     // the node's HTTP listener requires a client cert unconditionally.
     let node_client = if args.enable_pod_mgmt {
         let node_url = args.node_url.as_deref().unwrap_or("https://127.0.0.1:3000");
-        let identity = require_node_identity(&args, "--enable-pod-mgmt");
+        let identity = require_node_identity(&args, delivered_key.as_ref(), "--enable-pod-mgmt");
         // cert then key, concatenated — the convention `reqwest::Identity::from_pem`
         // expects, matching `nucleus-cli`'s `load_mtls_config`.
         let mut identity_pem = identity.cert_pem.into_bytes();
@@ -1512,13 +1610,8 @@ async fn main() -> Result<(), ApiError> {
     // are made against a chain that is missing it.
     let art12_log = match args.art12_log.as_ref() {
         Some(path) => Some(
-            art12_sink::open_log(
-                path,
-                args.audit_secret.as_deref(),
-                &spec.spec.work_dir,
-                &session_id,
-            )
-            .map_err(ApiError::Spec)?,
+            art12_sink::open_log(path, audit.signer(), &spec.spec.work_dir, &session_id)
+                .map_err(ApiError::Spec)?,
         ),
         None => None,
     };
@@ -1551,7 +1644,9 @@ async fn main() -> Result<(), ApiError> {
     // upstream error minutes into a run.
     egress::reject_egress_without_a_broker(
         &spec.spec.credentialed_egress,
-        std::env::var("NUCLEUS_TOOL_PROXY_BROKER_SECRET").is_ok_and(|v| !v.is_empty()),
+        // The whole capability, key AND endpoint (#2906): a key with no
+        // transport, or two transports, can never be used.
+        egress::broker_capability().is_some(),
     )
     .map_err(ApiError::Spec)?;
 
@@ -1610,11 +1705,19 @@ async fn main() -> Result<(), ApiError> {
     // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
     // come from env; absent ⇒ empty/1 ⇒ declassification is fail-closed.
     let memory_transforms = Arc::new(nucleus_provenance_memory::TransformRegistry::new());
-    let provenance_memory = Arc::new(tokio::sync::Mutex::new(
-        args.memory
-            .open(&spec.spec.work_dir, memory_transforms.as_ref())?,
-    ));
+    let provenance_memory = Arc::new(tokio::sync::Mutex::new(args.memory.open(
+        &spec.spec.work_dir,
+        memory_transforms.as_ref(),
+        // The children the journal must be closed to (#3454): every
+        // `/v1/run` child and the workload, as their spawns decide them.
+        &children,
+    )?));
     let declassify_threshold = startup_trace::declassify_threshold();
+    let decisions =
+        decision_gate::arm(args.decisions.open(&spec.spec.work_dir)?, &spec.spec)?.map(Arc::new);
+    if let Some(d) = &decisions {
+        eprintln!("owner decisions: {} trust root(s) pinned", d.root_count());
+    }
 
     // Live-path session task token (PR-2, present-not-consumed). Read the
     // host-injected token/nonce/issuer off the boot channel and verify ONCE.
@@ -1648,8 +1751,14 @@ async fn main() -> Result<(), ApiError> {
     let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
-    // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
-    enforce_hmac_key_quality(&args.auth_secret, host_verified);
+    // === A transport that can authenticate something (#2446 step 3) ===
+    // With the shared-secret tier deleted, plain TCP without mTLS proves no
+    // caller: every route but /v1/health would be refused. Refuse to start
+    // instead, by name, rather than serve a proxy nothing can use.
+    if let Err(why) = retired::require_proven_transport(host_verified, args.mtls) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
 
     // The grant a person approved, so a denial can explain itself. Verified
     // against the same root the certificate is, and simply absent on any
@@ -1670,17 +1779,24 @@ async fn main() -> Result<(), ApiError> {
     });
 
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
+    let guest_proof = guest_proof_config
+        .map(|c| c.open(&guest_proof_path).map(Arc::new))
+        .transpose()?;
+    let workload_proof =
+        workload_request_proof::provision_runtime(&spec, &args.workload_proof_state)?.map(Arc::new);
     let state = AppState {
+        guest_proof,
+        workload_proof,
         receipts: Arc::clone(&receipts),
         path_provenance: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         dlc_provisioned,
         runtime: Arc::new(runtime),
         approvals,
         audit,
-        auth,
         approval_auth,
         approval_verifier,
         host_verified_transport: host_verified,
+        workload_network: args.workload_network_isolated,
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
         web_client,
@@ -1723,6 +1839,7 @@ async fn main() -> Result<(), ApiError> {
         flow_graph,
         provenance_memory,
         memory_transforms,
+        decisions,
         governor_keys,
         declassify_threshold,
         session_task_token,
@@ -1774,7 +1891,7 @@ async fn main() -> Result<(), ApiError> {
     // Streaming lockdown watcher: connects to nucleus-node gRPC and receives
     // LockdownCommand messages with sub-second latency.
     if let Some(ref grpc_url) = args.node_grpc_url {
-        let identity = require_node_identity(&args, "--node-grpc-url");
+        let identity = require_node_identity(&args, delivered_key.as_ref(), "--node-grpc-url");
         let stream_flag = state.stream_lockdown.clone();
         // "nucleus.local" matches this codebase's pervasive default trust
         // domain (e.g. `SelfSignedCa::new`'s doc examples) — used only when
@@ -1835,6 +1952,13 @@ async fn main() -> Result<(), ApiError> {
         // Safe on the workload-facing surface because the Ed25519 signature —
         // not the transport — is the authority (see declassify.rs).
         .route("/v1/declassify", post(declassify::apply_declassification));
+
+    // Owner decisions exist only on a pod with trust roots (owner_decision.rs).
+    if state.decisions.is_some() {
+        app = app
+            .route("/v1/decision/read", post(owner_decision::decision_read))
+            .route("/v1/decision/list", post(owner_decision::decision_list));
+    }
 
     // Conditionally add pod management routes for orchestrator mode
     if state.node_client.is_some() {
@@ -1983,8 +2107,7 @@ async fn main() -> Result<(), ApiError> {
     };
 
     // Check if mTLS is enabled
-    if args.mtls {
-        let mtls_config = build_mtls_config(&args).await?;
+    if let Some(mtls_config) = mtls_config {
         let mtls_listener = MtlsListener::new(listener, &mtls_config)
             .map_err(|e| ApiError::Spec(format!("failed to create mTLS listener: {}", e)))?;
 
@@ -2128,6 +2251,22 @@ async fn auth_middleware(
         .await
         .map_err(|e| ApiError::Body(e.to_string()))?;
 
+    if let Some(gate) = &state.guest_proof {
+        let evidence = attestation::TransportEvidence::of(&parts.extensions)
+            .map_err(ApiError::AttestationFailed)?;
+        // Only the sealed workload-door admission distinguishes local workload
+        // requests. No caller-controlled header can bypass the host proof gate.
+        if matches!(evidence.ingress(), auth::Ingress::WorkloadDoor { .. }) {
+            state
+                .workload_proof
+                .as_ref()
+                .ok_or(ApiError::Auth(auth::AuthError::InvalidHeader("dpop")))?
+                .verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
+        } else {
+            gate.verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
+        }
+    }
+
     // Skip attestation check for health endpoint
     if parts.uri.path() == HEALTH_PATH {
         let req = axum::http::Request::from_parts(parts, Body::from(bytes));
@@ -2155,7 +2294,7 @@ async fn auth_middleware(
         .map_err(ApiError::AttestationFailed)?;
     state
         .attestation_verifier
-        .admit(&evidence, &parts.headers)
+        .admit(&evidence)
         .map_err(ApiError::AttestationFailed)?;
 
     // Determine authentication context (unified flow — no early returns).
@@ -2227,9 +2366,10 @@ async fn auth_middleware(
         // before the stream reached the router. The workload holds no secret;
         // being that uid on that socket is the authentication.
         (auth::AuthTier::WorkloadDoor { uid }, _) => auth::verify_workload_door(uid),
-        // Zero authority since #2446 step 2: authenticated or not, refused.
-        (auth::AuthTier::Hmac, _) => {
-            return Err(auth::refuse_shared_secret(&parts.headers, &bytes, &state.auth).into());
+        // Nothing proves this caller, and there is no secret left to ask
+        // for one (#2446 step 3): refused, by name.
+        (auth::AuthTier::Unproven, _) => {
+            return Err(auth::AuthError::UnprovenTransport.into());
         }
     };
 
@@ -2439,7 +2579,7 @@ async fn http_kernel_decide(
     operation: Operation,
     subject: &str,
     auth_ctx: Option<&auth::AuthContext>,
-) -> Result<DecisionToken, ApiError> {
+) -> Result<mediation::Admitted, ApiError> {
     let mut kernel = state.kernel.lock().await;
     // The single authoritative FlowGraph is the live verdict source (Phase 2
     // retirement: the FlowTracker oracle is gone). Lock order (kernel, graph)
@@ -2538,9 +2678,9 @@ async fn read_file(
         return Err(ApiError::Validation(e));
     }
 
-    // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O
-    let decision_token =
-        http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
+    // Kernel mediation + IFC flow consult: the admission carries the token for
+    // sandbox I/O and any approval the decision relied on.
+    let admitted = http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
 
     let path = req.path.clone();
     // Survives the sink record below, which consumes `path`.
@@ -2550,89 +2690,50 @@ async fn read_file(
     // unmediated on this path: it went from `http_kernel_decide` straight to the
     // sandbox, so a read never cleared the obligations that `FileEffect::read`
     // enforces on the other filesystem path.
-    macro_rules! read_authority {
-        () => {{
-            use nucleus_ifc_kernel::discharge::PreflightResult;
-            let verified_scope = state.session_task_token.verified_scope();
-            let ceiling = state.ceiling(Operation::ReadFiles, certified.as_ref());
-            let flow = state.flow_graph.lock().await;
-            let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
-            drop(flow);
-            match r {
-                PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
-                PreflightResult::Denied { reason, .. }
-                | PreflightResult::RequiresApproval { reason } => {
-                    return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
-                }
+    let authority = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let ceiling = state.ceiling(Operation::ReadFiles, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
+        drop(flow);
+        match r {
+            PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
             }
-        }};
-    }
-    let first_authority = read_authority!();
+        }
+    };
 
-    let contents =
-        match state
-            .runtime
-            .sandbox()
-            .read_to_string(&path, decision_token, first_authority)
-        {
-            Ok(contents) => contents,
-            Err(NucleusError::ApprovalRequired { operation: op }) => {
-                // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-                // PEEK. The spend is the sandbox approver reached through
-                // `request_approval` on the next line, and this guard used to
-                // consume as well — two spends per attempt, so a grant of
-                // `count: 1` never sufficed (#2406).
-                if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                    || state.approvals.is_granted(&op)
-                {
-                    let approval = state.runtime.sandbox().request_approval(op.clone())?;
-                    let approved_dt = {
-                        let mut kernel = state.kernel.lock().await;
-                        kernel.issue_approved_token(operation, &format!("approved: read {}", path))
-                    };
-                    // A fresh discharge for the approved retry: one discharge
-                    // authorizes one attempt.
-                    let retry_authority = read_authority!();
-                    state.runtime.sandbox().read_to_string_approved(
-                        &path,
-                        approved_dt,
-                        &approval,
-                        retry_authority,
-                    )?
-                } else {
-                    if let Err(e) = sink.record(VerdictContext {
-                        operation,
-                        subject: path.clone(),
-                        outcome: VerdictOutcome::Deny {
-                            reason: "approval_required".to_string(),
-                        },
-                        actor,
-                        policy_rule: None,
-                        extensions: BTreeMap::new(),
-                    }) {
-                        warn!(error = %e, "verdict recording failed -- audit gap");
-                    }
-                    return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                        operation: op,
-                    }));
-                }
-            }
-            Err(err) => {
-                if let Err(e) = sink.record(VerdictContext {
-                    operation,
-                    subject: path.clone(),
-                    outcome: VerdictOutcome::Error {
-                        error: format!("{err:?}"),
-                    },
-                    actor,
-                    policy_rule: None,
-                    extensions: BTreeMap::new(),
-                }) {
-                    warn!(error = %e, "verdict recording failed -- audit gap");
-                }
-                return Err(ApiError::Nucleus(err));
-            }
-        };
+    // Every approval this read needs, the monitor's and the sandbox's own,
+    // spent once, all or none, immediately before the read (#3446). The
+    // sandbox is asked which approval it will want BEFORE anything is spent;
+    // it used to be found out by attempting the read, refused, and retried.
+    let sandbox = state.runtime.sandbox();
+    let consented = approval::consent_for_effect(
+        &state,
+        admitted,
+        sandbox.read_consent(&path),
+        |key| sandbox.request_approval(key),
+        (operation, &path, actor.clone()),
+    )?;
+    let read = match consented.approval {
+        Some(approval) => {
+            sandbox.read_to_string_approved(&path, consented.token, &approval, authority)
+        }
+        None => sandbox.read_to_string(&path, consented.token, authority),
+    };
+    let contents = match read {
+        Ok(contents) => contents,
+        Err(err) => {
+            return Err(approval::effect_failed(
+                sink.as_ref(),
+                (operation, &path, actor),
+                err,
+            ));
+        }
+    };
 
     if let Err(e) = sink.record(VerdictContext {
         operation,
@@ -2708,8 +2809,7 @@ async fn write_file(
     // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O.
     // WriteFiles is an OutboundAction: denied with IfcUnsafe once the session is
     // tainted by web content (lethal-trifecta guard, #1633).
-    let decision_token =
-        http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
+    let admitted = http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
 
     let path = req.path.clone();
     // Survives the sink record below, which consumes `path`.
@@ -2754,122 +2854,45 @@ async fn write_file(
     };
     let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
-    match state.runtime.sandbox().write(
-        &path,
-        contents.as_bytes(),
-        decision_token,
-        portcullis_effects::authority::Authority::new(discharge_bundle),
-    ) {
-        Ok(()) => {}
-        Err(NucleusError::ApprovalRequired { operation: op }) => {
-            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            //
-            // The two ways this can refuse are indistinguishable from outside:
-            // "no grant was found" and "a grant was found, then the sandbox
-            // approver refused anyway" both surface as the same
-            // `ApprovalRequired` with the same operation string. That ambiguity
-            // cost four wrong diagnoses of #2406, so the distinction is logged.
-            //
-            // `http_kernel_decide` runs earlier and can also return
-            // `requires_approval`. It used to propagate before `sandbox.write`
-            // was ever called, so a grant made through `/v1/approve` never
-            // reached this registry at all — that was #2406, and it is why
-            // adding the log here first proved the point by staying silent.
-            // That gate now consults the same registry, so an operation can
-            // reach this arm with a grant already on file.
-            //
-            // Which makes it load-bearing that this guard PEEKS. The grant is
-            // spent exactly once per attempt, inside `request_approval`, whose
-            // approver is `move |req| approvals.consume(req.operation())`. This
-            // used to `consume` as well — two spends per attempt, so `count: 1`
-            // never sufficed and the caller had to approve twice what they meant
-            // to approve once.
-            let policy_ok =
-                check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path));
-            // `op` is the same string the kernel gate refused with and the
-            // caller posted to `/v1/approve`: both gates name an approval
-            // `{Operation:?} {subject}` (`Sandbox::approval_key`). One human
-            // decision, one name, so one grant carries the operation through
-            // every gate that asks about it.
-            let pre_granted = !policy_ok && state.approvals.is_granted(&op);
-            if policy_ok || pre_granted {
-                let approval = match state.runtime.sandbox().request_approval(op.clone()) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!(
-                            operation = %op,
-                            policy_ok,
-                            pre_granted,
-                            "a grant was accepted here but the sandbox approver then refused"
-                        );
-                        return Err(e.into());
-                    }
-                };
-                let approved_dt = {
-                    let mut kernel = state.kernel.lock().await;
-                    kernel.issue_approved_token(operation, &format!("approved: write {}", path))
-                };
-                // A fresh discharge for the approved retry: the first attempt
-                // spent the authority minted above. One discharge authorizes one
-                // attempt, and the approved write is a distinct action that must
-                // clear the obligations on its own.
-                let retry_bundle = {
-                    use nucleus_ifc_kernel::discharge::PreflightResult;
-                    let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = state.ceiling(operation, certified.as_ref());
-                    let flow = state.flow_graph.lock().await;
-                    let r =
-                        run_gate::preflight_fs(operation, verified_scope, fs_ceiling, &path, &flow);
-                    drop(flow);
-                    match r {
-                        PreflightResult::Allowed(b) => b,
-                        _ => {
-                            return Err(ApiError::IfcDenied(
-                                "approved write failed re-discharge".to_string(),
-                            ));
-                        }
-                    }
-                };
-                state.runtime.sandbox().write_approved(
-                    &path,
-                    contents.as_bytes(),
-                    approved_dt,
-                    &approval,
-                    portcullis_effects::authority::Authority::new(retry_bundle),
-                )?;
-            } else {
-                if let Err(e) = sink.record(VerdictContext {
-                    operation,
-                    subject: path.clone(),
-                    outcome: VerdictOutcome::Deny {
-                        reason: "approval_required".to_string(),
-                    },
-                    actor,
-                    policy_rule: None,
-                    extensions: BTreeMap::new(),
-                }) {
-                    warn!(error = %e, "verdict recording failed -- audit gap");
-                }
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                    operation: op,
-                }));
-            }
-        }
-        Err(err) => {
-            if let Err(e) = sink.record(VerdictContext {
-                operation,
-                subject: path.clone(),
-                outcome: VerdictOutcome::Error {
-                    error: format!("{err:?}"),
-                },
-                actor,
-                policy_rule: None,
-                extensions: BTreeMap::new(),
-            }) {
-                warn!(error = %e, "verdict recording failed -- audit gap");
-            }
-            return Err(ApiError::Nucleus(err));
-        }
+    // Every approval this write needs, spent once, all or none, immediately
+    // before the write (#3446): the one the monitor relied on, whichever gate
+    // asked for it (a static obligation, a policy rule, the exposure gate),
+    // and the one the sandbox will ask for, which is the same name when both
+    // ask, so it costs one approval. The monitor's used to be left for the
+    // sandbox's approver to spend, and the sandbox asks only for a static
+    // obligation or an execute-on-consume path, so an approval that cleared
+    // an exposure-gate or policy-rule hold was never spent: it authorized the
+    // same write again on every retry until it expired.
+    //
+    // The sandbox is asked which approval it will want BEFORE anything is
+    // spent. It used to be found out by attempting the write, being refused,
+    // re-discharging and retrying, which minted a second decision token and
+    // counted the write twice in the exposure accumulator.
+    let sandbox = state.runtime.sandbox();
+    let consented = approval::consent_for_effect(
+        &state,
+        admitted,
+        sandbox.write_consent(&path),
+        |key| sandbox.request_approval(key),
+        (operation, &path, actor.clone()),
+    )?;
+    let authority = portcullis_effects::authority::Authority::new(discharge_bundle);
+    let written = match consented.approval {
+        Some(approval) => sandbox.write_approved(
+            &path,
+            contents.as_bytes(),
+            consented.token,
+            &approval,
+            authority,
+        ),
+        None => sandbox.write(&path, contents.as_bytes(), consented.token, authority),
+    };
+    if let Err(err) = written {
+        return Err(approval::effect_failed(
+            sink.as_ref(),
+            (operation, &path, actor),
+            err,
+        ));
     }
 
     if let Err(e) = sink.record(VerdictContext {
@@ -2978,7 +3001,7 @@ async fn run_command(
     // Kernel mediation + IFC flow consult — obtain DecisionToken for executor I/O.
     // RunBash is an OutboundAction: denied with IfcUnsafe once the session is
     // tainted by web content (lethal-trifecta guard, #1633).
-    let decision_token =
+    let admitted =
         http_kernel_decide(&state, operation, &display_command, auth_ctx.as_ref()).await?;
 
     let executor = state.runtime.executor();
@@ -3042,85 +3065,31 @@ async fn run_command(
     // handler's `discharge_bundle` verdict extension).
     let discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
-    let output = match executor.run_args(
-        &req.args,
-        stdin,
-        directory,
-        decision_token,
-        portcullis_effects::authority::Authority::new(discharge_bundle),
-    ) {
+    // Every approval this run needs, the monitor's and the executor's own,
+    // spent once, all or none, immediately before the spawn (#3446). The
+    // executor is asked which approval it will want before anything is
+    // spent, rather than found out by a refused first attempt and a retry.
+    let consented = approval::consent_for_effect(
+        &state,
+        admitted,
+        executor.consent(&req.args),
+        |key| executor.request_approval(key),
+        (operation, &display_command, actor.clone()),
+    )?;
+    let authority = portcullis_effects::authority::Authority::new(discharge_bundle);
+    let ran = match consented.approval {
+        Some(approval) => executor.run_args_with_approval(
+            &req.args,
+            stdin,
+            directory,
+            consented.token,
+            &approval,
+            authority,
+        ),
+        None => executor.run_args(&req.args, stdin, directory, consented.token, authority),
+    };
+    let output = match ran {
         Ok(output) => output,
-        Err(NucleusError::ApprovalRequired { operation: op }) => {
-            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            // PEEK, for the same reason as the read and write paths: the
-            // executor's own approver spends it on the next line. Measured on
-            // a live pod after the naming was unified — the gate then asked by
-            // the right name (`RunBash echo ...`) and still refused, because
-            // the grant had already been spent here.
-            if check_identity_policy(
-                &state,
-                auth_ctx.as_ref(),
-                &format!("execute {}", display_command),
-            ) || state.approvals.is_granted(&op)
-            {
-                let approval = executor.request_approval(&op)?;
-                let approved_dt = {
-                    let mut kernel = state.kernel.lock().await;
-                    kernel.issue_approved_token(
-                        operation,
-                        &format!("approved: execute {}", display_command),
-                    )
-                };
-                executor.run_args_with_approval(
-                    &req.args,
-                    stdin,
-                    directory,
-                    approved_dt,
-                    &approval,
-                    // A fresh discharge for the retry. The first attempt spent
-                    // the authority minted above — one discharge authorizes one
-                    // attempt, and the approved retry is a distinct action that
-                    // must clear the obligations on its own.
-                    portcullis_effects::authority::Authority::new({
-                        use nucleus_ifc_kernel::discharge::PreflightResult;
-                        let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = state.ceiling(Operation::RunBash, certified.as_ref());
-                        let flow = state.flow_graph.lock().await;
-                        let r = run_gate::preflight_runbash(
-                            verified_scope,
-                            ceiling,
-                            &display_command,
-                            &flow,
-                        );
-                        drop(flow);
-                        match r {
-                            PreflightResult::Allowed(b) => b,
-                            _ => {
-                                return Err(ApiError::Body(
-                                    "approved retry failed re-discharge".to_string(),
-                                ));
-                            }
-                        }
-                    }),
-                )?
-            } else {
-                if let Err(e) = sink.record(VerdictContext {
-                    operation,
-                    subject: display_command.clone(),
-                    outcome: VerdictOutcome::Deny {
-                        reason: "approval_required".to_string(),
-                    },
-                    actor,
-                    policy_rule: None,
-                    extensions: BTreeMap::new(),
-                }) {
-                    warn!(error = %e, "verdict recording failed -- audit gap");
-                }
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                    operation: op,
-                }));
-            }
-        }
         Err(err) => {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
@@ -3141,17 +3110,21 @@ async fn run_command(
         }
     };
 
+    // Classified before the record, so the record carries the egress verdict (#3493).
+    let command_ingest = ingest::CommandIngest::classify(&display_command, state.workload_network);
+    let mut extensions = BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]);
+    extensions.extend(command_ingest.audit_extension());
     if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: display_command.clone(),
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
-        extensions: BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]),
+        extensions,
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
-    ingest::http_observe_command_output(&state, &display_command, &output).await;
+    ingest::http_observe_command_output(&state, &command_ingest, &output).await;
 
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
@@ -3193,7 +3166,9 @@ async fn web_fetch(
 
     // Kernel mediation + IFC flow consult. WebFetch is itself a taint source
     // (observed below on success); the consult still runs for capability/exposure.
-    let _ = http_kernel_decide(&state, operation, &url_str, auth_ctx.as_ref()).await?;
+    // The admission's approvals (a hold the monitor released with a grant)
+    // join this handler's own and are spent with them at the effect (#3446).
+    let monitor = http_kernel_decide(&state, operation, &url_str, auth_ctx.as_ref()).await?;
 
     // Check web_fetch capability
     let policy = state.runtime.policy();
@@ -3218,15 +3193,24 @@ async fn web_fetch(
         }));
     }
 
+    // Approvals this fetch needs are checked here and spent only immediately
+    // before the fetch, so a refusal by any check in between leaves them
+    // unspent (#3443). The monitor's are among them (#3446).
+    let mut consent = monitor.into_consent();
+
     // Check if uninhabitable_state requires approval for web_fetch
     if policy.requires_approval(Operation::WebFetch) {
         // Check if policy allows this operation (zero-prompt mode)
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("web_fetch {}", url_str));
 
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("web_fetch {}", url_str);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &url_str)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: url_str.clone(),
@@ -3270,7 +3254,7 @@ async fn web_fetch(
         {
             web_fetch_policy::HostAdmission::Declared | web_fetch_policy::HostAdmission::Open => {}
             web_fetch_policy::HostAdmission::NeedsApproval(key) => {
-                if !state.approvals.consume(&key) {
+                if let Err(key) = consent.require_named(&state.approvals, key) {
                     if let Err(e) = sink.record(VerdictContext {
                         operation,
                         subject: url_str.clone(),
@@ -3349,6 +3333,18 @@ async fn web_fetch(
         }
     };
     let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    // Every check that can refuse has run: spend the approvals this fetch
+    // needs, all or none, immediately before it.
+    if let Err(key) = consent.spend(&state.approvals) {
+        return Err(approval_lapsed(
+            sink.as_ref(),
+            operation,
+            &url_str,
+            actor,
+            key,
+        ));
+    }
 
     // Execute the request through the sealed, `_proof`-gated net effect. Passing
     // the bundle is the type-level authorization; `PolicyEnforced` re-checks the
@@ -3469,8 +3465,7 @@ async fn glob_search(
 
     // Kernel mediation + IFC flow consult. GlobSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let decision_token =
-        http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
+    let admitted = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check glob_search capability
     let policy = state.runtime.policy();
@@ -3495,13 +3490,21 @@ async fn glob_search(
         }));
     }
 
+    // Checked here, spent only immediately before the effect (#3443), with
+    // the approvals the monitor's admission relied on (#3446).
+    let mut consent = admitted;
+
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GlobSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("glob {}", req.pattern));
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("glob {}", req.pattern);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &req.pattern)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
@@ -3542,6 +3545,20 @@ async fn glob_search(
     // type and 0 keeps meaning one.
     let max = std::num::NonZeroUsize::new(req.max_results.unwrap_or(1000))
         .unwrap_or(std::num::NonZeroUsize::MIN);
+    // Every check that can refuse has run: spend, then list. The decision
+    // token is released only by the spend (#3446).
+    let decision_token = match consent.spend(&state.approvals) {
+        Ok(token) => token,
+        Err(key) => {
+            return Err(approval_lapsed(
+                sink.as_ref(),
+                operation,
+                &req.pattern,
+                actor,
+                key,
+            ));
+        }
+    };
     let listing = state
         .runtime
         .sandbox()
@@ -3614,7 +3631,9 @@ async fn grep_search(
 
     // Kernel mediation + IFC flow consult. GrepSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let _ = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
+    // The admission's approvals (a hold the monitor released with a grant)
+    // join this handler's own and are spent with them at the effect (#3446).
+    let monitor = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check grep_search capability
     let policy = state.runtime.policy();
@@ -3639,13 +3658,21 @@ async fn grep_search(
         }));
     }
 
+    // Checked here, spent only immediately before the effect (#3443), with
+    // the approvals the monitor's admission relied on (#3446).
+    let mut consent = monitor.into_consent();
+
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GrepSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("grep {}", req.pattern));
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("grep {}", req.pattern);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &req.pattern)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
@@ -3736,6 +3763,17 @@ async fn grep_search(
             .map(|e| e.into_path())
             .collect()
     };
+
+    // Every check that can refuse the call has run: spend, then read.
+    if let Err(key) = consent.spend(&state.approvals) {
+        return Err(approval_lapsed(
+            sink.as_ref(),
+            operation,
+            &req.pattern,
+            actor,
+            key,
+        ));
+    }
 
     // Search each file. One discharge per file: an `Authority` buys one read.
     // A file this session may not read is skipped, as an unreadable one is.
@@ -3838,7 +3876,9 @@ async fn web_search(
 
     // Kernel mediation + IFC flow consult. WebSearch is a taint source
     // (observed below on success); the consult still runs for capability/exposure.
-    let _ = http_kernel_decide(&state, operation, &req.query, auth_ctx.as_ref()).await?;
+    // The admission's approvals (a hold the monitor released with a grant)
+    // join this handler's own and are spent with them at the effect (#3446).
+    let monitor = http_kernel_decide(&state, operation, &req.query, auth_ctx.as_ref()).await?;
 
     // Check web_search capability
     let policy = state.runtime.policy();
@@ -3863,6 +3903,10 @@ async fn web_search(
         }));
     }
 
+    // Checked here, spent only immediately before the effect (#3443), with
+    // the approvals the monitor's admission relied on (#3446).
+    let mut consent = monitor.into_consent();
+
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::WebSearch) {
         let policy_allows = check_identity_policy(
@@ -3870,9 +3914,13 @@ async fn web_search(
             auth_ctx.as_ref(),
             &format!("web_search {}", req.query),
         );
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("web_search {}", req.query);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &req.query)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.query.clone(),
@@ -3966,6 +4014,17 @@ async fn web_search(
         }
     };
     let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    // Every check that can refuse has run: spend, then search.
+    if let Err(key) = consent.spend(&state.approvals) {
+        return Err(approval_lapsed(
+            sink.as_ref(),
+            operation,
+            &req.query,
+            actor,
+            key,
+        ));
+    }
 
     use portcullis_effects::{NetCapability, NetEffect};
     let effects =

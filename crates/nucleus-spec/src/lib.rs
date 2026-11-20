@@ -1,19 +1,36 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod approval_binding;
 pub mod boot_args;
+pub mod companion;
+pub use companion::CompanionSpec;
 pub mod boot_budget;
+#[cfg(test)]
+#[path = "credentialed_egress_fixity_tests.rs"]
+mod credentialed_egress_fixity;
+pub mod decision_gate;
 pub mod dlc_admission;
 pub mod egress_budget;
+#[cfg(test)]
+#[path = "egress_decisions_parity_tests.rs"]
+mod egress_decisions_parity;
 pub mod egress_fence;
 pub mod exit_report_auth;
 pub mod guest_layout;
+pub mod guest_release;
 pub mod host_decide_telemetry;
 pub mod host_effect;
 pub mod host_effect_approval;
 pub mod identity;
+#[cfg(test)]
+mod inline_consent_tests;
 pub mod isolation_profile;
 pub mod live_boot;
+pub mod manifest_hash;
 pub mod microvm_host;
+#[cfg(test)]
+mod policy_required_tests;
+pub mod release_version;
 mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod tool_proxy_audit;
@@ -22,14 +39,14 @@ pub mod workload_admission;
 pub mod workload_egress;
 pub mod workload_result;
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use portcullis::PermissionLattice;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use egress_budget::{EgressBudgetSpec, EgressRateSpec};
+pub use manifest_hash::{MANIFEST_HASH_DOMAIN, ManifestHash, ManifestHashError};
 /// The operator's effect table an upstream entry carries (#3229), re-exported
 /// so a caller building a spec need not name the protocol crate.
 pub use nucleus_cred_protocol::egress::{
@@ -38,7 +55,6 @@ pub use nucleus_cred_protocol::egress::{
 use rootfs_source::ImageSpecWire;
 pub use rootfs_source::{OciDigest, OciReference, OciRootfs, RootfsSource};
 
-/// Top-level pod spec document (YAML/JSON).
 /// The only API version this build understands.
 ///
 /// A `String` here meant `apiVersion: nucleus/v2` — or a typo — parsed happily
@@ -84,7 +100,13 @@ impl PodSpec {
     pub fn record_isolation(&mut self, isolation: portcullis::enforcement::EnforcedIsolation) {
         let portcullis::enforcement::EnforcedIsolation {
             requested,
-            enforced,
+            // The clamp the policy is held to. Not what the label reports: a
+            // backend's floor is delivered whether or not the policy demands it,
+            // and reporting the clamp alone listed microVM pods as
+            // `process=shared` (#3220). `delivered` is that clamp joined with the
+            // floor, decided once in `require_isolation`.
+            enforced: _,
+            delivered,
             backend,
         } = isolation;
         self.metadata.labels.extend([
@@ -94,7 +116,7 @@ impl PodSpec {
             ),
             (
                 "isolation.coproduct.one/enforced".into(),
-                enforced.to_string(),
+                delivered.to_string(),
             ),
             (
                 "isolation.coproduct.one/backend".into(),
@@ -148,8 +170,10 @@ pub struct PodSpecInner {
     /// pods on its next reaper pass after expiry; cleanup is not an exact-time kill.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
-    /// Permission policy.
-    #[serde(default)]
+    /// Permission policy. Required: a spec that omits it is refused at parse
+    /// time with an error naming `policy`. Absence does not pick a profile on
+    /// the caller's behalf (ADR 0007 B-2; #3400). To ask for the baseline
+    /// profile, say so: `policy: { type: profile, name: default }`.
     pub policy: PolicySpec,
     /// Optional budget model overrides.
     #[serde(default)]
@@ -191,6 +215,9 @@ pub struct PodSpecInner {
     /// must redact credential values in any debug output or audit logs.
     #[serde(default)]
     pub credentials: Option<CredentialsSpec>,
+    /// Effects that run only with a verified owner decision cited (`decision_gate`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_decision: Vec<decision_gate::DecisionCapability>,
 }
 
 impl PodSpecInner {
@@ -209,6 +236,9 @@ fn default_timeout_seconds() -> u64 {
 }
 
 /// Policy spec for a pod.
+///
+/// No `Default`: a pod's policy is always named by whoever wrote the spec
+/// (ADR 0007 B-1; #3400).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
@@ -217,14 +247,6 @@ pub enum PolicySpec {
     Profile { name: String },
     /// Inline permission lattice.
     Inline { lattice: Box<PermissionLattice> },
-}
-
-impl Default for PolicySpec {
-    fn default() -> Self {
-        Self::Profile {
-            name: "default".to_string(),
-        }
-    }
 }
 
 impl PolicySpec {
@@ -244,7 +266,7 @@ impl PolicySpec {
 
                 // Fall back to legacy hardcoded profiles
                 match name.as_str() {
-                    "default" => Ok(PermissionLattice::default()),
+                    "default" => Ok(PermissionLattice::supervised()),
                     "fix_issue" => Ok(PermissionLattice::fix_issue()),
                     "demo" => Ok(PermissionLattice::demo()),
                     // Workflow profiles for orchestrated agent tasks
@@ -272,7 +294,8 @@ impl PolicySpec {
                     other => Err(PolicyError::UnknownProfile(other.to_string())),
                 }
             }
-            PolicySpec::Inline { lattice } => Ok(lattice.as_ref().clone().normalize()),
+            // Parsing refused undeclared consent; this refuses a lattice built in code.
+            PolicySpec::Inline { lattice } => Ok(lattice.as_ref().clone().validated()?),
         }
     }
 }
@@ -1275,9 +1298,12 @@ impl CredentialedEgressSpec {
     /// would let a field added later (another header, a prefix, a credential
     /// source) silently widen what may be inherited. The derived `PartialEq`
     /// covers every field, including ones not yet written.
+    ///
+    /// Decided by `nucleus_cred_protocol::extracted::admission::admitted_by`,
+    /// generic over the entry, which is the definition extracted to Lean.
     #[must_use]
     pub fn admitted_by(&self, ceiling: &[Self]) -> bool {
-        ceiling.iter().any(|granted| granted == self)
+        nucleus_cred_protocol::extracted::admission::admitted_by(self, ceiling)
     }
 
     /// Split `requested` into what the `ceiling` grants and what it does not.
@@ -1285,13 +1311,19 @@ impl CredentialedEgressSpec {
     /// Dropping rather than refusing is the caller's policy, not this
     /// function's: it returns both halves so each caller can log what it
     /// removed (by `name`, never by `credential_env`) and keep what survived.
+    ///
+    /// Decided by `nucleus_cred_protocol::extracted::admission::clamp`, which
+    /// copies each entry into its half; `requested` is dropped after.
     #[must_use]
     pub fn clamp(requested: Vec<Self>, ceiling: &[Self]) -> (Vec<Self>, Vec<Self>) {
-        requested
-            .into_iter()
-            .partition(|up| up.admitted_by(ceiling))
+        nucleus_cred_protocol::extracted::admission::clamp(&requested, ceiling)
     }
 }
+
+mod workload_namespace;
+pub use workload_namespace::{
+    AdmittedNamespace, NamespaceEnforcement, NamespaceRefused, NamespaceSetup, WorkloadNamespace,
+};
 
 /// A process the pod runs under its own mediation.
 ///
@@ -1348,6 +1380,19 @@ pub struct WorkloadSpec {
     /// without one.
     #[serde(default)]
     pub uid: Option<u32>,
+    /// A second process the runtime starts beside the workload, under its own
+    /// uid. See [`CompanionSpec`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion: Option<CompanionSpec>,
+    /// Namespace placement requested for the workload. Absent means
+    /// [`WorkloadNamespace::Runtime`], and the wire shape of such a spec is
+    /// unchanged. A private placement is admitted only where the runtime sets
+    /// it up, and needs `uid` stated (see [`WorkloadNamespace::admit`]).
+    #[serde(
+        default = "WorkloadNamespace::runtime",
+        skip_serializing_if = "WorkloadNamespace::is_runtime"
+    )]
+    pub namespace: WorkloadNamespace,
 }
 
 /// Errors resolving policies.
@@ -1356,171 +1401,9 @@ pub enum PolicyError {
     /// The named profile was not found.
     #[error("unknown policy profile: {0}")]
     UnknownProfile(String),
-}
-
-#[cfg(test)]
-mod credentialed_egress_fixity {
-    use super::*;
-
-    fn spec() -> CredentialedEgressSpec {
-        CredentialedEgressSpec {
-            name: "model-api".into(),
-            upstream: "https://upstream.invalid/v1".into(),
-            credential_env: "NUCLEUS_TEST_EGRESS_CRED".into(),
-            header: "authorization".into(),
-            value_prefix: "Bearer ".into(),
-            effects: crate::EffectTable::unclassified(),
-        }
-    }
-
-    /// The subset check the node and the tool-proxy both call. An identical
-    /// entry is admitted; changing ANY one field, including ones a hand-written
-    /// comparison would be likely to forget, is not.
-    #[test]
-    fn admission_is_whole_struct_equality() {
-        let granted = [spec()];
-        assert!(
-            spec().admitted_by(&granted),
-            "the control: an equal entry is admitted"
-        );
-        let perturbations: [fn(&mut CredentialedEgressSpec); 5] = [
-            |s| s.name = "other".into(),
-            |s| s.upstream = "https://attacker.invalid".into(),
-            |s| s.credential_env = "SOME_OTHER_NODE_VAR".into(),
-            |s| s.header = "x-api-key".into(),
-            |s| s.value_prefix = String::new(),
-        ];
-        for perturb in perturbations {
-            let mut changed = spec();
-            perturb(&mut changed);
-            assert!(
-                !changed.admitted_by(&granted),
-                "{changed:?} differs and was admitted"
-            );
-        }
-        assert!(!spec().admitted_by(&[]), "an empty ceiling grants nothing");
-
-        let (kept, dropped) = CredentialedEgressSpec::clamp(
-            vec![spec(), {
-                let mut s = spec();
-                s.credential_env = "SOME_OTHER_NODE_VAR".into();
-                s
-            }],
-            &granted,
-        );
-        assert_eq!((kept.len(), dropped.len()), (1, 1));
-        assert_eq!(kept[0], spec());
-    }
-
-    /// A selection of a federated upstream omits `credential_env`, and the
-    /// omission is the empty string — which is what the registry's projection
-    /// of a federated entry carries, so the two compare equal. And an empty
-    /// variable is not a wildcard: it does not match an entry that names one.
-    #[test]
-    fn an_omitted_credential_env_is_empty_and_not_a_wildcard() {
-        let selected: CredentialedEgressSpec = serde_json::from_value(serde_json::json!({
-            "name": "model-api",
-            "upstream": "https://upstream.invalid/v1",
-            "header": "authorization",
-            "value_prefix": "Bearer ",
-        }))
-        .expect("credential_env may be omitted");
-        assert_eq!(selected.credential_env, "");
-        let federated = CredentialedEgressSpec {
-            credential_env: String::new(),
-            ..spec()
-        };
-        assert!(selected.admitted_by(std::slice::from_ref(&federated)));
-        assert!(
-            !selected.admitted_by(&[spec()]),
-            "an empty variable matched an entry that names one"
-        );
-    }
-
-    /// **The control, first.** Everything below asserts a refusal, and an
-    /// implementation that refused every path would satisfy all of them while
-    /// being completely broken. This says the ordinary case still works.
-    #[test]
-    fn an_ordinary_path_resolves_under_the_configured_base() {
-        assert_eq!(
-            spec().url_for("/messages").as_deref(),
-            Some("https://upstream.invalid/v1/messages")
-        );
-        assert_eq!(
-            spec().url_for("messages").as_deref(),
-            Some("https://upstream.invalid/v1/messages")
-        );
-    }
-
-    /// **A caller cannot redirect where the credential is sent.** This is the
-    /// property; the guest picks the path and must not thereby pick the host.
-    #[test]
-    fn a_path_cannot_redirect_the_upstream() {
-        for hostile in [
-            "https://attacker.invalid/steal",
-            "http://attacker.invalid/steal",
-            "../../../other",
-            "messages/../../escape",
-        ] {
-            assert!(
-                spec().url_for(hostile).is_none(),
-                "{hostile:?} must not resolve to an upstream URL"
-            );
-        }
-    }
-
-    /// Percent-encoded traversal, which a plain `..` scan does not see.
-    ///
-    /// The path reaches the upstream verbatim, so an upstream that decodes
-    /// before it normalises treats `%2e%2e/` exactly as `../`. Same host, so
-    /// this is not a redirect — it is reaching a path above the base the
-    /// operator fixed, which the base exists to prevent.
-    #[test]
-    fn percent_encoded_traversal_is_refused_in_any_case() {
-        for hostile in [
-            "%2e%2e/admin",
-            "%2E%2E/admin",
-            "messages/%2e%2e/%2e%2e/admin",
-            "%2e%2E/admin",
-        ] {
-            assert!(
-                spec().url_for(hostile).is_none(),
-                "{hostile:?} decodes to traversal at an upstream that decodes first"
-            );
-        }
-    }
-
-    /// **The join is what makes protocol-relative paths harmless**, and the
-    /// docs say so — so this pins it rather than leaving the claim unchecked.
-    ///
-    /// `url_for` deliberately does NOT test for a leading `//`, because
-    /// trimming leading `/` from the path already puts it under the base. If
-    /// the concatenation ever changes so a leading `//` survives, the doc
-    /// comment silently becomes false; this test fails at that moment instead.
-    #[test]
-    fn a_protocol_relative_path_stays_under_the_base() {
-        let url = spec()
-            .url_for("//attacker.invalid/steal")
-            .expect("not refused — it is neutralised by the join, not rejected");
-        assert_eq!(url, "https://upstream.invalid/v1/attacker.invalid/steal");
-        assert!(
-            url.starts_with("https://upstream.invalid/v1/"),
-            "a protocol-relative path escaped the base: {url}"
-        );
-    }
-
-    /// A base with a trailing slash must not produce a doubled separator, and
-    /// more importantly must not produce `https://host//x` — which some proxies
-    /// and origin servers do not treat as `https://host/x`.
-    #[test]
-    fn a_trailing_slash_on_the_base_does_not_double_the_separator() {
-        let mut s = spec();
-        s.upstream = "https://upstream.invalid/v1/".into();
-        assert_eq!(
-            s.url_for("messages").as_deref(),
-            Some("https://upstream.invalid/v1/messages")
-        );
-    }
+    /// An inline lattice with undeclared or contradictory consent, named per op.
+    #[error("inline policy refused: {0}")]
+    Consent(#[from] portcullis::ConsentError),
 }
 
 #[cfg(test)]
@@ -1712,7 +1595,7 @@ mod tests {
     fn test_credentials_spec_yaml_serialization() {
         let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "test-token");
 
-        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
+        let yaml = nucleus_yaml::to_string(&creds).expect("should serialize");
 
         // YAML should contain the actual value (for transmission to nucleus-node)
         assert!(yaml.contains("test-token"));
@@ -1768,8 +1651,8 @@ mod tests {
     fn test_credentials_spec_workload_identity_yaml_roundtrip() {
         let creds = CredentialsSpec::new().with_workload_identity(sample_workload_identity());
 
-        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
-        let parsed: CredentialsSpec = serde_yaml::from_str(&yaml).expect("should parse");
+        let yaml = nucleus_yaml::to_string(&creds).expect("should serialize");
+        let parsed: CredentialsSpec = nucleus_yaml::from_str(&yaml).expect("should parse");
 
         assert_eq!(parsed.workload_identity.len(), 1);
         assert_eq!(parsed.workload_identity[0], sample_workload_identity());
@@ -1780,7 +1663,7 @@ mod tests {
         // Backwards compat: existing CredentialsSpec YAML without
         // workload_identity should serialize without the field.
         let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "x");
-        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
+        let yaml = nucleus_yaml::to_string(&creds).expect("should serialize");
         assert!(
             !yaml.contains("workload_identity"),
             "empty workload_identity should be skipped: {yaml}"
@@ -1791,7 +1674,7 @@ mod tests {
     fn test_credentials_spec_legacy_yaml_still_parses() {
         // YAML written before this field existed must continue to parse.
         let yaml = "env:\n  LLM_API_TOKEN: secret\n";
-        let creds: CredentialsSpec = serde_yaml::from_str(yaml).expect("legacy YAML must parse");
+        let creds: CredentialsSpec = nucleus_yaml::from_str(yaml).expect("legacy YAML must parse");
         assert_eq!(creds.env.get("LLM_API_TOKEN"), Some(&"secret".to_string()));
         assert!(creds.workload_identity.is_empty());
     }
@@ -1819,7 +1702,7 @@ spec:
           type: spiffe
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
         let creds = spec
             .spec
             .credentials
@@ -1845,7 +1728,7 @@ source:
   kubelet_audience: sts.amazonaws.com
   expiration_seconds: 3600
 "#;
-        let wi: WorkloadIdentitySpec = serde_yaml::from_str(yaml).expect("should parse");
+        let wi: WorkloadIdentitySpec = nucleus_yaml::from_str(yaml).expect("should parse");
         match wi.source {
             IdentitySource::KubernetesProjected {
                 kubelet_audience,
@@ -1869,7 +1752,7 @@ source:
   type: static_file
   path: /etc/test/jwt
 "#;
-        let wi: WorkloadIdentitySpec = serde_yaml::from_str(yaml).expect("should parse");
+        let wi: WorkloadIdentitySpec = nucleus_yaml::from_str(yaml).expect("should parse");
         match wi.source {
             IdentitySource::StaticFile { path } => {
                 assert_eq!(path, PathBuf::from("/etc/test/jwt"));
@@ -1923,7 +1806,7 @@ spec:
       REGISTRY_TOKEN: "test-registry-token"
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
 
         // Credentials should be parsed
         assert!(spec.spec.credentials.is_some());
@@ -1952,7 +1835,7 @@ spec:
     name: default
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
 
         // Credentials should be None when not specified
         assert!(spec.spec.credentials.is_none());
@@ -1977,7 +1860,7 @@ spec:
       REGISTRY_TOKEN: "test-registry-supersecret"
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
 
         // Debug format the entire PodSpec
         let debug_output = format!("{:?}", spec);
@@ -2020,7 +1903,7 @@ spec:
     name: default
 "#;
         let spec: PodSpec =
-            serde_yaml::from_str(yaml_no_ns).expect("should parse without namespace");
+            nucleus_yaml::from_str(yaml_no_ns).expect("should parse without namespace");
         assert!(spec.metadata.namespace.is_none());
         assert_eq!(spec.metadata.name.as_deref(), Some("test-pod"));
 
@@ -2038,7 +1921,7 @@ spec:
     name: default
 "#;
         let spec: PodSpec =
-            serde_yaml::from_str(yaml_with_ns).expect("should parse with namespace");
+            nucleus_yaml::from_str(yaml_with_ns).expect("should parse with namespace");
         assert_eq!(spec.metadata.namespace.as_deref(), Some("agents"));
         assert_eq!(spec.metadata.name.as_deref(), Some("coder-alpha"));
     }
@@ -2093,14 +1976,14 @@ spec:
     #[test]
     fn metadata_task_grant_id_round_trips_and_is_absent_by_default() {
         let bare = Metadata::default();
-        let yaml = serde_yaml::to_string(&bare).expect("serialize");
+        let yaml = nucleus_yaml::to_string(&bare).expect("serialize");
         assert!(!yaml.contains("task_grant_id"), "{yaml}");
         let with = Metadata {
             task_grant_id: Some("6f1c0000-0000-0000-0000-000000000001".into()),
             ..Default::default()
         };
-        let yaml = serde_yaml::to_string(&with).expect("serialize");
-        let back: Metadata = serde_yaml::from_str(&yaml).expect("parse");
+        let yaml = nucleus_yaml::to_string(&with).expect("serialize");
+        let back: Metadata = nucleus_yaml::from_str(&yaml).expect("parse");
         assert_eq!(
             back.task_grant_id.as_deref(),
             Some("6f1c0000-0000-0000-0000-000000000001")
@@ -2124,10 +2007,10 @@ spec:
             ..Default::default()
         };
 
-        let yaml = serde_yaml::to_string(&metadata).expect("should serialize");
+        let yaml = nucleus_yaml::to_string(&metadata).expect("should serialize");
         assert!(yaml.contains("namespace: agents"));
 
-        let parsed: Metadata = serde_yaml::from_str(&yaml).expect("should deserialize");
+        let parsed: Metadata = nucleus_yaml::from_str(&yaml).expect("should deserialize");
         assert_eq!(parsed.namespace.as_deref(), Some("agents"));
         assert_eq!(parsed.name.as_deref(), Some("test-agent"));
     }
@@ -2323,7 +2206,7 @@ spec:
     deny: ["*"]
 "#;
         let err =
-            serde_yaml::from_str::<PodSpec>(yaml).expect_err("a misspelled key must not parse");
+            nucleus_yaml::from_str::<PodSpec>(yaml).expect_err("a misspelled key must not parse");
         let msg = err.to_string();
         assert!(
             msg.contains("netwrok"),
@@ -2340,10 +2223,13 @@ spec:
 apiVersion: nucleus/v1
 kind: Pod
 spec:
+  policy:
+    type: profile
+    name: default
   network:
     deny: ["*"]
 "#;
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("valid spec must parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("valid spec must parse");
         assert!(
             spec.spec.network.is_some(),
             "the field must actually land, or the strictness is meaningless"
@@ -2352,18 +2238,18 @@ spec:
 
     #[test]
     fn an_unknown_kind_is_rejected() {
-        let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec: {}\n";
+        let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec:\n  policy:\n    type: profile\n    name: default\n";
         assert!(
-            serde_yaml::from_str::<PodSpec>(yaml).is_err(),
+            nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "`kind: Podd` used to parse because nothing compared it to anything"
         );
     }
 
     #[test]
     fn an_unknown_api_version_is_rejected() {
-        let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec: {}\n";
+        let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec:\n  policy:\n    type: profile\n    name: default\n";
         assert!(
-            serde_yaml::from_str::<PodSpec>(yaml).is_err(),
+            nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "an unrecognised apiVersion must not silently parse as v1"
         );
     }

@@ -91,7 +91,7 @@ The demo runs five scenarios. A prompt-injection write is **denied by adversaria
   ✓ Write ALLOWED — clean ancestry
 ```
 
-**`just vault`** launches [**The Vault**](crates/ctf-engine/README.md) — a browser CTF where you try to exfiltrate a secret past a formally-verified permission lattice (Lean 4 + Kani-backed verdicts). Hosted at **https://nucleus-ctf.fly.dev**; point an LLM at its JSON/MCP API and watch it fail too.
+**`just vault`** launches [**The Vault**](crates/ctf-engine/README.md) — a browser CTF where you try to exfiltrate a secret past a formally-verified permission lattice (Lean 4 + Kani-backed verdicts). Run `ctf-server` locally (`cargo run -p ctf-server`) and point an LLM at its JSON/MCP API to watch it fail too.
 
 ---
 
@@ -255,7 +255,7 @@ Every tool call flows through the permission kernel. `nucleus run` tracks data p
 | **Tests** | ~4,400 (`#[test]` / `#[tokio::test]`) + ~47 `proptest` suites | Workspace-wide | `ci.yml` |
 | **Code** | ~165K LOC Rust | — | — |
 
-**Honest scope.** The Lean *security* core (lattice, IFC, exposure, noninterference) is `sorry`-free. The `portcullis-core-proven-lean.yml` gate `lake build`s the proven tier and fails if any proof-hole `sorry`/`admit` appears in a file **not** listed as research-tier in `crates/portcullis-core/lean/CONJECTURES.md` — so a real proof can no longer silently regress — and audits the axioms of every declaration in the proven build's whole first-party import closure (`cargo xtask lean-axiom-audit`), so a proven library cannot import a research-tier hole either; `aeneas-ifc-scoped.yml` additionally asserts a clean axiom set for the one extracted integrity-noninterference theorem. (Two previously-orphaned files — `CategoryProofs.lean`, `LabeledTypeProofs.lean` — were found to no longer compile under the pinned toolchain when the gate was introduced; they are quarantined as Tier 3 "STALE" in CONJECTURES.md, not cited as proven, pending repair.) The exploratory alignment-tax / cohomology / braid formalizations are research-tier, are **not** discharged (**23 open `sorry` proof holes across 10 files**; ~100 raw `sorry` occurrences tree-wide are mostly doc comments), and are clearly separated from the core and labeled `CONJECTURE` in-file. Some research files are `sorry`-free but rely on `native_decide`, which trusts the native compiler (`Lean.ofReduceBool`) and is **not** pure-kernel-checked — disclosed, not hidden. Aeneas mechanically translates the core capability *types* from Rust to Lean so proofs run over generated code; ExposureSet/IFC use hand-written Lean models with structural correspondence tests, and exact function-level Rust↔Lean correspondence (that the Rust `meet` equals the Lean `meet`) is **not yet** proven. Kani is bounded — complete over the finite lattice state space, an approximation for string/path checks.
+**Honest scope.** The Lean *security* core (lattice, IFC, exposure, noninterference) is `sorry`-free. The `portcullis-core-proven-lean.yml` gate `lake build`s the proven tier and fails if any proof-hole `sorry`/`admit` appears in a file **not** listed as research-tier in `crates/portcullis-core/lean/CONJECTURES.md` — so a real proof can no longer silently regress — and audits the axioms of every declaration in the proven build's whole first-party import closure (`cargo xtask lean-axiom-audit`), so a proven library cannot import a research-tier hole either; `aeneas-ifc-scoped.yml` additionally asserts a clean axiom set for the one extracted integrity-noninterference theorem. (Two previously-orphaned files — `CategoryProofs.lean`, `LabeledTypeProofs.lean` — were found to no longer compile under the pinned toolchain when the gate was introduced; they are quarantined as Tier 3 "STALE" in CONJECTURES.md, not cited as proven, pending repair.) The exploratory alignment-tax / cohomology / braid formalizations are research-tier, are **not** discharged (**22 open `sorry` proof holes across 9 files**; ~100 raw `sorry` occurrences tree-wide are mostly doc comments), and are clearly separated from the core and labeled `CONJECTURE` in-file. Some research files are `sorry`-free but rely on `native_decide`, which trusts the native compiler (`Lean.ofReduceBool`) and is **not** pure-kernel-checked — disclosed, not hidden. Aeneas mechanically translates the core capability *types* from Rust to Lean so proofs run over generated code; ExposureSet/IFC use hand-written Lean models with structural correspondence tests, and exact function-level Rust↔Lean correspondence (that the Rust `meet` equals the Lean `meet`) is **not yet** proven. Kani is bounded — complete over the finite lattice state space, an approximation for string/path checks.
 
 **No Verus.** Earlier docs cited "297 Verus VCs." Verus has been **removed** from the workspace; its guarantees are folded into the Lean 4 + Kani stack. A `proptest`-based conformance suite (`verus_conformance.rs`) is the surviving artifact — property tests, not SMT proofs.
 
@@ -418,8 +418,8 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 | Crate | Purpose | Status |
 |-------|---------|--------|
 | [**nucleus-cli**](crates/nucleus-cli/) | Run agents under enforced permissions; ships the `nucleus` binary (`audit` / `run --local` / `run`) | Mixed — Tier 0 working; runner vendor-coupled; `--hook`/`guard` need an external binary |
-| [**nucleus-audit**](crates/nucleus-audit/) | Scan configs; verify HMAC tool-proxy logs + SHA-256 receipt chains; provenance / SLSA / C2PA subcommands | Mixed — config scan + tool-proxy-log HMAC verification real; receipt-chain verifier checks hash chain, not yet Ed25519 sig |
-| [**nucleus-sdk**](crates/nucleus-sdk/) | Rust client: tool-proxy + node clients, intent profiles, HMAC/mTLS | Working library (unit-tested) |
+| [**nucleus-audit**](crates/nucleus-audit/) | Scan configs; verify Ed25519-signed tool-proxy logs + SHA-256 receipt chains; provenance subcommands | Mixed — config scan + tool-proxy-log signature verification real; receipt-chain verifier checks hash chain, not yet Ed25519 sig |
+| [**nucleus-sdk**](crates/nucleus-sdk/) | Rust client: tool-proxy + node clients, intent profiles, mTLS | Working library (unit-tested) |
 | [**exposure-playground**](crates/exposure-playground/) / **exposure-web** | TUI / WASM visualizer of the capability lattice | Demo — currently does **not** compile on this branch (portcullis feature-gate bug) |
 
 </details>
@@ -434,7 +434,7 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 | [**portcullis-effects**](crates/portcullis-effects/) | Sealed effect traits (`FileEffect`/`ShellEffect`/`GitEffect`/…) gated by `production_effects(policy)` | Alpha — file/shell/git do real I/O; web/spawn stubbed |
 | [**portcullis-profiles**](crates/portcullis-profiles/) | Work-type presets (CodeReview/BugFix/DocsEdit/Research), vendor-neutral | Working |
 | [**portcullis-python**](crates/portcullis-python/) | PyO3/maturin native bindings exposing the portcullis core to Python | Excluded build target (native bindings) |
-| [**portcullis-zkvm-guest**](crates/portcullis-zkvm-guest/) | RISC-V zkVM guest (risc0-build) — proving target for core checks | Excluded build target (zkVM guest) |
+| [**portcullis-zkvm-guest**](crates/portcullis-zkvm-guest/) | RISC-V zkVM guest (risc0-build) + host `ZkvmReceipt` container — research, no proof is verified anywhere | Excluded, own lockfile; not built in CI |
 | [**nucleus-ifc**](crates/nucleus-ifc/) | Standalone IFC API (re-export of the core FlowTracker) | Working |
 | [**nucleus-memory**](crates/nucleus-memory/) | Governed memory with per-entry IFC labels + poisoning detection | Working |
 | [**nucleus-spec**](crates/nucleus-spec/) | `PodSpec`, generic `credentials.env`, network/resource/seccomp specs, draft `workload_identity` | Alpha — `workload_identity` is a draft RFC with no runtime consumer; **still hardcodes specific LLM-vendor hostnames + workload-identity defaults** (see Known Gaps) |
@@ -459,7 +459,7 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 | Crate | Purpose | Status |
 |-------|---------|--------|
 | [**nucleus**](crates/nucleus/) | `cap-std` sandbox, `AtomicBudget`, `MonotonicGuard`, env-clear `Executor` | Working (cross-platform, `#![deny(unsafe_code)]`) |
-| [**nucleus-tool-proxy**](crates/nucleus-tool-proxy/) | Permission gateway: mTLS, SPIFFE policy, HMAC requests, tamper-evident JSONL audit | Working (~187 tests) |
+| [**nucleus-tool-proxy**](crates/nucleus-tool-proxy/) | Permission gateway: mTLS and peer-verified Unix/vsock transports, SPIFFE policy, Ed25519-signed hash-chained JSONL audit | Working (~187 tests) |
 | [**nucleus-mcp**](crates/nucleus-mcp/) | stdio MCP server bridging tool calls to the proxy with decision tracing | Working |
 | [**nucleus-node**](crates/nucleus-node/) | kubelet-analogue daemon: pod lifecycle, netns, iptables, cgroups, seccomp, vsock | Alpha — Tier 2 paths Linux + KVM only |
 | [**nucleus-guest-init**](crates/nucleus-guest-init/) | Firecracker guest init (mounts, net, secrets, exec proxy) | Alpha — Linux-only by design |
@@ -528,9 +528,9 @@ Documented in [`SECURITY_TODO.md`](docs/SECURITY_TODO.md) and [`docs/production-
 - **The public verifier service is not hosted.** It is self-hostable and deploy-ready (`fly.toml`; 26 integration / 70 total tests); no hosted endpoint resolves today. The `@coproduct/verify` npm package and `/verify/` demo are publish-gated.
 - **Tier 2 isolation needs KVM.** A supported macOS host reaches it through the [Apple Container host](docs/quickstart/apple-container.md) or a Lima VM with nested virtualisation. Their version and artifact requirements differ; a passing `cargo test` on macOS does not imply a live VM boot, which is what `nucleus verify --tier2` is for. CI boots a real pod on **x86_64** only — GitHub has no hosted arm64 runner with `/dev/kvm` — so the aarch64 boot is verified by hand before a release.
 - **`bash -c` bypasses command-level checks.** Firecracker network policy is the real defense.
-- **`verify-receipts` checks the hash chain, not yet the Ed25519 signature.** Tool-proxy-log HMAC verification *is* real; C2PA verification is feature-gated.
+- **`verify-receipts` checks the hash chain, not yet the Ed25519 signature.** Tool-proxy-log Ed25519 signature verification *is* real. Nucleus has no C2PA support; provenance exports are in-toto / SLSA / Sigstore (`nucleus envelope-export`).
 - **Issuance/signing of identities is demo-only.** `LocalIssuer` is `dev`-feature-gated; there is no SPIRE-backed JWT-SVID issuer in this repo.
-- **The research-tier Lean formalizations are not discharged.** 23 open `sorry` proof holes remain across 10 exploratory alignment-tax / cohomology / braid files (each labeled `CONJECTURE`; manifest at `crates/portcullis-core/lean/CONJECTURES.md`); only the security core is `sorry`-free and CI-gated against regression.
+- **The research-tier Lean formalizations are not discharged.** 22 open `sorry` proof holes remain across 9 exploratory alignment-tax / cohomology / braid files (each labeled `CONJECTURE`; manifest at `crates/portcullis-core/lean/CONJECTURES.md`); only the security core is `sorry`-free and CI-gated against regression.
 - **Some crate-level READMEs are stale** (`nucleus-lineage` under-claims; a few doc comments lag the code). The code/tests are the source of truth.
 
 ---

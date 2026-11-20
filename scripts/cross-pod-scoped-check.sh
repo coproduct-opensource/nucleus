@@ -74,7 +74,6 @@ PORT="${NUCLEUS_SCOPED_TEST_PORT:-8103}"
 # cross-pod-lineage-check.sh's own note on this for the detail.
 URL="https://127.0.0.1:$PORT"
 TRUST_DOMAIN="nucleus.local"   # the node's own --identity-trust-domain default
-SECRET="$(printf 'a%.0s' {1..64})"   # still required for --proxy-auth-secret/--proxy-approval-secret
 WORK="$(mktemp -d)"
 NODE_PID=""
 cleanup() { [[ -n "$NODE_PID" ]] && kill "$NODE_PID" 2>/dev/null; rm -rf "$WORK"; }
@@ -101,7 +100,7 @@ if [[ ! -x "$MINT" ]]; then
 fi
 [[ -x "$MINT" ]] || { echo "ERROR: missing binary $MINT"; exit 1; }
 
-"$NODE" --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
+"$NODE" \
     --listen "127.0.0.1:$PORT" --state-dir "$WORK/state" --driver local --allow-local-driver \
     --root-minter-spiffe-id "spiffe://$TRUST_DOMAIN/ns/default/sa/test-cli" \
     --tool-proxy-path "$TP" >"$WORK/node.log" 2>&1 &

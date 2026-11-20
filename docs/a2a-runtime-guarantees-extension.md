@@ -28,7 +28,7 @@ extract the claims after (and only after) card signature verification.
         "description": "nucleus verify-before-you-act claims: SPIFFE/DID identity, trust JWKS, envelope schema versions, runtime-guarantee profile",
         "params": {
           "spiffeId": "spiffe://prod.example.com/ns/agents/sa/coder",
-          "did": "did:web:coder.prod.example.com",
+          "did": "did:web:prod.example.com:ns:agents:sa:coder",
           "supportedEnvelopeSchemaVersions": ["1"],
           "trustJwks": {
             "keys": [
@@ -67,7 +67,7 @@ extension `params` is a `google.protobuf.Struct`).
 | field | type | presence | meaning |
 |---|---|---|---|
 | `spiffeId` | string | REQUIRED | Workload identity of the agent (`spiffe://<trust-domain>/ns/<ns>/sa/<name>`). |
-| `did` | string | REQUIRED | Decentralized identifier (W3C `did:web`) for the same agent. |
+| `did` | string | REQUIRED | Decentralized identifier (W3C `did:web`) for the same agent, as `Identity::to_did_web` derives it from `spiffeId` (see [Migrating did:web identifiers](did-web-identifier-migration.md)). |
 | `supportedEnvelopeSchemaVersions` | string[] | optional (omit when empty) | Provenance envelope/bundle schema versions the agent produces or consumes. |
 | `jwksUri` | string | optional | Where the agent's CARD-verification JWKS is published. A hint for out-of-band resolution — never trusted material on its own. |
 | `trustJwks` | JWKS object | REQUIRED | The JWKS the agent claims is authoritative for its **provenance bundles** (RFC 7517 subset: `OKP`/`Ed25519`; unset optional members are omitted, never `null`; optional `not_before`/`not_after` rotation windows). |

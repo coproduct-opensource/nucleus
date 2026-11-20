@@ -103,6 +103,10 @@ message ExecutionReceipt {
   string audit_tail_hash = 3;
   uint64 audit_entry_count = 4;
   uint64 timestamp_unix = 5;
+  // v3: hex SHA-256 over "nucleus.pod-manifest.v3\0" || RFC 8785 JSON of the
+  // PodSpec (nucleus_spec::PodSpec::manifest_hash). v1/v2: SHA-256 of the node's
+  // serde_yaml rendering of the spec -- still verifiable under the signature,
+  // not recomputable from a spec. `version` says which.
   string manifest_hash = 6;
   string sandbox_tier = 7;
   string spiffe_id = 8;

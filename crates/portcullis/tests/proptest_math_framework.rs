@@ -136,7 +136,7 @@ fn arb_permission_lattice() -> impl Strategy<Value = PermissionLattice> {
     prop_oneof![
         Just(PermissionLattice::permissive()),
         Just(PermissionLattice::restrictive()),
-        Just(PermissionLattice::default()),
+        Just(PermissionLattice::supervised()),
         Just(PermissionLattice::read_only()),
         Just(PermissionLattice::codegen()),
         Just(PermissionLattice::pr_review()),

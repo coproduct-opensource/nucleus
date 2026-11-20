@@ -27,8 +27,8 @@ fn env_naming_the_governor() -> String {
 }
 
 fn pod(labels: &str) -> nucleus_spec::PodSpec {
-    serde_yaml::from_str(&format!(
-        "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\n{labels}spec:\n  \
+    nucleus_yaml::from_str(&format!(
+        "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\n{labels}spec:\n  policy: {{ type: profile, name: default }}\n  \
          timeout_seconds: 60\n"
     ))
     .expect("spec parses")

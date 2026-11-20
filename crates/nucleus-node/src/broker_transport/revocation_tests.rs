@@ -70,6 +70,7 @@ async fn saturated(revoke_directly: bool) {
             caller,
             egress: serving_tests::test_egress_arc(),
             streams: serving_tests::test_streams(),
+            peer: super::peer::PeerRule::VmmForwarded,
         },
         async {
             let _ = stopped.await;

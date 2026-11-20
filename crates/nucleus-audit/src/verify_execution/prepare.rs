@@ -15,7 +15,9 @@ pub(crate) struct Args {
     /// Independently enrolled node public Ed25519 key (64 hexadecimal characters)
     #[arg(long)]
     signer_key_hex: String,
-    /// JSON name/value map of all intended environment inputs, including defaults
+    /// JSON name/value map of the intended environment inputs, including
+    /// defaults. Omit what the runtime injects (`NUCLEUS_EGRESS_<NAME>_URL`):
+    /// it is derived from the admission record, and restating it is refused.
     #[arg(long)]
     environment_inputs: PathBuf,
     /// Unix microsecond deadline for receipt issuance AND verification consumption
@@ -52,12 +54,17 @@ impl Args {
 
 fn prepare(
     admission: WorkloadAdmission,
-    inputs: &BTreeMap<String, String>,
+    declared: &BTreeMap<String, String>,
     signer: [u8; 32],
     valid_until: u64,
     now: u64,
 ) -> Result<RecordedExecution> {
+    // Declared inputs plus what the runtime injected, read from the admission
+    // record rather than restated (#3219). Mediator bindings and restated
+    // runtime names are refused by name.
+    let inputs = admission.environment_inputs(declared)?;
     let WorkloadAdmission {
+        namespace,
         pod_id,
         created_at_unix,
         source_commit,
@@ -69,9 +76,18 @@ fn prepare(
         session_id,
         issuer_kid,
         verifying_key,
+        runtime_environment_inputs: _,
     } = admission;
     if verifying_key != signer {
         bail!("admission signer does not match the independently enrolled public key");
+    }
+    if matches!(
+        namespace,
+        nucleus_ci_verdict::execution::NamespaceSetup::Unrecorded {}
+    ) {
+        bail!(
+            "admission does not record namespace setup; current execution verification requires it"
+        );
     }
     if pod_id.is_empty() || pod_id != session_id {
         bail!("admission pod and session must identify the same nonempty attempt");
@@ -82,21 +98,15 @@ fn prepare(
     if valid_until <= now || valid_until < issued_not_before_micros {
         bail!("validity deadline must be after now and no earlier than admission");
     }
-    // Excluded runtime bindings are not operator inputs. Refuse confusion rather
-    // than accepting values that the environment commitment would silently omit.
-    if inputs.contains_key("NUCLEUS_TOOL_PROXY_URL")
-        || inputs.contains_key("NUCLEUS_TOOL_PROXY_AUTH_SECRET")
-    {
-        bail!("environment inputs must omit the two mediator-injected bindings");
-    }
     Ok(RecordedExecution {
+        namespace,
         pod_id,
         source_commit,
         source_tree,
         gate,
         program_digest,
         architecture,
-        environment_inputs_sha256: EnvironmentIdentity::of(inputs).inputs_sha256,
+        environment_inputs_sha256: EnvironmentIdentity::of(&inputs).inputs_sha256,
         artifacts,
         session_id,
         issuer_kid,
@@ -112,6 +122,7 @@ mod tests {
 
     fn admission() -> WorkloadAdmission {
         WorkloadAdmission {
+            namespace: nucleus_spec::NamespaceSetup::Runtime {},
             pod_id: "attempt-1".into(),
             session_id: "attempt-1".into(),
             created_at_unix: 10,
@@ -123,6 +134,7 @@ mod tests {
             artifacts: BTreeMap::from([("patch".into(), "changes.patch".into())]),
             issuer_kid: "enrolled-node".into(),
             verifying_key: [7; 32],
+            runtime_environment_inputs: BTreeMap::new(),
         }
     }
 
@@ -158,6 +170,10 @@ mod tests {
             .remove("issued_not_after_micros");
         let mut original = serde_json::to_value(admission()).unwrap();
         original.as_object_mut().unwrap().remove("created_at_unix");
+        original
+            .as_object_mut()
+            .unwrap()
+            .remove("runtime_environment_inputs");
         assert_eq!(actual, original);
     }
 

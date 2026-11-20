@@ -148,6 +148,36 @@ fn parse(bytes: &[u8], format: ImaLogFormat) -> Result<Vec<RawEntry>, Malformed>
     Ok(out)
 }
 
+/// One `ima-ng` entry in the SHA-256 per-bank layout the kernel publishes as
+/// `binary_runtime_measurements_sha256`, and its template digest: the value
+/// PCR 10's SHA-256 bank is extended with. One marshaller for the software
+/// measurer that stands in for the kernel on a software TPM
+/// ([`crate::attester::measure_into_pcr10`]) and for the tests (ADR 0007 G-1).
+///
+/// # Errors
+/// A path or field longer than a `u32` length prefix can carry.
+pub fn ima_ng_entry(path: &str, file_digest: &[u8; 32]) -> Result<([u8; 32], Vec<u8>), Malformed> {
+    let len = |n: usize| u32::try_from(n).map_err(|_| field("an ima-ng field is too long"));
+    let mut d_ng = b"sha256:\0".to_vec();
+    d_ng.extend_from_slice(file_digest);
+    let mut n_ng = path.as_bytes().to_vec();
+    n_ng.push(0);
+    let mut data = Vec::new();
+    for f in [&d_ng, &n_ng] {
+        data.extend_from_slice(&len(f.len())?.to_le_bytes());
+        data.extend_from_slice(f);
+    }
+    let template_digest = sha256(&data);
+    let mut out = Vec::new();
+    out.extend_from_slice(&10u32.to_le_bytes());
+    out.extend_from_slice(&template_digest);
+    out.extend_from_slice(&6u32.to_le_bytes());
+    out.extend_from_slice(b"ima-ng");
+    out.extend_from_slice(&len(data.len())?.to_le_bytes());
+    out.extend_from_slice(&data);
+    Ok((template_digest, out))
+}
+
 /// Replay `bytes` into a SHA-256 PCR 10 and return the entries of the
 /// shortest prefix that reproduces `quoted_pcr10`. `Ok(None)` when no prefix
 /// does — the log is not the log behind this quote.
@@ -191,23 +221,7 @@ pub(crate) mod build {
     /// An `ima-ng` entry in the SHA-256 per-bank layout; returns the bytes
     /// and advances `pcr10`.
     pub(crate) fn entry(pcr10: &mut [u8; 32], path: &str, file_digest: [u8; 32]) -> Vec<u8> {
-        let mut d_ng = b"sha256:\0".to_vec();
-        d_ng.extend_from_slice(&file_digest);
-        let mut n_ng = path.as_bytes().to_vec();
-        n_ng.push(0);
-        let mut data = Vec::new();
-        for f in [&d_ng, &n_ng] {
-            data.extend_from_slice(&u32::try_from(f.len()).unwrap().to_le_bytes());
-            data.extend_from_slice(f);
-        }
-        let td = sha256(&data);
-        let mut out = Vec::new();
-        out.extend_from_slice(&10u32.to_le_bytes());
-        out.extend_from_slice(&td);
-        out.extend_from_slice(&6u32.to_le_bytes());
-        out.extend_from_slice(b"ima-ng");
-        out.extend_from_slice(&u32::try_from(data.len()).unwrap().to_le_bytes());
-        out.extend_from_slice(&data);
+        let (td, out) = ima_ng_entry(path, &file_digest).unwrap();
         let mut buf = [0u8; 64];
         buf[..32].copy_from_slice(pcr10);
         buf[32..].copy_from_slice(&td);

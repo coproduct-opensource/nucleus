@@ -104,6 +104,44 @@ const CERT_ROOT_KEY_FILE: &str = "cert_root_signing_key.der";
 #[cfg(test)]
 const JWT_SVID_P256_KEY_FILE: &str = nucleus_federation::keyring::CURRENT_KEY_FILE;
 
+/// Filename (under `state_dir`) holding the key a node in declared insecure
+/// mode (the bare tier, Program C C0) signs ALL its evidence with, in place of
+/// the executor key: execution receipts, pod receipts, Article 12
+/// attestations.
+///
+/// Not a role key. Its workloads run at the node's uid and can read this file,
+/// so it is never sealed, never recorded in the key custody statement, never
+/// published in a JWKS, trust bundle, federation or evidence document, and
+/// its kid ([`nucleus_ci_verdict::execution::INSECURE_SHARED_UID_KID_PREFIX`])
+/// is refused by name by every verifier in this repository.
+const INSECURE_EVIDENCE_KEY_FILE: &str = "insecure_shared_uid_signing_key.der";
+
+/// Load the declared-insecure evidence key, creating it on first run. See
+/// [`INSECURE_EVIDENCE_KEY_FILE`].
+pub(crate) fn load_or_create_insecure_evidence_key(state_dir: &Path) -> SigningKey {
+    load_or_create_key_file(
+        state_dir,
+        INSECURE_EVIDENCE_KEY_FILE,
+        "insecure-mode evidence key",
+    )
+}
+
+/// The executor key's files in `state_dir`, plain or sealed, that exist.
+///
+/// The executor key is the one whose signatures leave the node as trusted
+/// evidence. A node in declared insecure mode refuses a state directory that
+/// holds one, because its workloads could read it.
+pub(crate) fn executor_key_files(state_dir: &Path) -> Vec<PathBuf> {
+    let role = NodeKeyRole::Executor;
+    [
+        state_dir.join(role.file()),
+        state_dir.join(role.sealed_file()),
+    ]
+    .into_iter()
+    .filter(|p| p.symlink_metadata().is_ok())
+    .collect()
+}
+
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
 /// Samples 32 raw bytes via `rand_core 0.6`'s `fill_bytes` and feeds
@@ -1021,7 +1059,7 @@ mod tests {
     /// signed with and not silently converted (ADR 0012).
     #[test]
     fn a_file_key_on_a_tpm_node_is_refused_without_the_waiver() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap();
         let tpm = nucleus_federation::KeyCustody::Tpm(nucleus_federation::TpmCustody::new(
             nucleus_federation::TpmEndpoint::Device(dir.path().join("no-such-tpm")),
@@ -1050,7 +1088,7 @@ mod tests {
     /// registered this node's JWKS depends on.
     #[test]
     fn the_federation_issuer_key_persists_read_only_with_a_stable_kid() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         let first = signing_kid(
             load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).expect("generates"),
         );
@@ -1067,7 +1105,7 @@ mod tests {
         assert_eq!(first, restarted, "the kid changed across a restart");
 
         // And it is its own key, not one of the Ed25519 role keys' files.
-        let other = tempfile::tempdir().unwrap();
+        let other = crate::state_lock::state_tempdir();
         let elsewhere =
             signing_kid(load_or_create_jwt_svid_signing_key(other.path(), &NO_TPM).unwrap());
         assert_ne!(first, elsewhere, "two nodes share a federation key");
@@ -1080,7 +1118,7 @@ mod tests {
     fn the_running_node_signs_with_a_promoted_key_without_restart() {
         use nucleus_federation::CurrentSigner as _;
         use nucleus_federation::keyring::{KeyDir, RotationPolicy};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         let node =
             std::sync::Arc::new(load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap());
         let old = std::sync::Arc::clone(&node)
@@ -1116,7 +1154,7 @@ mod tests {
     #[test]
     fn a_federation_key_readable_by_others_stops_the_node() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap();
         let path = dir.path().join(JWT_SVID_P256_KEY_FILE);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();

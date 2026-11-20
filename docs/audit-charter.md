@@ -69,7 +69,7 @@ Cadence: every 24 months. First engagement: **scheduled for
 2026-Q3** (target: pre-Article-50 effective date).
 
 Scope: the cryptographic and information-flow surfaces of
-nucleus — JWS signing, Merkle-tree construction, COSE/C2PA
+nucleus — JWS signing, Merkle-tree construction, DSSE attestation
 emission, capability lattice, taint algebra. Behavioural
 correctness (verify-bundle returns the right answer on
 adversarial inputs) is in scope; UI / marketing-site / billing

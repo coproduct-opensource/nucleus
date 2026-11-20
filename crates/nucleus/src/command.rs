@@ -181,6 +181,10 @@ pub struct Executor<'a> {
     /// said its pod has no egress keeps the internet socket, and the lattice's
     /// exec denial applies either way.
     seccomp_policy: portcullis::SeccompPolicy,
+    /// Whether this executor's children may write the sandbox root, read off
+    /// the same normalized lattice as everything above (#2907). Not settable:
+    /// the policy decides it, so no caller can widen it.
+    workspace_writes: crate::WorkspaceWrites,
     /// The sealed effects home (B1) that *both* the synchronous and the async
     /// spawns delegate to. Held as the **concrete** `PolicyEnforced<RealEffects>`
     /// (from [`production_effects_concrete`]), not a trait object, for one
@@ -222,6 +226,7 @@ impl<'a> Executor<'a> {
         )));
         let seccomp_policy =
             portcullis::SeccompPolicy::derive(&normalized, portcullis::NetworkEgress::Declared);
+        let workspace_writes = crate::WorkspaceWrites::of(&normalized, sandbox.root_path());
         Self {
             capabilities: normalized.capabilities,
             obligations: normalized.obligations,
@@ -239,6 +244,7 @@ impl<'a> Executor<'a> {
             landlock_waiver: crate::LandlockWaiver::Absent,
             rlimit_policy: crate::RlimitPolicy::node_ceiling(),
             seccomp_policy,
+            workspace_writes,
             effects,
         }
     }
@@ -538,14 +544,15 @@ impl<'a> Executor<'a> {
         // workload does; `hardening.rs` has the table.
         // The ruleset's failure, named, before the spawn turns it into an errno.
         confinement
-            .preflight_filesystem()
+            .preflight_filesystem(&self.workspace_writes)
             .map_err(io::Error::other)?;
         // The limits are the policy's, as evidence, decided before the fork.
         // The hook's `SpawnHardening` answer has no receipt to go to here.
         let rlimits = self.rlimit_policy.at_ceiling();
         let syscalls = self.seccomp_policy;
+        let writes = self.workspace_writes.clone();
         let hook = move |cmd: &mut Command| {
-            let _ = confinement.apply(cmd, rlimits, syscalls);
+            let _ = confinement.apply(cmd, rlimits, syscalls, &writes);
         };
         let harden: Option<&(dyn Fn(&mut Command) + Send + Sync)> = Some(&hook);
 
@@ -966,12 +973,13 @@ impl<'a> Executor<'a> {
     ) -> Result<Output> {
         // The same confinement as the synchronous spawn, on `tokio::process`.
         let confinement = self.child_confinement()?;
-        confinement.preflight_filesystem()?;
+        confinement.preflight_filesystem(&self.workspace_writes)?;
         self.hand_over_workspace(confinement);
         let rlimits = self.rlimit_policy.at_ceiling();
         let syscalls = self.seccomp_policy;
+        let writes = self.workspace_writes.clone();
         let hook = move |cmd: &mut tokio::process::Command| {
-            let _ = confinement.apply(cmd.as_std_mut(), rlimits, syscalls);
+            let _ = confinement.apply(cmd.as_std_mut(), rlimits, syscalls, &writes);
         };
         let harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)> = Some(&hook);
 
@@ -1023,6 +1031,21 @@ impl<'a> Executor<'a> {
         args: &[String],
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
+        let Some(key) = self.consent_required(command, args)? else {
+            return Ok(());
+        };
+        match approval {
+            Some(token) if token.matches(&key) => Ok(()),
+            Some(_) => Err(NucleusError::InvalidApproval { operation: key }),
+            None => Err(NucleusError::ApprovalRequired { operation: key }),
+        }
+    }
+
+    /// The approval running `args` needs here, if any: `Some(key)` when this
+    /// executor will ask for one, `None` when it will not. Refuses a `Never`
+    /// capability outright. The ONE decider for both [`Self::check_capability`]
+    /// and [`Self::consent`] (ADR 0007 G-1).
+    fn consent_required(&self, command: &str, args: &[String]) -> Result<Option<String>> {
         // Determine required capability based on command type
         let (operation, capability_name, level) = if is_git_push_command(args) {
             (Operation::GitPush, "git_push", self.capabilities.git_push)
@@ -1050,28 +1073,29 @@ impl<'a> Executor<'a> {
             });
         }
 
-        if self.obligations.requires(operation) {
-            // The command executor used to key approvals on the RAW COMMAND
-            // (`echo hello`) — no operation at all, and so a third vocabulary
-            // beside the kernel's and the sandbox's. Measured on a live pod:
-            // the kernel deferred `RunBash echo nucleus-agency`, a person
-            // approved exactly that, and this gate then asked for
-            // `echo nucleus-agency` and refused the retry as unapproved. Same
-            // defect as #2406, one layer over. One name, from
-            // `approval::approval_key`.
-            let key = crate::approval::approval_key(operation, command);
-            if let Some(token) = approval {
-                if token.matches(&key) {
-                    Ok(())
-                } else {
-                    Err(NucleusError::InvalidApproval { operation: key })
-                }
-            } else {
-                Err(NucleusError::ApprovalRequired { operation: key })
-            }
-        } else {
-            Ok(())
-        }
+        // The command executor used to key approvals on the RAW COMMAND
+        // (`echo hello`) — no operation at all, and so a third vocabulary
+        // beside the kernel's and the sandbox's. Measured on a live pod: the
+        // kernel deferred `RunBash echo nucleus-agency`, a person approved
+        // exactly that, and this gate then asked for `echo nucleus-agency` and
+        // refused the retry as unapproved. Same defect as #2406, one layer
+        // over. One name, from `approval::approval_key`.
+        Ok(self
+            .obligations
+            .requires(operation)
+            .then(|| crate::approval::approval_key(operation, command)))
+    }
+
+    /// Which approval [`Self::run_args`] will ask for before running `args`:
+    /// `Some(key)` when this executor will ask, `None` when it will not. It
+    /// refuses now what the run would refuse at its argv and capability
+    /// checks. It asks no approver and spends nothing, so a caller can collect
+    /// every approval the run needs and spend them together immediately
+    /// before it (#3446).
+    pub fn consent(&self, args: &[String]) -> Result<Option<String>> {
+        let display_command = args.join(" ");
+        refuse_bad_argv(args, &display_command)?;
+        self.consent_required(&display_command, args)
     }
 
     fn max_duration_for_run(&self) -> Option<Duration> {

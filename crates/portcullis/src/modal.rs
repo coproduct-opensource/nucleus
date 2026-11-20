@@ -90,21 +90,11 @@ impl ModalPermissions for PermissionLattice {
         // Operations that require approval are set to Never.
         let mut result = self.clone();
 
-        for op in &self.obligations.approvals {
-            match op {
-                Operation::ReadFiles => result.capabilities.read_files = CapabilityLevel::Never,
-                Operation::WriteFiles => result.capabilities.write_files = CapabilityLevel::Never,
-                Operation::EditFiles => result.capabilities.edit_files = CapabilityLevel::Never,
-                Operation::RunBash => result.capabilities.run_bash = CapabilityLevel::Never,
-                Operation::GlobSearch => result.capabilities.glob_search = CapabilityLevel::Never,
-                Operation::GrepSearch => result.capabilities.grep_search = CapabilityLevel::Never,
-                Operation::WebSearch => result.capabilities.web_search = CapabilityLevel::Never,
-                Operation::WebFetch => result.capabilities.web_fetch = CapabilityLevel::Never,
-                Operation::GitCommit => result.capabilities.git_commit = CapabilityLevel::Never,
-                Operation::GitPush => result.capabilities.git_push = CapabilityLevel::Never,
-                Operation::CreatePr => result.capabilities.create_pr = CapabilityLevel::Never,
-                Operation::ManagePods => result.capabilities.manage_pods = CapabilityLevel::Never,
-                Operation::SpawnAgent => result.capabilities.spawn_agent = CapabilityLevel::Never,
+        // Every operation whose consent is `RequiresApproval` — obligated, or
+        // not declared autonomous — is not available without approval.
+        for op in Operation::ALL {
+            if self.requires_approval(op) {
+                *result.capabilities.level_mut(op) = CapabilityLevel::Never;
             }
         }
 
@@ -172,7 +162,10 @@ impl ModalContext {
         chain: &SpiffeTraceChain,
         escalation_ceiling: &PermissionLattice,
     ) -> Self {
-        let base = chain.ceiling().unwrap_or_default();
+        // No ceiling in the chain: the supervised set, what `default()` was.
+        let base = chain
+            .ceiling()
+            .unwrap_or_else(PermissionLattice::supervised);
         let necessary = base.necessity();
         let possible = base.possibility(escalation_ceiling);
 
@@ -504,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_necessity_is_deflationary() {
-        let perms = PermissionLattice::default();
+        let perms = PermissionLattice::supervised();
         let necessary = perms.necessity();
 
         // □A ≤ A
@@ -689,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_all_capability_modals() {
-        let perms = PermissionLattice::default();
+        let perms = PermissionLattice::supervised();
         let modals = all_capability_modals(&perms);
 
         // Should have one modal per operation

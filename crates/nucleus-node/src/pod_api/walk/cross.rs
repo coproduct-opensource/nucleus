@@ -200,6 +200,7 @@ impl Run {
             audit_creds: None,
             pod_spec_yaml: None,
             egress_ca_pem: None,
+            decisions: None,
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
             receipt_dir: Some(dir.path().join("p")),
@@ -249,7 +250,7 @@ impl Run {
             snapshot: None,
         };
         let mut spec: nucleus_spec::PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("minimal spec");
         spec.spec.work_dir = dir.path().to_path_buf();
         st.pods.lock().await.insert(
@@ -257,6 +258,7 @@ impl Run {
             Arc::new(crate::PodHandle {
                 id: p,
                 execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
+                manifest_hash: crate::delivered_spec::fixture_hash(&spec),
                 spec,
                 created_at: 1_757_000_000,
                 log_path: dir.path().join("pod.log"),
@@ -266,6 +268,10 @@ impl Run {
                 posture_stamp: None,
                 owner: None,
                 capacity: tokio::sync::Mutex::new(None),
+                // A fixture names no lineage: a child of it is refused memory, never given a guess.
+                memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+                    parent: uuid::Uuid::nil(),
+                },
             }),
         );
         let k = register(&st, Some(p)).await;

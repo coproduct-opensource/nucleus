@@ -149,6 +149,10 @@ pub const SHARED_CONFIG_KEYS: &[&str] = &[
     // The operator's Landlock waiver (#2696 P3c): node configuration, the
     // same for every pod, and no secret.
     "nucleus.workload_landlock",
+    // The node's confirmation that the VM has no NIC, no egress proxy and no
+    // credentialed upstream (#3493). Not a secret; a base taken with it is named
+    // apart from one without it (`snapshot_store::Derivation::network_isolated`).
+    "nucleus.workload_network",
     // Networking is re-established after restore, not inherited: Firecracker
     // documents that "guest network connectivity is not guaranteed to be
     // preserved after resume".
@@ -489,6 +493,7 @@ mod tests {
             "nucleus.host_spec",
             "nucleus.net",
             "nucleus.workload_landlock",
+            "nucleus.workload_network",
         ];
         assert_eq!(
             MODEL_PER_POD.iter().collect::<BTreeSet<_>>(),

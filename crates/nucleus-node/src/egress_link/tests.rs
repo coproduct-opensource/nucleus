@@ -60,7 +60,15 @@ struct Harness {
     closed: Arc<AtomicBool>,
     clock: Arc<AtomicU64>,
     dir: tempfile::TempDir,
+    /// A fake `/sys/class/net`, holding the host end of the pod's link.
+    sysfs: tempfile::TempDir,
 }
+
+/// The fake link's name under [`Harness::sysfs`].
+const LINK: &str = "vh-packet-test";
+
+/// How often the harness's detector checks: short, so a test waits milliseconds.
+const PERIOD: Duration = Duration::from_millis(5);
 
 impl Harness {
     fn new(pace: EgressPace) -> (Self, Fixture) {
@@ -79,23 +87,56 @@ impl Harness {
             closed: closed.clone(),
             hold_accept: None,
         };
-        (
-            Self {
-                meter,
-                input,
-                output,
-                closed,
-                clock: Arc::new(AtomicU64::new(100)),
-                dir,
-            },
-            queue,
-        )
+        let sysfs = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(sysfs.path().join(LINK).join("statistics")).unwrap();
+        let harness = Self {
+            meter,
+            input,
+            output,
+            closed,
+            clock: Arc::new(AtomicU64::new(100)),
+            dir,
+            sysfs,
+        };
+        harness.set_link(0, 0);
+        (harness, queue)
+    }
+    /// Set what the kernel says crossed the link since it came up.
+    fn set_link(&self, bytes: u64, packets: u64) {
+        let stats = self.sysfs.path().join(LINK).join("statistics");
+        // Whole-file replace, so a concurrent read sees the old count or the new.
+        for (name, value) in [("rx_bytes", bytes), ("rx_packets", packets)] {
+            let tmp = stats.join(format!("{name}.tmp"));
+            std::fs::write(&tmp, format!("{value}\n")).unwrap();
+            std::fs::rename(&tmp, stats.join(name)).unwrap();
+        }
     }
     fn serve(&self, queue: Fixture) -> LinkMonitor {
         let clock = self.clock.clone();
-        LinkMonitor::serve_with_clock(queue, self.meter.clone(), move || {
+        let detector = bypass::Detector::start(
+            bypass::SysfsCounters::receive(self.sysfs.path(), LINK),
+            PERIOD,
+        )
+        .expect("the fake link has a baseline");
+        LinkMonitor::serve_with_clock(queue, self.meter.clone(), detector, move || {
             clock.load(Ordering::SeqCst)
         })
+    }
+    fn lifecycle(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("lifecycle.log")).unwrap_or_default()
+    }
+    /// Wait until the meter refuses with a ledger fault: the cut.
+    async fn until_cut(&self) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !matches!(
+                self.meter.admit(0, 100).await,
+                Err(EgressRefusal::LedgerFault)
+            ) {
+                tokio::time::sleep(PERIOD).await;
+            }
+        })
+        .await
+        .expect("the link check cut the pod's egress");
     }
     async fn send(&mut self, bytes: u64) -> Verdict {
         self.input.send(Ok(bytes)).await.unwrap();
@@ -190,4 +231,136 @@ async fn cancelled_teardown_keeps_queue_and_pending_charge_owned() {
     assert!(h.closed.load(Ordering::SeqCst));
     assert!(slot.lock().await.is_none());
     assert_eq!(h.meter.counted(), 50);
+}
+
+/// #2905: the kernel counted more leaving the pod's link than the queue
+/// admitted. Something sent without a reservation, so every path is cut and the
+/// cut is a record the node signed.
+#[tokio::test]
+async fn a_link_that_sent_more_than_the_ledger_admitted_is_cut_and_signed() {
+    let (mut h, queue) = Harness::new(EgressPace::Unpaced);
+    let mut monitor = h.serve(queue);
+    assert_eq!(h.send(100).await, Verdict::Accept(100));
+    // The admitted packet's frame (100 + 14), and a full-size frame the queue
+    // never saw.
+    h.set_link(114 + 1_514, 2);
+    h.until_cut().await;
+    assert!(
+        matches!(h.meter.admit(1, 100).await, Err(EgressRefusal::LedgerFault)),
+        "a broker send is refused too"
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !h.closed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the packet queue is closed, so its rule drops what follows");
+    monitor.shutdown().await.unwrap();
+
+    let log = h.lifecycle();
+    assert_eq!(log.matches("egress_link_bypass").count(), 1, "{log}");
+    let line = log
+        .lines()
+        .find(|l| l.contains("egress_link_bypass"))
+        .unwrap_or_else(|| panic!("the bypass is recorded: {log}"));
+    let record: crate::egress_meter::LinkRecord =
+        serde_json::from_str(line).expect("a signed link record");
+    assert_eq!(record.dimension, "egress.link");
+    assert!(
+        record.result.contains("1628 bytes in 2 frames")
+            && record.result.contains("admitted 100 bytes in 1 packets"),
+        "the record carries the counts: {}",
+        record.result
+    );
+    let node_key = crate::egress_meter::test_authority().root_pubkey_hex();
+    assert!(
+        record.verifies_under(&node_key),
+        "signed by the node's root key"
+    );
+    let mut forged = record.clone();
+    forged.result = forged.result.replace("1628", "114");
+    assert!(
+        !forged.verifies_under(&node_key),
+        "a rewritten count verifies"
+    );
+    // Its own signature space: not an exhaustion record, not a pod receipt.
+    assert!(!crate::pod_authority::verify_record(
+        crate::pod_authority::SignedRecord::EgressExhaustion,
+        &node_key,
+        &record.preimage(),
+        &record.signature
+    ));
+    assert!(!crate::pod_authority::verify_pod_receipt(
+        &node_key,
+        &record.preimage(),
+        &record.signature
+    ));
+}
+
+/// A kernel count that is exactly what was admitted, plus one Ethernet header
+/// per packet, is consistent: nothing is cut and nothing is recorded.
+#[tokio::test]
+async fn a_link_whose_kernel_count_matches_the_ledger_is_left_alone() {
+    let (mut h, queue) = Harness::new(EgressPace::Unpaced);
+    let mut monitor = h.serve(queue);
+    assert_eq!(h.send(100).await, Verdict::Accept(100));
+    assert_eq!(h.send(200).await, Verdict::Accept(200));
+    h.set_link(300 + 2 * bypass::ETH_HLEN, 2);
+    // Many periods: a cut, if there were one, would have happened by now.
+    tokio::time::sleep(PERIOD * 20).await;
+    assert_eq!(
+        h.send(50).await,
+        Verdict::Accept(50),
+        "the link still admits"
+    );
+    h.meter
+        .admit(1, 100)
+        .await
+        .expect("and so does the broker")
+        .sent();
+    monitor.shutdown().await.unwrap();
+    assert_eq!(h.meter.counted(), 351);
+    let log = h.lifecycle();
+    assert!(!log.contains("egress_link"), "{log}");
+}
+
+/// Counters that cannot be read are reported as a check that could not be made,
+/// by name — never as "no bypass" — and the pod's egress is cut (fail-closed).
+#[tokio::test]
+async fn an_unreadable_link_counter_is_reported_as_could_not_check() {
+    let (mut h, queue) = Harness::new(EgressPace::Unpaced);
+    let mut monitor = h.serve(queue);
+    assert_eq!(h.send(100).await, Verdict::Accept(100));
+    std::fs::remove_file(
+        h.sysfs
+            .path()
+            .join(LINK)
+            .join("statistics")
+            .join("rx_bytes"),
+    )
+    .unwrap();
+    h.until_cut().await;
+    monitor.shutdown().await.unwrap();
+
+    let log = h.lifecycle();
+    assert!(!log.contains("egress_link_bypass"), "not a finding: {log}");
+    let line = log
+        .lines()
+        .find(|l| l.contains("egress_link_unchecked"))
+        .unwrap_or_else(|| panic!("the unread check is recorded by name: {log}"));
+    let record: crate::egress_meter::LinkRecord =
+        serde_json::from_str(line).expect("a signed link record");
+    assert!(
+        record.result.contains("could not be made")
+            && record.result.contains("not a finding of no bypass"),
+        "{}",
+        record.result
+    );
+    assert!(
+        record.result.contains("rx_bytes"),
+        "names the counter: {}",
+        record.result
+    );
+    assert!(record.verifies_under(&crate::egress_meter::test_authority().root_pubkey_hex()));
 }

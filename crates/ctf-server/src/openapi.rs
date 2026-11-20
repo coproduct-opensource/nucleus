@@ -1,8 +1,10 @@
-//! OpenAPI 3.1 spec and AI plugin manifest.
+//! OpenAPI 3.1 spec and AI plugin manifest templates.
+//!
+//! Both carry a `{{BASE_URL}}` placeholder that `main` fills once at startup
+//! with the URL this instance is reachable at (`CTF_PUBLIC_URL`, default
+//! `http://localhost:<PORT>`). There is no hosted instance to hard-code.
 
-use axum::response::IntoResponse;
-
-const OPENAPI_SPEC: &str = r##"{
+pub(crate) const OPENAPI_SPEC: &str = r##"{
   "openapi": "3.1.0",
   "info": {
     "title": "The Vault CTF",
@@ -19,8 +21,8 @@ const OPENAPI_SPEC: &str = r##"{
   },
   "servers": [
     {
-      "url": "https://nucleus-ctf.fly.dev",
-      "description": "Production"
+      "url": "{{BASE_URL}}",
+      "description": "This server (CTF_PUBLIC_URL, default http://localhost:<PORT>)"
     }
   ],
   "paths": {
@@ -530,7 +532,7 @@ const OPENAPI_SPEC: &str = r##"{
   }
 }"##;
 
-const AI_PLUGIN_MANIFEST: &str = r##"{
+pub(crate) const AI_PLUGIN_MANIFEST: &str = r##"{
   "schema_version": "v1",
   "name_for_human": "The Vault CTF",
   "name_for_model": "the_vault_ctf",
@@ -539,24 +541,10 @@ const AI_PLUGIN_MANIFEST: &str = r##"{
   "auth": { "type": "none" },
   "api": {
     "type": "openapi",
-    "url": "https://nucleus-ctf.fly.dev/openapi.json"
+    "url": "{{BASE_URL}}/openapi.json"
   },
-  "logo_url": "https://nucleus-ctf.fly.dev/static/img/og.svg",
+  "logo_url": "{{BASE_URL}}/static/img/og.svg",
   "contact_email": "hello@coproduct.dev",
   "legal_info_url": "https://github.com/coproduct-opensource/nucleus/blob/main/LICENSE",
-  "privacy_policy_url": "https://nucleus-ctf.fly.dev/privacy"
+  "privacy_policy_url": "{{BASE_URL}}/privacy"
 }"##;
-
-pub async fn spec() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        OPENAPI_SPEC,
-    )
-}
-
-pub async fn ai_plugin_manifest() -> impl IntoResponse {
-    (
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        AI_PLUGIN_MANIFEST,
-    )
-}

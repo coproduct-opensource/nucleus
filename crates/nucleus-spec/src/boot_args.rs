@@ -315,6 +315,8 @@ mod tests {
             "nucleus.approval_pubkeys=00",
             "nucleus.workload_api_port=1",
             "nucleus.anything",
+            // #3493: a spec cannot confirm its own network isolation.
+            crate::guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG,
             "ipv6.disable=0",
             "ipv6.disable=1",
             "pci=off",

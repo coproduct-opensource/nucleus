@@ -119,7 +119,7 @@ jobs:
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
         if: steps.scope.outputs.relevant == 'true'
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
@@ -335,7 +335,7 @@ jobs:
       # --- Tier-4 parity: extracted core ↔ production check_monotonicity ---
       - name: Install stable Rust for parity test
         if: steps.scope.outputs.relevant == 'true'
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
 

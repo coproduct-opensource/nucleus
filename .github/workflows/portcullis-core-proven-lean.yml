@@ -154,6 +154,7 @@ jobs:
             PortcullisCoreBridge
             PortcullisCoreIFC
             IntegrityNoninterferenceExtracted
+            PortcullisCoreDecide
             ExposureProofs
             FlowProofs
             FlowGraphProofs
@@ -220,10 +221,12 @@ jobs:
             PodMachineSpike
             PodCrossView
             PodCrossViewIdentity
+            MemoryContext
             IdentityOracleMirror
             ConfidentialityOracleMirror
             IntegrityOracleMirror
             ChannelOracleMirror
+            Statements
 
       # Only reached when the build above succeeded, so a failed build never
       # becomes the next run's starting point.

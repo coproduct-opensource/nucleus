@@ -15,6 +15,7 @@ fn args() -> AuthorityArgs {
         cert_trust_anchors: Vec::new(),
         max_children_per_pod: 8,
         upstreams: None,
+        upstreams_poll_secs: 0,
         federation_issuer: None,
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
@@ -43,6 +44,7 @@ fn spec_with(lattice: PermissionLattice) -> PodSpec {
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     })
 }
 
@@ -805,6 +807,7 @@ fn apply_to_replaces_the_requested_upstreams_with_the_admitted_ones() {
         effective: lattice(1),
         chain_depth: 1,
         upstreams: vec![registered("model-api")],
+        egress: nucleus_spec::NetworkSpec::egress_ceiling(spec.spec.network.as_ref()),
         reservation: Reservation { release: None },
         root_identity: MINTER.to_string(),
     };
@@ -838,6 +841,7 @@ async fn the_admitted_plan_carries_the_issued_authority_not_the_request() {
             spec_with(greedy),
             child,
             crate::host_decide::StartingLabel::Clean,
+            crate::delivered_spec::Delivery::AsAdmitted,
         )
         .await
         .unwrap();
@@ -866,6 +870,7 @@ async fn the_admitted_plan_carries_the_issued_authority_not_the_request() {
             spec_with(lattice(500)),
             Uuid::new_v4(),
             crate::host_decide::StartingLabel::Clean,
+            crate::delivered_spec::Delivery::AsAdmitted,
         )
         .await;
     assert!(matches!(refused, Err(ApiError::Authority(_))));
@@ -902,7 +907,7 @@ fn federated_args(dir: &Path, issuer: Option<&str>) -> AuthorityArgs {
 /// call — so it does not start. Nor does one with a cleartext issuer.
 #[test]
 fn a_federated_registry_without_an_issuer_refuses_to_start() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::state_lock::state_tempdir();
     let err = PodAuthority::new(
         &federated_args(dir.path(), None),
         TD,
@@ -943,7 +948,7 @@ fn a_federated_registry_without_an_issuer_refuses_to_start() {
 /// identity that disagrees with the certificate gets nothing.
 #[tokio::test]
 async fn the_federation_subject_comes_from_the_issued_certificate() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::state_lock::state_tempdir();
     let auth = PodAuthority::new(
         &federated_args(dir.path(), Some("https://federation.example.invalid")),
         TD,
@@ -1036,3 +1041,9 @@ async fn release_revokes_policy_references_already_held_by_brokers() {
 }
 
 mod shared_budget;
+
+mod admission_window;
+
+mod egress_delegation;
+
+mod egress_parity;

@@ -23,6 +23,7 @@ use crate::profiles;
 mod agent_process;
 mod apple_host;
 mod eval_cell;
+mod guest_release;
 mod pod_agent;
 mod pod_egress;
 mod pod_session;
@@ -50,20 +51,11 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
         return Ok(None);
     }
 
-    // Node URL: args > config > error
-    let node_url = if let Some(ref url) = args.node_url {
-        if !url.is_empty() {
-            url.clone()
-        } else {
-            config.node.url.clone()
-        }
-    } else if !config.node.url.is_empty() {
-        config.node.url.clone()
-    } else {
-        return Err(anyhow!(
-            "missing --node-url (NUCLEUS_NODE_URL). Use --local for CI mode."
-        ));
-    };
+    let NodeTarget {
+        node_url,
+        kernel_path,
+        rootfs_path,
+    } = node_target(args, config)?;
 
     // The identity `nucleus setup` provisions (Move A step 6), used
     // automatically when present — see `node.rs`'s
@@ -77,6 +69,39 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
                  it reads no shared secret. Use --local for CI mode."
             )
         })?,
+    };
+
+    Ok(Some(ResolvedConfig {
+        node_url,
+        node_mtls_client,
+        kernel_path,
+        rootfs_path,
+    }))
+}
+
+/// Where a pod run goes: the node URL and the guest paths, args > config.
+/// Reads no identity, no secret and no stdin, so `--dry-run` can show it
+/// (#3267); [`resolve_config`] adds the node identity on top.
+struct NodeTarget {
+    node_url: String,
+    kernel_path: String,
+    rootfs_path: String,
+}
+
+fn node_target(args: &RunArgs, config: &Config) -> Result<NodeTarget> {
+    // Node URL: args > config > error
+    let node_url = if let Some(ref url) = args.node_url {
+        if !url.is_empty() {
+            url.clone()
+        } else {
+            config.node.url.clone()
+        }
+    } else if !config.node.url.is_empty() {
+        config.node.url.clone()
+    } else {
+        return Err(anyhow!(
+            "missing --node-url (NUCLEUS_NODE_URL). Use --local for CI mode."
+        ));
     };
 
     // Kernel path: args > config
@@ -93,12 +118,11 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
         config.rootfs_path()?.display().to_string()
     };
 
-    Ok(Some(ResolvedConfig {
+    Ok(NodeTarget {
         node_url,
-        node_mtls_client,
         kernel_path,
         rootfs_path,
-    }))
+    })
 }
 
 /// Run a task with tool-level enforcement.
@@ -327,20 +351,19 @@ pub struct RunArgs {
     #[arg(long = "egress-placeholder", value_name = "VAR", requires = "egress")]
     pub egress_placeholders: Vec<String>,
 
-    /// The guest the node boots, checked for what `--egress` needs before
-    /// anything starts: a release version, or `local` for a guest built from
-    /// this checkout (`setup --artifacts local`). Default: the pinned release
-    /// `setup` installs (2.4.0 and later ship the adapter `--egress` needs).
-    /// This is the user's assertion about the node's guest, which the CLI
-    /// cannot verify: the node does not yet report the release it boots
-    /// (#3223).
+    /// The guest the node boots, as you state it: a release version, or
+    /// `local` for a guest built from a working tree (`setup --artifacts
+    /// local`). The node reports which guest it boots (#3223), and the run is
+    /// judged against that report; this is a cross-check of it, and a run
+    /// whose statement disagrees with the node is refused. Needed only when
+    /// the node cannot say (its rootfs has no record from `nucleus setup`).
     #[arg(long, value_name = "VERSION|local", requires = "guest_uses")]
     pub guest_release: Option<String>,
 
     /// The isolation profile the pod is held to: `standard`, or `eval-cell`
     /// (ADR 0013: Firecracker only, egress listed host by host, the guest's
     /// Landlock and derived syscall filter required). Refused on `--local` and
-    /// `--hook`, and checked against `--guest-release`; the node decides the rest.
+    /// `--hook`, and checked against the guest the node reports; the node decides the rest.
     #[arg(long, value_name = "PROFILE", default_value = "standard", value_parser = eval_cell::parse)]
     pub isolation_profile: nucleus_spec::isolation_profile::IsolationProfile,
 }
@@ -363,27 +386,31 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
         return crate::goal::execute_grant(args, global_config_path).await;
     }
 
-    // Resolve secrets and paths from config/keychain/env
+    // A dry run reads nothing it would only need to launch: no node identity
+    // and no stdin, so it returns at once with no node configured and no
+    // input attached (#3267).
+    if args.dry_run {
+        return dry_run(&args, &global_config);
+    }
+
+    // Resolve the node and its identity from args/config
     let resolved = resolve_config(&args, &global_config)?;
 
     // Read prompt from stdin if "-"
-    let prompt = match args.prompt.as_deref() {
-        Some("-") => {
+    let prompt = match PromptSource::of(&args)? {
+        PromptSource::Stdin => {
             let mut buffer = String::new();
             io::stdin().read_to_string(&mut buffer)?;
             buffer.trim().to_string()
         }
-        Some(p) => p.to_string(),
-        None => String::new(),
+        PromptSource::Given(p) => p.to_string(),
     };
 
     if prompt.is_empty() {
         bail!("Prompt cannot be empty");
     }
 
-    // Resolve working directory
-    let work_dir = shellexpand::tilde(&args.dir).to_string();
-    let work_dir = PathBuf::from(&work_dir).canonicalize()?;
+    let work_dir = run_work_dir(&args)?;
 
     info!(
         prompt_len = prompt.len(),
@@ -392,7 +419,34 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
         "Starting nucleus execution"
     );
 
-    // Build permission lattice
+    let policy = run_policy(&args)?;
+    dispatch(&args, resolved, &policy, &work_dir, &prompt).await
+}
+
+/// Where the prompt comes from. `-` is stdin, read only by a real run.
+enum PromptSource<'a> {
+    Stdin,
+    Given(&'a str),
+}
+
+impl<'a> PromptSource<'a> {
+    fn of(args: &'a RunArgs) -> Result<Self> {
+        match args.prompt.as_deref() {
+            Some("-") => Ok(Self::Stdin),
+            Some(p) if !p.trim().is_empty() => Ok(Self::Given(p)),
+            Some(_) | None => bail!("Prompt cannot be empty"),
+        }
+    }
+}
+
+/// The working directory a run uses, canonical.
+fn run_work_dir(args: &RunArgs) -> Result<PathBuf> {
+    let work_dir = shellexpand::tilde(&args.dir).to_string();
+    Ok(PathBuf::from(&work_dir).canonicalize()?)
+}
+
+/// The permission lattice a profile run is held to.
+fn run_policy(args: &RunArgs) -> Result<PermissionLattice> {
     let policy = if let Some(ref config_path) = args.config {
         // Load custom config
         load_permission_config(config_path)?
@@ -412,54 +466,70 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
     if let Some(max_cost) = args.max_cost {
         policy.budget.max_cost_usd = Decimal::try_from(max_cost).unwrap_or(Decimal::from(5));
     }
-    let policy = policy.normalize();
+    Ok(policy.normalize())
+}
 
-    if args.dry_run {
-        println!("Dry run - would execute with:");
-        println!("  Working directory: {}", work_dir.display());
-        println!("  Profile: {}", args.profile);
-        println!(
-            "  Mode: {}",
-            if args.hook {
-                "hook (agent on this host; needs --unsandboxed)"
-            } else if args.local {
-                "local (agent on this host; needs --unsandboxed)"
-            } else {
-                "microVM pod (agent inside the guest)"
-            }
-        );
-        println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
-        println!("  Timeout: {}s", args.timeout);
-        match named_agent(&args) {
-            Ok(agent) => println!("  Agent: {}", agent.display()),
-            Err(_) => println!("  Agent: (none named; --agent is required to run)"),
+/// `run --dry-run`: show what a run would do. Reads the config file, the
+/// permission profile and (with `--apple-host-config`) the host configuration;
+/// never the node identity, never stdin, never the network (#3267).
+fn dry_run(args: &RunArgs, global_config: &Config) -> Result<()> {
+    let prompt = PromptSource::of(args)?;
+    let work_dir = run_work_dir(args)?;
+    let policy = run_policy(args)?;
+    println!("Dry run - would execute with:");
+    println!("  Working directory: {}", work_dir.display());
+    if let PromptSource::Stdin = prompt {
+        println!("  Prompt: from stdin (not read in a dry run)");
+    }
+    println!("  Profile: {}", args.profile);
+    println!(
+        "  Mode: {}",
+        if args.hook {
+            "hook (agent on this host; needs --unsandboxed)"
+        } else if args.local {
+            "local (agent on this host; needs --unsandboxed)"
+        } else {
+            "microVM pod (agent inside the guest)"
         }
-        println!(
-            "   UninhabitableState constraint: {}",
-            policy.is_uninhabitable_enforced()
-        );
-        if let Some(ref resolved) = resolved {
-            println!("  Node URL: {}", resolved.node_url);
-            println!("  Kernel: {}", resolved.kernel_path);
-            println!("  Rootfs: {}", resolved.rootfs_path);
-            println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
-            println!("  Rootfs read-only: {}", args.rootfs_read_only);
-        }
+    );
+    println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
+    println!("  Timeout: {}s", args.timeout);
+    match named_agent(args) {
+        Ok(agent) => println!("  Agent: {}", agent.display()),
+        Err(_) => println!("  Agent: (none named; --agent is required to run)"),
+    }
+    println!(
+        "   UninhabitableState constraint: {}",
+        policy.is_uninhabitable_enforced()
+    );
+    // The same selection `resolve_config` makes, minus the identity: a
+    // missing node is shown, not refused, since nothing is launched.
+    if !args.local {
         if let Some(path) = &args.apple_host_config {
+            apple_host::configuration(path)?;
             println!(
                 "  Apple host configuration: {} (not started)",
                 path.display()
             );
+        } else {
+            match node_target(args, global_config) {
+                Ok(target) => {
+                    println!("  Node URL: {}", target.node_url);
+                    println!("  Kernel: {}", target.kernel_path);
+                    println!("  Rootfs: {}", target.rootfs_path);
+                }
+                Err(e) => println!("  Node: (not configured: {e})"),
+            }
+            println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
+            println!("  Rootfs read-only: {}", args.rootfs_read_only);
         }
-        println!();
-        print!(
-            "{}",
-            portcullis::render_capabilities(&policy, "Capabilities:")
-        );
-        return Ok(());
     }
-
-    dispatch(&args, resolved, &policy, &work_dir, &prompt).await
+    println!();
+    print!(
+        "{}",
+        portcullis::render_capabilities(&policy, "Capabilities:")
+    );
+    Ok(())
 }
 
 /// The agent this run launches: `--agent` / `NUCLEUS_AGENT`, or the config
@@ -504,10 +574,14 @@ pub(crate) async fn dispatch(
     // never call is a contradiction the operator should hear now, not from the
     // agent's first model call inside the pod (#3218).
     pod_egress::refuse_unreachable(&args.egress, policy, &policy_source(args))?;
-    // And a guest that cannot start the agent the way --egress does (#3075's
-    // table, demanded only for this use).
-    pod_egress::refuse_guest_skew(&args.egress, args.guest_release.as_deref())?;
-    eval_cell::refuse_guest_skew(args.isolation_profile, args.guest_release.as_deref())?;
+    // And a guest the run states with --guest-release that cannot start the
+    // agent the way --egress does (#3075's table, demanded only for this use),
+    // before a host starts. Without the flag, the guest is the one the node
+    // reports, judged in `run_in_pod` once the node can be asked (#3223).
+    if let Some(guest) = guest_release::GuestBasis::asserted(args.guest_release.as_deref()) {
+        pod_egress::refuse_guest_skew(&args.egress, &guest)?;
+        eval_cell::refuse_guest_skew(args.isolation_profile, &guest)?;
+    }
     if let Some(path) = &args.apple_host_config {
         let (resolved, host) = apple_host::ready(path, args).await?;
         run_in_pod(
@@ -757,9 +831,14 @@ async fn run_local(
 
     // Spawn tool-proxy as subprocess
     let mut proxy_child = transport
-        .command(&proxy_bin, &spec_path, &announce_path, &audit_path)
+        .command(
+            &proxy_bin,
+            &spec_path,
+            &announce_path,
+            &audit_path,
+            &task_token,
+        )
         .args(pod_cert_args(args))
-        .args(crate::session_token::proxy_args(&task_token))
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
@@ -911,6 +990,7 @@ fn build_local_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials,
+        requires_decision: Vec::new(),
     });
     spec.metadata.task_grant_id = args.task_grant_id.clone();
     Ok(spec)
@@ -954,10 +1034,23 @@ async fn run_in_pod(
         exports: &args.egress_exports,
         placeholders: &args.egress_placeholders,
     })?;
-    // An upstream with an effect table needs a guest that reads one (#3229);
+    // The guest the node boots, from the node (#3223), with --guest-release as
+    // a cross-check of it; judged for every use this run makes of it. An
+    // upstream with an effect table needs a guest that reads one (#3229), and
     // only the registry says whether a declared upstream has one.
-    if let Some(egress) = &egress {
-        egress.refuse_guest_skew(args.guest_release.as_deref())?;
+    let answer = guest_release::ask(client, &resolved.node_url).await;
+    let needs_guest = !args.egress.is_empty() || !args.isolation_profile.guest_uses().is_empty();
+    if let Some(guest) = guest_release::reconcile(
+        &answer,
+        Path::new(&resolved.rootfs_path),
+        args.guest_release.as_deref(),
+        needs_guest,
+    )? {
+        pod_egress::refuse_guest_skew(&args.egress, &guest)?;
+        eval_cell::refuse_guest_skew(args.isolation_profile, &guest)?;
+        if let Some(egress) = &egress {
+            egress.refuse_guest_skew(&guest)?;
+        }
     }
     let (workload, credentialed_egress) = match egress {
         Some(egress) => egress.wrap(workload),
@@ -1095,6 +1188,7 @@ fn build_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     });
     spec.metadata.task_grant_id = args.task_grant_id.clone();
     eval_cell::label(args.isolation_profile, &mut spec);
@@ -1102,7 +1196,7 @@ fn build_pod_spec(
 }
 
 fn write_pod_spec(spec_path: &Path, spec: &SpecPodSpec) -> Result<()> {
-    let yaml = serde_yaml::to_string(spec)?;
+    let yaml = nucleus_yaml::to_string(spec)?;
     fs::write(spec_path, yaml)?;
     Ok(())
 }
@@ -1127,7 +1221,7 @@ async fn create_pod_via_node(
     client: &reqwest::Client,
 ) -> Result<CreatePodResponse> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
-    let body = serde_yaml::to_string(spec)?;
+    let body = nucleus_yaml::to_string(spec)?;
 
     let response = client
         .post(&url)
@@ -1720,8 +1814,9 @@ mod tests {
     ///
     /// The same for a guest that cannot start the agent under the egress
     /// adapter the way `--egress` does (the `GuestCapability` table): a 2.3.0
-    /// guest is refused by name for `--egress`, and only for it; the pin ships
-    /// the adapter.
+    /// guest stated with `--guest-release` is refused by name for `--egress`,
+    /// and only for it. Without the flag nothing is judged before the node is
+    /// asked which guest it boots (#3223).
     #[tokio::test]
     async fn egress_under_a_profile_that_cannot_call_is_refused_before_any_pod() {
         let dir = std::env::temp_dir();
@@ -1771,8 +1866,8 @@ mod tests {
         assert!(skewed.contains("#3211"), "{skewed}");
 
         // Both checks pass: the run stops only at the missing node, so the
-        // refusals above are the checks', not this. The pinned release (2.7.0)
-        // ships the adapter, so no --guest-release is needed on the pin.
+        // refusals above are the checks', not this. Without --guest-release
+        // the guest is the node's to report, so nothing refuses before it.
         let admitted = run("safe-pr-fixer", EGRESS_LOCAL_GUEST).await;
         assert!(admitted.contains("node config required"), "{admitted}");
         let pinned = run("safe-pr-fixer", EGRESS).await;
@@ -1881,7 +1976,7 @@ mod tests {
         let guard = MediationGuard::establish(&build_mcp_allowed_tools(&policy)).unwrap();
         let agent = crate::agent::AgentCommand::named(Some("/opt/agent"), &[]).unwrap();
         let w = pod_agent::workload(&agent, &guard, &policy, None, "task").unwrap();
-        let config = pod_agent::guest_mcp_config();
+        let config = pod_agent::guest_mcp_config(&policy).unwrap();
         let host: Vec<String> = mcp_launch_protocol(None, config.as_ref(), &guard, &policy, "task")
             .into_iter()
             .map(|a| a.into_string().unwrap())
@@ -1984,8 +2079,16 @@ mod tests {
                     "503 Service Unavailable",
                     r#"{"error":"temporarily unavailable"}"#.to_string(),
                 ),
-                // The in-pod run: create, wait for the workload, read its
-                // output, cancel. No proxy address is needed or asked for.
+                // The in-pod run: ask which guest the node boots (#3223),
+                // create, wait for the workload, read its output, cancel. No
+                // proxy address is needed or asked for. This node predates
+                // the guest report, which a run that makes no use of the
+                // guest's capabilities does not need.
+                (
+                    "GET /v1/health".to_string(),
+                    "200 OK",
+                    r#"{"status":"ok"}"#.to_string(),
+                ),
                 (
                     "POST /v1/pods".to_string(),
                     "200 OK",
@@ -2061,7 +2164,7 @@ mod tests {
         });
 
         let spec: SpecPodSpec =
-            serde_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /work\n")
+            nucleus_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  policy: { type: profile, name: default }\n  work_dir: /work\n")
                 .unwrap();
         let created_pod = create_pod_via_node(&format!("https://{addr}"), &spec, &client)
             .await
@@ -2102,7 +2205,7 @@ mod tests {
 
         let created = server_handle.await.unwrap();
         let body = &created[created.find("\r\n\r\n").unwrap() + 4..];
-        let sent: SpecPodSpec = serde_yaml::from_str(body).unwrap();
+        let sent: SpecPodSpec = nucleus_yaml::from_str(body).unwrap();
         let workload = sent.spec.workload.expect("the agent is the pod's workload");
         assert_eq!(workload.command, "/opt/agent");
         assert!(workload.env.is_empty());

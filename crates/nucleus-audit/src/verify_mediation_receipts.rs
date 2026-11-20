@@ -200,6 +200,8 @@ mod tests {
             // count is meaningful.
             hash: hash.into(),
             signature: String::new(),
+            sig_alg: None,
+            signer: None,
         }
     }
 

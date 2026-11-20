@@ -25,7 +25,7 @@ use crate::path::{self, Normalized, PathDefect};
 use crate::record::{
     DroppedEntry, DroppedKind, FlattenReport, RecordedPath, StrippedSetId, StrippedXattr,
 };
-use crate::reserved::ReservedPaths;
+use crate::reserved::{ReservedPaths, Verdict};
 
 /// Ownership and permission bits, as the layer declared them (setuid/setgid removed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +89,16 @@ enum Op {
     /// A device node: dropped (reported at classification), but it still
     /// replaces whatever the lower layers had at its path.
     Dropped(Vec<u8>),
+}
+
+/// What a layer entry's name says about it as a whiteout.
+enum Marker {
+    /// Not a whiteout or opaque marker: an ordinary entry.
+    NotOne,
+    /// A marker to apply.
+    Apply(Op),
+    /// A marker inside a must-be-empty directory: dropped and reported.
+    Dropped,
 }
 
 /// Folds layers into one tree.
@@ -303,15 +313,31 @@ impl<'r> Flattener<'r> {
             }
         };
 
-        if let Some(op) = self.whiteout(layer, &path)? {
-            return Ok(Some(op));
+        match self.whiteout(layer, &path)? {
+            Marker::NotOne => {}
+            Marker::Apply(op) => return Ok(Some(op)),
+            Marker::Dropped => return Ok(None),
         }
-        if let Some(hit) = self.reserved.occupies(&path) {
-            return Err(ImportError::ReservedPath {
-                layer,
-                path: lossy(&path),
-                reserved: lossy(hit.reserved),
-            });
+        match self.reserved.occupies(&path) {
+            Verdict::Free => {}
+            // Mounted over at boot: never the guest's to read, so dropped and
+            // reported rather than refused (#3216). Nothing below it can be in
+            // the tree, so there is nothing for it to replace either.
+            Verdict::Emptied { reserved: _ } => {
+                self.report.dropped.push(DroppedEntry {
+                    layer,
+                    path: RecordedPath::from_bytes(&path),
+                    kind: DroppedKind::InsideMustBeEmptyDir,
+                });
+                return Ok(None);
+            }
+            Verdict::Refused { reserved } => {
+                return Err(ImportError::ReservedPath {
+                    layer,
+                    path: lossy(&path),
+                    reserved: lossy(reserved),
+                });
+            }
         }
 
         let invalid_header = |source: io::Error| ImportError::InvalidHeader {
@@ -427,7 +453,7 @@ impl<'r> Flattener<'r> {
     }
 
     /// A whiteout or opaque marker at `path`, checked against the reserved table.
-    fn whiteout(&self, layer: usize, path: &[u8]) -> Result<Option<Op>, ImportError> {
+    fn whiteout(&mut self, layer: usize, path: &[u8]) -> Result<Marker, ImportError> {
         let (parent, name) = path::split_last(path);
         let invalid = || ImportError::InvalidWhiteout {
             layer,
@@ -448,16 +474,26 @@ impl<'r> Flattener<'r> {
             let full = path::join(parent, target);
             (Op::Whiteout(full.clone()), full)
         } else {
-            return Ok(None);
+            return Ok(Marker::NotOne);
         };
-        if let Some(hit) = self.reserved.removal_reaches(&removed) {
-            return Err(ImportError::WhiteoutOverReserved {
+        match self.reserved.removal_reaches(&removed) {
+            Verdict::Free => Ok(Marker::Apply(op)),
+            // Inside a must-be-empty directory nothing from the image survives,
+            // so there is nothing to remove: dropped and reported.
+            Verdict::Emptied { reserved: _ } => {
+                self.report.dropped.push(DroppedEntry {
+                    layer,
+                    path: RecordedPath::from_bytes(path),
+                    kind: DroppedKind::WhiteoutInsideMustBeEmptyDir,
+                });
+                Ok(Marker::Dropped)
+            }
+            Verdict::Refused { reserved } => Err(ImportError::WhiteoutOverReserved {
                 layer,
                 path: lossy(&removed),
-                reserved: lossy(hit.reserved),
-            });
+                reserved: lossy(reserved),
+            }),
         }
-        Ok(Some(op))
     }
 
     fn strip_setid(&mut self, layer: usize, path: &[u8], meta: &mut Meta) {

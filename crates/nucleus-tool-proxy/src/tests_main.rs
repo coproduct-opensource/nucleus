@@ -262,7 +262,7 @@ mod ifc_http_enforcement {
         operation: Operation,
         subject: &str,
     ) -> (
-        Result<portcullis::kernel::DecisionToken, ApiError>,
+        Result<crate::mediation::Admitted, ApiError>,
         Vec<(String, String, BTreeMap<String, String>)>,
     ) {
         let sink = CapturingSink::default();
@@ -720,8 +720,8 @@ mod command_output_taint {
 
     /// The two transports must agree: one predicate, one policy.
     ///
-    /// Parity is now STRUCTURAL — both call sites call
-    /// `ingest::should_observe_command_output`, so they cannot drift. This test
+    /// Parity is now STRUCTURAL — both call sites classify with
+    /// `ingest::CommandIngest::classify`, so they cannot drift. This test
     /// pins the remaining shared choice (the node kind) and the predicate's
     /// contract, since a future edit could still give one transport its own copy.
     #[test]
@@ -732,10 +732,12 @@ mod command_output_taint {
             "HTTP and MCP would enforce different policies under NUCLEUS_PARANOID_TOOL_IO"
         );
         // The shared gate: network-capable taints, ordinary local does not.
-        assert!(crate::ingest::should_observe_command_output(
-            "curl https://evil.example"
-        ));
-        assert!(!crate::ingest::should_observe_command_output("cargo test"));
+        let labels = |cmd: &str| {
+            crate::ingest::CommandIngest::classify(cmd, crate::ingest::WorkloadNetwork::Unconfirmed)
+                .labels_adversarial()
+        };
+        assert!(labels("curl https://evil.example"));
+        assert!(!labels("cargo test"));
     }
 
     /// The point of observing at all: a session that has read command output
@@ -1553,14 +1555,6 @@ mod approval_grants_2406 {
         }
     }
 
-    /// A lattice shaped like the one the live pod ran under: `write_files` is
-    /// `LowRisk`, which is what makes the kernel defer rather than allow or
-    /// deny. Built explicitly rather than by profile name — `codegen` resolves
-    /// through the YAML registry in production and through a legacy hardcoded
-    /// constructor in `PermissionLattice::codegen()`, and only the first of
-    /// those is `low_risk` (`crates/portcullis/profiles/codegen.yaml:19`). A
-    /// fixture that disagreed with the live path is exactly how this defect
-    /// stayed invisible to unit tests for as long as it did.
     /// A kernel that defers `WriteFiles` to a person, by the mechanism the live
     /// pod defers by: an approval **obligation** on the lattice
     /// (`Kernel::decide` step 7 — `self.effective.requires_approval(op)`).
@@ -1572,14 +1566,17 @@ mod approval_grants_2406 {
     /// pair whose disagreement was #2406.
     fn deferring_kernel() -> Kernel {
         let mut lattice = PermissionLattice::permissive();
-        lattice.obligations.insert(Operation::WriteFiles);
+        lattice.declare(
+            Operation::WriteFiles,
+            portcullis::ConsentMode::RequiresApproval,
+        );
         Kernel::new(lattice)
     }
 
     /// The key both sides agree on, built the way the mapping builds it.
     const WRITE_KEY: &str = "WriteFiles notes.txt";
 
-    /// PRECONDITION for everything below. If `codegen` ever stops deferring on
+    /// PRECONDITION for everything below. If the fixture ever stops deferring on
     /// `write_files` these tests would pass vacuously — the grant would be
     /// irrelevant because the operation was allowed outright.
     #[test]
@@ -1764,10 +1761,51 @@ fn an_admission_refusal_carries_its_deny_code_to_the_wire() {
 mod approval_naming_parity {
     use super::*;
 
-    /// The key `mediation` hands the caller, built exactly as the
-    /// `Verdict::RequiresApproval` arm builds it.
+    struct NoopSink;
+    impl portcullis::verdict_sink::VerdictSink for NoopSink {
+        fn record(
+            &self,
+            _ctx: portcullis::verdict_sink::VerdictContext,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+        fn preflight(
+            &self,
+            _operation: Operation,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+    }
+
+    /// The key the reference monitor hands the caller, read off a REAL
+    /// deferral: a kernel obligated on `operation` is driven through
+    /// `mediation::decide_and_record` and the name in its `ApprovalRequired`
+    /// is returned. Not a restated `format!` — a copy of the rule here would
+    /// agree with itself whatever `mediation` did (ADR 0007 G-1).
     fn kernel_key(operation: Operation, subject: &str) -> String {
-        format!("{operation:?} {subject}")
+        let mut lattice = portcullis::PermissionLattice::permissive();
+        lattice.declare(operation, portcullis::ConsentMode::RequiresApproval);
+        let mut kernel = portcullis::kernel::Kernel::new(lattice);
+        let r = crate::mediation::decide_and_record(
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &crate::mediation::NoGrants,
+                shadow: &crate::host_decide::HostDecide::Off,
+            },
+            &mut kernel,
+            &portcullis::flow_graph::FlowGraph::new(),
+            operation,
+            subject,
+        )
+        .map_err(|d| d.error);
+        match r {
+            Err(ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation })) => {
+                operation
+            }
+            other => panic!("an obligated {operation:?} must defer, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1805,6 +1843,55 @@ mod approval_naming_parity {
                 "the command executor must ask by the same name as the kernel"
             );
         }
+        // The HANDLER-owned gates: fetch, search and the two listings check
+        // and spend in the handler itself, not in a sandbox. They used to
+        // spend `web_fetch {url}` / `glob {p}` / `grep {p}` / `web_search {q}`
+        // while the monitor peeked `WebFetch {url}` and so on (#3443), so the
+        // name a person was told to approve could never be the name spent.
+        for (operation, subject) in [
+            (Operation::WebFetch, "https://example.com/a?b=c"),
+            (Operation::WebSearch, "lattice meet join"),
+            (Operation::GlobSearch, "src/**/*.rs"),
+            (Operation::GrepSearch, "fn main"),
+        ] {
+            assert_eq!(
+                kernel_key(operation, subject),
+                nucleus::approval_key(operation, subject),
+                "the handler must spend the approval under the name the monitor asked for"
+            );
+        }
+        handlers_name_approvals_only_through_the_shared_rule();
+    }
+
+    /// `main.rs` and `mediation.rs` without `//` lines, so a comment naming a
+    /// pattern does not count as code using it.
+    fn code(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The other half of the parity above: a handler that formatted its own
+    /// approval name would agree with nothing the loop compares. So no
+    /// handler may build one, and none may spend one directly — every spend
+    /// goes through `ConsentHold`, which names the approval with
+    /// `nucleus::approval_key` and spends at the effect.
+    fn handlers_name_approvals_only_through_the_shared_rule() {
+        let main = code(include_str!("main.rs"));
+        let mediation = code(include_str!("mediation.rs"));
+        assert!(
+            !main.contains("approval_key = format!("),
+            "a handler formats its own approval name; use nucleus::approval_key"
+        );
+        assert!(
+            !mediation.contains("format!(\"{operation:?} {subject}\")"),
+            "the monitor restates the approval-name rule instead of calling it"
+        );
+        assert!(
+            !main.contains("state.approvals.consume("),
+            "a handler spends an approval directly, before its later checks have run"
+        );
     }
 
     /// Non-vacuity: the comparison above would hold trivially if the key
@@ -1824,6 +1911,262 @@ mod approval_naming_parity {
         );
         assert_ne!(write, edit, "operation must be part of the name");
         assert_ne!(write, other, "subject must be part of the name");
+    }
+}
+
+// ── #3443: an approval is spent only at the effect ─────────────────────────
+//
+// The handlers below check a grant early and perform the effect late. Spending
+// at the check meant every refusal in between (URL parse, host admission, the
+// per-effect gate, a failed re-discharge) left the person's consent spent and
+// the effect unperformed. These read the handler source because the handlers
+// need a full `AppState` to run, and what they pin is ORDER: the spend is the
+// last thing before the effect.
+mod consent_spent_at_the_effect {
+    /// The body of `async fn name(` in `main.rs`, up to the next handler, with
+    /// `//` lines removed.
+    fn handler(name: &str) -> String {
+        let src = include_str!("main.rs");
+        let head = format!("async fn {name}(");
+        let start = src.find(&head).unwrap_or_else(|| panic!("no `{head}`"));
+        let rest = &src[start + head.len()..];
+        // The next top-level item ends the handler.
+        let end = ["\nasync fn ", "\nfn ", "\npub(crate) fn ", "\n#["]
+            .iter()
+            .filter_map(|t| rest.find(t))
+            .min()
+            .unwrap_or(rest.len());
+        let body: String = rest[..end]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains("async fn "),
+            "the `{name}` slice ran past its own handler"
+        );
+        body
+    }
+
+    fn at(body: &str, needle: &str, name: &str) -> usize {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("`{name}` no longer contains `{needle}`"))
+    }
+
+    fn last_at(body: &str, needle: &str, name: &str) -> usize {
+        body.rfind(needle)
+            .unwrap_or_else(|| panic!("`{name}` no longer contains `{needle}`"))
+    }
+
+    /// `web_fetch` spends after every check that can refuse, and immediately
+    /// before the fetch.
+    #[test]
+    fn web_fetch_spends_only_after_every_refusal_point() {
+        let body = handler("web_fetch");
+        assert!(
+            !body.contains("approvals.consume("),
+            "web_fetch spends an approval at the point it checks it"
+        );
+        let spend = at(&body, ".spend(&state.approvals)", "web_fetch");
+        for check in [
+            "Url::parse(",
+            "admit_host(",
+            "check_url_allowlist(",
+            "admit_http_recorded(",
+            "preflight_web(",
+        ] {
+            assert!(
+                at(&body, check, "web_fetch") < spend,
+                "`{check}` can refuse after the approval is spent"
+            );
+        }
+        assert!(
+            spend < at(&body, ".fetch(", "web_fetch"),
+            "the spend must precede the effect it pays for"
+        );
+    }
+
+    /// The sandbox and executor handlers spend every approval the effect
+    /// needs, the monitor's included, in one `consent_for_effect` after every
+    /// check that can refuse and before the effect (#3446). There is no
+    /// refused first attempt and approved retry any more, so no second
+    /// decision token is minted for one act.
+    #[test]
+    fn sandbox_effects_spend_the_admission_at_the_effect() {
+        for (name, check, effects) in [
+            (
+                "read_file",
+                "preflight_read_fs(",
+                &[
+                    "sandbox.read_to_string_approved(",
+                    "sandbox.read_to_string(",
+                ][..],
+            ),
+            (
+                "write_file",
+                "preflight_fs(",
+                &["sandbox.write_approved(", "sandbox.write("][..],
+            ),
+            (
+                "run_command",
+                "preflight_runbash(",
+                &["executor.run_args_with_approval(", "executor.run_args("][..],
+            ),
+        ] {
+            let body = handler(name);
+            let spend = at(&body, "approval::consent_for_effect(", name);
+            assert!(
+                at(&body, "http_kernel_decide(", name) < spend,
+                "{name}: the spend must carry the monitor's admission"
+            );
+            assert!(
+                last_at(&body, check, name) < spend,
+                "{name}: `{check}` can refuse after the approval is spent"
+            );
+            for effect in effects {
+                assert!(
+                    spend < at(&body, effect, name),
+                    "{name}: `{effect}` runs before its approvals are spent"
+                );
+            }
+            assert!(
+                !body.contains("issue_approved_token("),
+                "{name}: a second decision token for one act"
+            );
+        }
+    }
+
+    /// Every handler the monitor admits carries the admission to its effect,
+    /// so an approval the monitor relied on is spent there (#3446). It used
+    /// to be discarded (`let _ = http_kernel_decide(..)`) or kept only for its
+    /// token, which left the approval live.
+    #[test]
+    fn every_admission_is_carried_to_its_effect() {
+        // Every file that calls the monitor. An admission bound to `_` or
+        // `_name` is dropped unspent the moment the effect runs.
+        let mut calls = 0;
+        for (file, src) in [
+            ("main.rs", include_str!("main.rs")),
+            ("artifact.rs", include_str!("artifact.rs")),
+            ("memory.rs", include_str!("memory.rs")),
+            ("owner_decision.rs", include_str!("owner_decision.rs")),
+        ] {
+            let src = code(src);
+            for (at, _) in src.match_indices("http_kernel_decide(") {
+                let before = &src[..at];
+                let statement = &before[before.rfind([';', '{', '}']).unwrap_or(0)..];
+                let Some(binding) = statement.split("let ").nth(1) else {
+                    continue; // the definition, or a tail expression
+                };
+                calls += 1;
+                assert!(
+                    !binding.trim_start_matches("mut ").starts_with('_'),
+                    "{file} drops an admission: `let {}`",
+                    binding.trim()
+                );
+            }
+        }
+        assert!(
+            calls >= 12,
+            "found only {calls} monitor calls; the scan reached nothing"
+        );
+        for name in ["web_fetch", "grep_search", "web_search"] {
+            let body = handler(name);
+            assert!(
+                at(&body, "monitor.into_consent()", name)
+                    < at(&body, ".spend(&state.approvals)", name),
+                "{name}: the monitor's approvals must join the spend"
+            );
+        }
+        let glob = handler("glob_search");
+        assert!(
+            at(&glob, "let mut consent = admitted;", "glob_search")
+                < at(
+                    &glob,
+                    "let decision_token = match consent.spend(",
+                    "glob_search"
+                ),
+            "glob_search: the listing's token must come out of the spend"
+        );
+        let artifact = code(include_str!("artifact.rs"));
+        assert!(
+            at(&artifact, "admitted.spend(", "artifact::read")
+                < at(&artifact, ".read_bounded(", "artifact::read"),
+            "artifact::read: the read's token must come out of the spend"
+        );
+        for (file, src, handlers) in [
+            ("memory.rs", include_str!("memory.rs"), 2),
+            ("owner_decision.rs", include_str!("owner_decision.rs"), 2),
+        ] {
+            assert_eq!(
+                code(src)
+                    .matches("approval::spend_admission(&state, admitted)?")
+                    .count(),
+                handlers,
+                "{file}: each handler spends its admission"
+            );
+        }
+    }
+
+    /// The approver the sandbox and executor ask only asks. If it spent too,
+    /// an act both the monitor and the sandbox asked about would cost two
+    /// approvals, and the handler's one spend would find nothing left.
+    #[test]
+    fn the_effect_approver_spends_nothing() {
+        let main = code(include_str!("main.rs"));
+        assert!(
+            main.contains("approval::effect_approver("),
+            "the runtime's approver is not the proxy's effect approver"
+        );
+        assert!(
+            !main.contains("approvals.consume(request.operation())"),
+            "the sandbox approver spends grants beside the handler's spend"
+        );
+    }
+
+    /// Source without `//` lines, so a comment naming a pattern does not
+    /// count as code using it.
+    fn code(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The listings and search spend after every check that can refuse the
+    /// whole call, and before the effect.
+    #[test]
+    fn listings_and_search_spend_only_at_the_effect() {
+        for (name, checks, effect) in [
+            ("glob_search", &["preflight_glob_fs("][..], ".glob("),
+            (
+                "grep_search",
+                &["RegexBuilder::new(", "root_relative("][..],
+                "'outer: for",
+            ),
+            (
+                "web_search",
+                &["Url::parse(", "preflight_web("][..],
+                ".fetch(",
+            ),
+        ] {
+            let body = handler(name);
+            assert!(
+                !body.contains("approvals.consume("),
+                "{name} spends an approval at the point it checks it"
+            );
+            let spend = at(&body, ".spend(&state.approvals)", name);
+            for check in checks {
+                assert!(
+                    at(&body, check, name) < spend,
+                    "{name}: `{check}` can refuse after the approval is spent"
+                );
+            }
+            assert!(
+                spend < at(&body, effect, name),
+                "{name}: the spend must precede the effect it pays for"
+            );
+        }
     }
 }
 

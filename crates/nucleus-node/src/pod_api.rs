@@ -10,6 +10,7 @@
 //! Nothing about the behaviour changes in this move.
 
 pub(crate) mod effect_approvals;
+pub(crate) mod ended;
 
 use crate::auth::CallerScope;
 use crate::{ApiError, NodeState, PodHandle, PodInfo};
@@ -17,6 +18,12 @@ use axum::Json;
 use axum::extract::{Extension, Path as AxumPath, State};
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// The per-pod routes mounted beside `main.rs`'s own: effect approvals, and
+/// whether a pod has ended (`ended`).
+pub(crate) fn routes() -> axum::Router<NodeState> {
+    effect_approvals::routes().route("/v1/pods/{id}/ended", axum::routing::get(ended::ended))
+}
 
 /// The node's live pod registry: pod id → handle, behind an async lock. A
 /// read-only clone of this `Arc` is what a [`PodListView`] holds to serve the
@@ -241,7 +248,7 @@ fn scope_to_caller<T: Lineage + Clone>(items: &[T], caller: &CallerScope) -> Vec
 /// that owns the vsock socket the request arrived on — the socket authenticates
 /// it, so nothing the guest says is trusted.
 ///
-/// It carries NONE of the node's secrets (`caller_secret`, `proxy_auth_secret`,
+/// It carries NONE of the node's secrets (`caller_secret` and
 /// the signing keys live on `NodeState`, not here), and exposes only
 /// `scoped_infos`. A pod reaching it learns exactly the `PodInfo`s its own
 /// lineage already entitles it to over `/v1/pods` — its own row and its direct
@@ -607,7 +614,7 @@ pub(crate) async fn get_receipt(
 ) -> Result<Json<crate::pod_receipt::Receipt>, ApiError> {
     use crate::pod_receipt::ReceiptError;
     let pod = get_pod_for_caller(&state, id, &caller).await?;
-    match crate::pod_receipt::build(&pod, &state.authority).await {
+    match crate::pod_receipt::build(&pod, crate::pod_receipt::ReceiptSigner::of(&state)).await {
         Ok(built) => Ok(Json(built.receipt)),
         // A present pod may have no available exit report. Keep that distinct
         // from lookup's NotFound; neither is the same as a still-running pod.
@@ -1166,8 +1173,7 @@ pub(crate) mod handler_tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    /// The arguments an operator running the local driver would get, with only
-    /// the two that have no default supplied.
+    /// The arguments an operator running the local driver would get.
     fn args(state_dir: &std::path::Path) -> crate::Args {
         <crate::Args as clap::Parser>::parse_from([
             "nucleus-node",
@@ -1176,10 +1182,6 @@ pub(crate) mod handler_tests {
             "--driver",
             "local",
             "--allow-local-driver",
-            "--proxy-auth-secret",
-            "test-auth-secret",
-            "--proxy-approval-secret",
-            "test-approval-secret",
         ])
     }
 
@@ -1217,10 +1219,14 @@ pub(crate) mod handler_tests {
         let authority =
             Arc::new(crate::pod_authority::PodAuthority::from_args(&a).expect("authority"));
         NodeState {
+            request_proofs: None,
             pods: Arc::new(Mutex::new(HashMap::new())),
             intake: crate::node_drain::Intake::open(),
             state_dir: a.state_dir.clone(),
             host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
+            guest_report: Arc::new(crate::guest_report::GuestReport::measure(
+                &a.host_paths.artifacts_root,
+            )),
             pod_ceilings: a.pod_ceilings.ceilings(),
             node_capacity: crate::node_capacity::Capacity::new(65536, 128),
             driver: a.driver.clone(),
@@ -1249,9 +1255,7 @@ pub(crate) mod handler_tests {
             sealed_rootfs: None,
             network_allocator: Arc::new(crate::net::NetworkAllocator::new()),
             listen_addr: a.listen.clone(),
-            proxy_auth_secret: a.proxy_auth_secret.clone(),
             caller_secret: Arc::new([7u8; 32]),
-            proxy_approval_secret: a.proxy_approval_secret.clone(),
             approval_signer: Arc::new(
                 crate::keys::load_or_create_approval_signing_key(
                     &a.state_dir,
@@ -1264,9 +1268,14 @@ pub(crate) mod handler_tests {
             audit_sinks: Arc::new(a.audit_sinks.load().expect("audit sinks")),
             memory: Arc::new(
                 a.memory
-                    .load(&a.host_paths.ensure(&a.state_dir).unwrap())
+                    .load(
+                        &a.host_paths.ensure(&a.state_dir).unwrap(),
+                        &a.state_dir,
+                        &authority,
+                    )
                     .unwrap(),
             ),
+            decisions: None,
             audit_minter: None,
             drand_config: None,
             identity_manager: None,
@@ -1290,12 +1299,15 @@ pub(crate) mod handler_tests {
             container_image: a.container_image.clone(),
             container_mediation: a.container_mediation,
             container_network: a.container_network.clone(),
-            container_proxy: a.container_proxy_transport,
             container_pool: None,
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(
                 &a.state_dir,
                 &crate::pod_authority::NO_TPM.node_keys,
+                crate::insecure_mode::EvidenceTier::of(crate::local_driver_opt_in(
+                    &a.driver,
+                    a.allow_local_driver,
+                )),
             )
             .expect("trust gate"),
             node_platform: std::sync::Arc::new(
@@ -1341,7 +1353,7 @@ pub(crate) mod handler_tests {
             let work = st.state_dir.join("w");
             std::fs::create_dir_all(&work).expect("work dir");
             let mut spec: nucleus_spec::PodSpec =
-                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                     .expect("minimal spec");
             spec.spec.work_dir = work;
             spec
@@ -1397,6 +1409,37 @@ pub(crate) mod handler_tests {
         drop(st.node_capacity.reserve(&pod.spec).unwrap());
     }
 
+    /// A cancel whose client gives up still finishes teardown. Stage node,
+    /// 2026-10-13: a cancel request timed out at the client, its handler future was
+    /// dropped mid-teardown, and the pod's capacity stayed held. Teardown is made to
+    /// wait here by holding the capacity lock it takes last.
+    #[tokio::test]
+    async fn a_dropped_cancel_request_still_returns_node_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(&dir);
+        st.node_capacity = crate::node_capacity::Capacity::new(640, 1);
+        let id = register(&st, None).await;
+        let pod = st.pods.lock().await.get(&id).unwrap().clone();
+        *pod.capacity.lock().await = Some(st.node_capacity.reserve(&pod.spec).unwrap());
+        let held = pod.capacity.lock().await;
+        let request = pod.clone().cancel_detached();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), request)
+                .await
+                .is_err(),
+            "teardown must still be waiting when the request is dropped"
+        );
+        drop(held);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while st.node_capacity.reserve(&pod.spec).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dropped cancel abandoned teardown and kept the pod's capacity"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     /// A registered pod, running, optionally owned by `parent`.
     pub(crate) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
         register_full(st, parent, &[], None).await
@@ -1429,7 +1472,7 @@ pub(crate) mod handler_tests {
         let dir = st.state_dir.join("w");
         std::fs::create_dir_all(&dir).expect("work dir");
         let mut spec: nucleus_spec::PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("minimal spec");
         spec.spec.work_dir = dir;
         for (k, v) in labels {
@@ -1443,6 +1486,7 @@ pub(crate) mod handler_tests {
         let handle = Arc::new(crate::PodHandle {
             id,
             execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
+            manifest_hash: crate::delivered_spec::fixture_hash(&spec),
             spec,
             created_at: 1_757_000_000,
             log_path: st.state_dir.join("pod.log"),
@@ -1455,6 +1499,10 @@ pub(crate) mod handler_tests {
             posture_stamp: None,
             owner: owner.map(str::to_string),
             capacity: tokio::sync::Mutex::new(None),
+            // A fixture names no lineage: a child of it is refused memory, never given a guess.
+            memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+                parent: uuid::Uuid::nil(),
+            },
         });
         st.pods.lock().await.insert(id, handle);
         id
@@ -1471,8 +1519,7 @@ pub(crate) mod handler_tests {
         let target: std::net::SocketAddr = "127.0.0.1:9".parse().expect("addr");
         let proxy = crate::signed_proxy::SignedProxy::start(
             target,
-            Arc::new(b"test-secret".to_vec()),
-            None,
+            Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
             None,
         )
         .await
@@ -1487,12 +1534,13 @@ pub(crate) mod handler_tests {
             .expect("a child spawns");
         let _ = child.wait().await;
         let mut spec: nucleus_spec::PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("minimal spec");
         spec.spec.work_dir = dir.path().to_path_buf();
         let handle = crate::PodHandle {
             id: uuid::Uuid::new_v4(),
             execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
+            manifest_hash: crate::delivered_spec::fixture_hash(&spec),
             spec,
             created_at: 1_757_000_000,
             log_path: st.state_dir.join("pod.log"),
@@ -1505,6 +1553,10 @@ pub(crate) mod handler_tests {
             posture_stamp: None,
             owner: None,
             capacity: tokio::sync::Mutex::new(None),
+            // A fixture names no lineage: a child of it is refused memory, never given a guess.
+            memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+                parent: uuid::Uuid::nil(),
+            },
         };
         assert!(matches!(
             handle.status().await,

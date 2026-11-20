@@ -382,7 +382,14 @@ pub fn propose(
     for op in Operation::ALL {
         let level = lowered.capabilities.level_for(op);
         if level != CapabilityLevel::Never {
+            let newly = needed.capabilities.level_for(op) == CapabilityLevel::Never;
             raise(&mut needed.capabilities, op, level);
+            // An operation the grant did not permit is asked for autonomous;
+            // its consent is the ceiling's, which the meet below keeps. One
+            // the grant already permitted keeps the grant's own consent.
+            if newly {
+                needed.declare(op, crate::ConsentMode::Autonomous);
+            }
         }
     }
     let requested = ceiling.meet(&needed).normalize();

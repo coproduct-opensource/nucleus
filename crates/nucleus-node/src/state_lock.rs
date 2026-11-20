@@ -2,6 +2,41 @@
 //! replacing the inode would let a second node lock a different file.
 use std::{fs::File, path::Path};
 
+/// Create the node's state directory, if it is missing, owner-only (0700)
+/// whatever the process umask.
+///
+/// The directory holds the node's keys, and it is the federation key
+/// directory itself, which refuses to be writable by group or others
+/// (`KeyDir::check_dir`). Created with the ambient mode, a node started under
+/// a umask of 002 (Ubuntu's per-user default) made its own state directory
+/// 0775 and then refused it (#3190). Parents are created as before; an
+/// existing directory is left as the operator made it.
+pub(crate) fn create(state_dir: &Path) -> std::io::Result<()> {
+    if let Some(parent) = state_dir.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut owner_only = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut owner_only, 0o700);
+    match owner_only.create(state_dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && state_dir.is_dir() => Ok(()),
+        created => created,
+    }
+}
+
+/// A temporary state directory, owner-only as [`create`] makes one. A bare
+/// `tempfile::tempdir()` takes the runner's umask, so a test whose directory
+/// becomes a key directory passed under umask 022 and failed under 002 (#3190).
+#[cfg(test)]
+pub(crate) fn state_tempdir() -> tempfile::TempDir {
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+    builder
+        .tempdir()
+        .expect("an owner-only temporary state directory")
+}
+
 pub(crate) fn acquire(state_dir: &Path) -> Result<File, crate::ApiError> {
     let path = state_dir.join("node.lock");
     let file = std::fs::OpenOptions::new()
@@ -100,5 +135,56 @@ mod tests {
         // The owner has exited, and the description it locked lived only in it.
         drop(acquire(dir.path()).unwrap());
         assert!(dir.path().join("node.lock").exists());
+    }
+
+    /// Set only on the child [`state_directory_is_owner_only_under_umask_002`] starts.
+    const UMASK_002_STATE: &str = "NUCLEUS_TEST_STATE_DIR_UMASK_002";
+
+    /// The node's start-up, as a process of its own under umask 002: umask(2)
+    /// is per process, so it is never changed in a process running other tests.
+    #[test]
+    fn create_and_load_keys_under_umask_002() {
+        let Some(dir) = std::env::var_os(UMASK_002_STATE) else {
+            return;
+        };
+        let dir = Path::new(&dir);
+        // SAFETY: umask(2) only replaces this process's file-creation mask.
+        unsafe { libc::umask(0o002) };
+        create(dir).expect("create the state directory");
+        let custody =
+            nucleus_federation::KeyCustody::File(nucleus_federation::FileCustody::NoTpmConfigured);
+        crate::keys::load_or_create_jwt_svid_signing_key(dir, &custody)
+            .expect("the node accepts the state directory it created as its key directory");
+    }
+
+    /// #3190: a node started under umask 002 created its state directory 0775
+    /// and then refused it as its federation key directory.
+    #[cfg(unix)]
+    #[test]
+    fn state_directory_is_owner_only_under_umask_002() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("var").join("state");
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "state_lock::tests::create_and_load_keys_under_umask_002",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(UMASK_002_STATE, &state)
+            .output()
+            .expect("start the child");
+        assert!(
+            out.status.success(),
+            "{}: {}{}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o700, "state directory mode {mode:o}");
+        // The child ran: the key it generated is in the directory.
+        assert!(std::fs::read_dir(&state).unwrap().count() > 0);
     }
 }

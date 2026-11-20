@@ -17,8 +17,16 @@
 //! * [`AkAnchor::OperatorFetched`] — the relying party holds a pin for this
 //!   AK that an operator obtained from an authenticated source, such as a
 //!   cloud provider's API that reports a VM's vTPM keys. Not a signed artifact
-//!   a stranger can check: it is the operator vouching. The weakest anchor,
-//!   and labelled so.
+//!   a stranger can check: it is the operator vouching. The weakest anchor
+//!   that names hardware, and labelled so.
+//! * [`AkAnchor::SoftwareTpm`] — the relying party holds a pin for this AK
+//!   under a list that says the TPM is SOFTWARE (swtpm, as CI runs): no
+//!   hardware holds the key, and whoever runs the emulator can sign any quote
+//!   with it. It is reached only through [`AnchorPolicy::software_tpm_pins`],
+//!   which a relying party fills only by asking for it by name, so a pin can
+//!   never turn a software TPM into a hardware label, and an operator pin can
+//!   never match a software claim (ADR 0007 C-1: the relying party's list
+//!   decides the label, never the evidence's claim).
 //! * [`AkAnchor::None`] — nothing ties the AK to a TPM. A quote under it is
 //!   not attestation, and appraisal reports `Unattested`.
 //!
@@ -47,6 +55,11 @@ pub enum AkAnchorClaim {
         /// Where the AK was fetched from, as the operator names it.
         source: String,
     },
+    /// The AK is a software TPM's, pinned by the operator who runs it.
+    SoftwareTpm {
+        /// The software TPM, as the operator names it.
+        source: String,
+    },
     /// No anchor is claimed.
     None,
 }
@@ -69,6 +82,12 @@ pub struct AnchorPolicy {
     pub trust_roots: Vec<Vec<u8>>,
     /// Operator pins the relying party has chosen to accept.
     pub operator_pins: Vec<OperatorPin>,
+    /// Pins of SOFTWARE TPMs the relying party has chosen to accept, each
+    /// labelled [`AkAnchor::SoftwareTpm`] wherever it anchors. Kept apart from
+    /// [`Self::operator_pins`] so the label is the relying party's choice: an
+    /// AK pinned here never resolves as operator-fetched, whatever the
+    /// evidence claims.
+    pub software_tpm_pins: Vec<OperatorPin>,
 }
 
 /// Why no anchor was established.
@@ -81,6 +100,9 @@ pub enum UnanchoredReason {
     RootNotTrusted,
     /// The relying party holds no pin for this source and key.
     NoMatchingOperatorPin,
+    /// The evidence claims a software TPM, and the relying party holds no
+    /// software-TPM pin for this source and key.
+    NoMatchingSoftwareTpmPin,
 }
 
 /// The anchor established for this appraisal. Labelled in every result.
@@ -97,6 +119,13 @@ pub enum AkAnchor {
         /// The source the relying party's pin names.
         source: String,
     },
+    /// A software TPM the relying party chose to accept by its pin. No
+    /// hardware root: an appraisal under this anchor shows the measurements
+    /// match, not that a TPM chip took them.
+    SoftwareTpm {
+        /// The source the relying party's software-TPM pin names.
+        source: String,
+    },
     /// Not anchored.
     None {
         /// Why.
@@ -105,11 +134,23 @@ pub enum AkAnchor {
 }
 
 impl AkAnchor {
-    /// Whether a TPM is behind the AK by some anchor (any but `None`).
+    /// Whether a TPM is behind the AK by some anchor (any but `None`). A
+    /// software TPM counts: the relying party chose to accept it by name.
     pub fn is_anchored(&self) -> bool {
         match self {
-            Self::CertificateChain { .. } | Self::OperatorFetched { .. } => true,
+            Self::CertificateChain { .. }
+            | Self::OperatorFetched { .. }
+            | Self::SoftwareTpm { .. } => true,
             Self::None { .. } => false,
+        }
+    }
+
+    /// Whether the anchor names a hardware root: a certificate chain or an
+    /// operator-fetched pin. `false` for a software TPM and for no anchor.
+    pub fn is_hardware(&self) -> bool {
+        match self {
+            Self::CertificateChain { .. } | Self::OperatorFetched { .. } => true,
+            Self::SoftwareTpm { .. } | Self::None { .. } => false,
         }
     }
 }
@@ -184,12 +225,7 @@ pub(crate) fn resolve(
             reason: UnanchoredReason::NotClaimed,
         }),
         AkAnchorClaim::OperatorFetched { source } => {
-            let fp = hex::encode(ak.spki_sha256());
-            let pinned = policy
-                .operator_pins
-                .iter()
-                .any(|p| &p.source == source && p.ak_spki_sha256.eq_ignore_ascii_case(&fp));
-            Ok(if pinned {
+            Ok(if pinned(&policy.operator_pins, source, ak) {
                 AkAnchor::OperatorFetched {
                     source: source.clone(),
                 }
@@ -199,8 +235,27 @@ pub(crate) fn resolve(
                 }
             })
         }
+        AkAnchorClaim::SoftwareTpm { source } => {
+            Ok(if pinned(&policy.software_tpm_pins, source, ak) {
+                AkAnchor::SoftwareTpm {
+                    source: source.clone(),
+                }
+            } else {
+                AkAnchor::None {
+                    reason: UnanchoredReason::NoMatchingSoftwareTpmPin,
+                }
+            })
+        }
         AkAnchorClaim::CertificateChain { chain } => resolve_chain(chain, ak, policy, at_unix),
     }
+}
+
+/// Whether `pins` names this source and this AK. Each list is consulted only
+/// for the claim kind it labels, so a pin never crosses kinds.
+fn pinned(pins: &[OperatorPin], source: &str, ak: &AkPublic) -> bool {
+    let fp = hex::encode(ak.spki_sha256());
+    pins.iter()
+        .any(|p| p.source == source && p.ak_spki_sha256.eq_ignore_ascii_case(&fp))
 }
 
 fn resolve_chain(

@@ -18,6 +18,8 @@
 //!     `--syscall-filter`, for a `/v1/run` child.
 //!   - if it runs under a non-root uid, PID 1 (the tool-proxy, guest root) is
 //!     invisible in its `/proc` (`hidepid=invisible`, #2696 P3d).
+//!   - it runs in a PID namespace of its own: the tool-proxy serving its door
+//!     has no pid there (#3344, `pid_namespace.rs`).
 //!
 //! It is baked into the musl rootfs as a static binary, exactly like
 //! `nucleus-net-probe`. Everything but the syscall-filter stage is a
@@ -88,6 +90,7 @@ const EACCES: i32 = 13;
 const CONTEND_SENTINEL: &str = "NUCLEUS_CONTEND";
 
 mod loopback;
+mod pid_namespace;
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--loopback") {
@@ -182,6 +185,7 @@ fn main() {
     check_root_readonly(&mut fails);
     check_syscall_filter(&mut fails);
     check_pid1_invisible(&mut fails);
+    fails.extend(pid_namespace::failure(&pid_namespace::observe()));
     check_credential_absence();
 
     if fails.is_empty() {

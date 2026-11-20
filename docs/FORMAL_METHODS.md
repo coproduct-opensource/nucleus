@@ -70,8 +70,18 @@ hasn't drifted from the committed code.
 **What's proved (11 theorems in DeclassifyProofs.lean):**
 - Declassification rule safety properties
 
-**What's proved (12 theorems in DecidePureProofs.lean):**
-- `decide_pure()` correctness properties
+**What's proved (11 theorems in DecidePureProofs.lean):**
+- `decide_pure()` correctness properties, over a **hand-written Lean model** of
+  the function — not over Aeneas-extracted Rust. An extraction exists
+  (`crates/portcullis-core/lean/generated-decide/`) but no proof imports it.
+- **Scope limit:** these theorems describe the model, not shipping behaviour.
+  No production code calls `decide_pure` (only tests do). The shipping kernel
+  (`Kernel::decide`) holds a `LowRisk` operation only when the policy's
+  obligations name it; a `LowRisk` operation with no obligation is allowed. So
+  `lowrisk_always_requires_approval` is true of the model and **false of the
+  shipping kernel** for unobligated operations. Making consent an explicit
+  input, moving the proofs onto the extraction, and having the kernel call the
+  proved function are planned work.
 
 ### 4. DecisionToken Linearity (Kani BMC — bounded)
 
@@ -89,6 +99,22 @@ hasn't drifted from the committed code.
 - G2-G6: Various DAG structural invariants
 - G7: Denied nodes cannot become parents (causal isolation)
 - G8: Denied set persists across subsequent operations
+
+**The DAG authority rule (#3459).** On the DAG path (`FlowGraph::insert_action`,
+`Kernel::decide_with_parents`) a caller names each parent's role in
+`ActionParents { control, data }`. An action's **authority comes from its control
+chain** — the meet of what its control parents confer: a `UserPrompt` its label's
+authority, a `ModelPlan` rooted in a prompt chain what it was rooted with, anything
+else `NoAuthority`, and no control parent at all is `NoAuthority`. **Every other
+dimension comes from all ancestry**: confidentiality, integrity, provenance,
+freshness and derivation are judged on the full join over control and data, and
+the stored node label is that join. Data cannot raise authority; `Informational` or
+`Suggestive` data (a file read, a tool response) does not lower it, while
+`NoAuthority` or `Adversarial` data still caps it exactly as before. The
+`FlowGraphProofs` theorems concern the stored label, which is unchanged; the
+authority substitution in the verdict is tested
+(`crates/portcullis/src/flow_graph_authority_tests.rs`), not proved. This is not the
+live tool-proxy path, which does not compare authority at all (#3459).
 
 ### 6. Certificate & Delegation (Kani BMC — bounded)
 
@@ -197,7 +223,7 @@ These are important security properties that have NO formal verification:
 | IFC labels + flow kernel | Lean 4 | Authority, integrity, Invariant exploit | Unbounded | 39 theorems | Every PR |
 | Flow graph DAG | Lean 4 | Semilattice, label propagation | Unbounded | 15 theorems (†) | Every PR |
 | Declassification rules | Lean 4 | Rule safety properties | Unbounded | 19 theorems | Every PR |
-| Decision logic | Lean 4 | `decide_pure()` correctness | Unbounded | 11 theorems | Every PR |
+| Decision logic | Lean 4 | `decide_pure()` correctness — hand-written model, not extracted; not the shipping kernel's decider | Unbounded | 11 theorems | Every PR |
 | Bridge/correspondence | Lean 4 | Aeneas fn = lattice op | Unbounded | 24 theorems (overlap) | Every PR |
 | DecisionToken | Kani BMC | Token issuance, audit, exposure | Bounded | 5 harnesses | Every PR |
 | FlowGraph DAG | Kani BMC | Denied-parent, structural invariants | Bounded | 8 harnesses | Every PR |
@@ -208,12 +234,12 @@ These are important security properties that have NO formal verification:
 
 **Total: 121 Kani BMC harnesses repo-wide** (portcullis 71, portcullis-core 26,
 ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1; recount with
-`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 125 because it also
+`scripts/formal-numbers.sh --print` — a bare `grep -rc` says 126 because it also
 counts a doc comment in ck-kernel and the string inside nucleus-audit's own
 counter; CI runs the script and fails on drift) **+ ~277 kernel-checked
 Lean 4 theorems** in the security core. The Lean *security* core is `sorry`-free;
 the exploratory alignment-tax / cohomology / braid formalizations are
-research-tier and **not discharged** (23 open `sorry` proof holes across 10
+research-tier and **not discharged** (22 open `sorry` proof holes across 9
 files — see `crates/portcullis-core/lean/CONJECTURES.md`). The
 `portcullis-core-proven-lean.yml` CI gate `lake build`s the proven tier and
 fails if any proof hole appears outside that manifest. Because that manifest is
@@ -303,6 +329,8 @@ lake build PortcullisCoreBridge FlowProofs ExposureProofs DeclassifyProofs \
            SemanticIFC ConstructiveSecurity WasiWorldFunctor WasiIfcBoundary \
            CertChainMonotoneExtracted \
            BelnapDecisionProofs                # ... the proven tier (CONJECTURES.md, Tier 1)
+# Proven tier is not the same as "over extracted Rust": DecidePureProofs, for
+# one, proves a hand-written model of decide_pure (see "What's proved" above).
 # A bare `lake build` of the WHOLE tree also compiles the research libs, but it
 # exits 0 even with open holes, because `sorry` is a WARNING, not an error. Do
 # NOT use a bare whole-tree build as a regression gate — use the proof-hole scan.
@@ -354,7 +382,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | **Execution receipts** | Tested | Cryptographic pod execution proof with token usage and cost tracking |
 | **Permission market** | Tested | Lagrangian pricing oracle for multi-dimensional capability constraints |
 | **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification |
-| **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink |
+| **Audit log verification** | Tested | Ed25519-signed records + SHA-256 chain; optional S3 append-only sink |
 | **PodSpec scanner** | Tested | Uninhabitable state, credentials, network, isolation, timeout checks |
 | **Claude Code scanner** | Tested | Uninhabitable state via allow/deny projection, Bash capability propagation |
 | **MCP config scanner** | Tested | Well-known server classification (15 packages), `npx -y` supply chain detection |
@@ -370,7 +398,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | **DPI flow red team** | Tested | 33 red team tests for causal flow graph attacks |
 | **OTLP permission telemetry** | Tested | OTel spans with all 13 capability dimensions, exposure state, lockdown status |
 | **Fleet lockdown** | Tested | `nucleus lockdown` drops agents to read-only via gRPC streaming (sub-second) |
-| **C2PA content credentials** | Tested | c2pa-rs manifest builder, signer config, sidecar emission, audit verification |
+| **Standard attestation export** | Tested | in-toto / SLSA / Sigstore DSSE exports bound to produced-artifact digests; verified with cosign (C2PA support removed 2026-10) |
 | **AI confidence scoring** | Tested | `AiDerivedWitness` with input context hash, model ID, multi-generation agreement rate |
 | **Budget tracking** | Partial | AtomicBudget exists; pre-exec reservation works, post-exec accounting incomplete |
 | **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |

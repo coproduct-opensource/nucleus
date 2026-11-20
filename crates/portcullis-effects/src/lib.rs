@@ -71,12 +71,18 @@
 #![deny(clippy::let_underscore_must_use)]
 
 pub mod async_traits;
+pub mod canonical;
 mod doubles;
 pub mod runtime;
 mod spawn;
 
 pub mod authority;
 pub mod receipt;
+
+pub use canonical::{CanonicalEffectHandler, CanonicalOutput};
+pub use portcullis_core::canonical::{
+    CanonicalAct, CanonicalEffectKind, EgressTarget, ExecTarget, ReadTarget, WriteKind,
+};
 
 use std::collections::BTreeMap;
 use std::io;

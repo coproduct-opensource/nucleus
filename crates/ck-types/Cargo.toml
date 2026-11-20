@@ -14,7 +14,6 @@ ring = { workspace = true }
 ed25519-dalek = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
 toml = "1.1"
 
 [dev-dependencies]

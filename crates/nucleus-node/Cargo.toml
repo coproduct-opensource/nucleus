@@ -25,6 +25,7 @@ local-driver = []
 otel = ["dep:nucleus-otel-bootstrap"]
 
 [dependencies]
+nucleus-request-proof = { path = "../nucleus-request-proof" }
 nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0", features = ["async"] }
 # Recomputing a shipped ClearingReceipt (#2988 follow-up): the host verifies the
 # evidence a spend receipt names by RE-DERIVING it, not by trusting a signature.
@@ -37,7 +38,7 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+nucleus-yaml = { path = "../nucleus-yaml" }
 # The operator upstream registry (`upstreams.rs`, `--upstreams`).
 toml = { workspace = true }
 thiserror = { workspace = true }
@@ -94,6 +95,8 @@ nucleus-microvm-host = { path = "../nucleus-microvm-host" }
 nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }
+# Owner decisions: the node parses its trust roots at startup; the pod's tool-proxy verifies.
+nucleus-signed-decision = { path = "../nucleus-signed-decision" }
 nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
 # Node platform evidence (#2706): the TPM attester and the evidence types.
 nucleus-node-evidence = { path = "../nucleus-node-evidence", features = ["attester"] }
@@ -124,6 +127,9 @@ nucleus-egress-proxy = { path = "../nucleus-egress-proxy" }
 nucleus-federation = { path = "../nucleus-federation" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+# The memory-context kernel: a binding's view (`restrict`, visibility) and its admission
+# (epoch, then `not_after`) are decided by the kernel's functions, not restated (Program B).
+nucleus-memory-context = { path = "../nucleus-memory-context" }
 # `dlc`: the host's decision service provisions its kernel with the same DLC-D
 # admission the guest's tool-proxy does (ADR 0014, host DLC admission).
 portcullis = { path = "../portcullis", features = ["serde", "crypto", "dlc"] }
@@ -144,6 +150,8 @@ nix = { version = "0.31.3", features = ["sched", "process", "signal", "poll"] }
 rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
+# The in-process replay ledger, so the request-proof adapters stay tested.
+nucleus-request-proof = { path = "../nucleus-request-proof", features = ["volatile-test-ledger"] }
 # A CA that signs only plainly, for the eval-cell launch gate's tests (ADR 0016).
 async-trait = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
@@ -153,7 +161,7 @@ tower = { version = "0.5", features = ["util"] }
 # through `nucleus-federation`. Workspace pin: one crypto backend.
 jsonwebtoken = { workspace = true }
 # Drives the SPIFFE Workload API vsock bridge as a REAL client would.
-spiffe = { version = "0.16", features = ["workload-api-x509"] }
+spiffe = { version = "0.18", features = ["workload-api-x509"] }
 tokio-test = { workspace = true }
 # Property-based tests for the policy -> Firecracker VM-config lowering isolation
 # invariants (read-only rootfs, vsock CID distinctness, netns never omitted,

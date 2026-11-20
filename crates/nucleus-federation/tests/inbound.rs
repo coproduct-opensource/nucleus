@@ -112,6 +112,38 @@ async fn a_valid_es256_token_is_accepted() {
 use sha2::Digest as _;
 
 #[tokio::test]
+async fn dropping_checked_claims_does_not_spend_an_assertion() {
+    let (k, v) = fixture();
+    let token = sign(es256_header("k1"), claims(), &k);
+    let checked = v.check(&token, NOW).await.unwrap();
+    assert_eq!(checked.claims()["sub"], "agent-session-1");
+    assert_eq!(checked.expires_at(), NOW + 300);
+    drop(checked); // e.g. the sender failed its DPoP challenge
+    v.validate(&token, NOW)
+        .await
+        .expect("legitimate sender retains its assertion");
+    assert_eq!(reason(&v, &token).await, RefusalReason::Replayed);
+}
+
+#[tokio::test]
+async fn pending_assertions_recheck_expiry_and_still_consume_only_once() {
+    let (k, v) = fixture();
+    let token = sign(es256_header("k1"), claims(), &k);
+    let checked = v.check(&token, NOW).await.unwrap();
+    assert_eq!(
+        checked.consume(NOW + 1000).unwrap_err().reason(),
+        RefusalReason::Expired
+    );
+    let first = v.check(&token, NOW).await.unwrap();
+    let competing = v.check(&token, NOW).await.unwrap();
+    first.consume(NOW).unwrap();
+    assert_eq!(
+        competing.consume(NOW).unwrap_err().reason(),
+        RefusalReason::Replayed
+    );
+}
+
+#[tokio::test]
 async fn an_audience_array_containing_ours_is_accepted() {
     let (k, v) = fixture();
     let mut c = claims();
@@ -372,6 +404,33 @@ async fn the_same_token_twice_is_a_replay() {
         v.validate(&tok, NOW + 200).await.unwrap_err().reason(),
         RefusalReason::Replayed
     );
+}
+
+/// A reloaded binding is a new validator. Built by `succeeding` it shares the
+/// old one's replay cache, so a reload is not a second chance for a spent token;
+/// built fresh (the control) the same token passes again.
+#[tokio::test]
+async fn a_token_spent_before_a_reload_is_still_spent_after_it() {
+    let (k, v) = fixture();
+    let tok = sign(es256_header("k1"), claims(), &k);
+    v.validate(&tok, NOW).await.unwrap();
+    let keys = || inline(vec![ec_jwk("k1", "P-256", &k)]);
+    let cfg = || ExternalIssuerConfig::new(ISS, AUD, [VerifyAlg::Es256], keys());
+    let reloaded = ExternalIssuerValidator::succeeding(cfg(), client(), Some(&v)).unwrap();
+    assert_eq!(reason(&reloaded, &tok).await, RefusalReason::Replayed);
+    // And the reverse direction: a token the successor spends, the
+    // predecessor (still held by an exchange in flight) refuses.
+    let second = {
+        let mut c = claims();
+        c["sub"] = json!("agent-session-2");
+        sign(es256_header("k1"), c, &k)
+    };
+    reloaded.validate(&second, NOW).await.unwrap();
+    assert_eq!(reason(&v, &second).await, RefusalReason::Replayed);
+    // Control: without a predecessor the cache is empty, so the sharing above
+    // is what refused the replay.
+    let fresh = ExternalIssuerValidator::succeeding(cfg(), client(), None).unwrap();
+    fresh.validate(&tok, NOW).await.unwrap();
 }
 
 /// ECDSA signatures are malleable: if `(r, s)` verifies, so does `(r, n − s)`,

@@ -320,7 +320,11 @@ mod tests {
         let now = Utc::now();
         let not_after = now + Duration::hours(2);
         let mut lattice = PermissionLattice::restrictive();
-        lattice.capabilities.run_bash = CapabilityLevel::LowRisk;
+        lattice.grant(
+            crate::Operation::RunBash,
+            CapabilityLevel::LowRisk,
+            crate::ConsentMode::Autonomous,
+        );
         lattice.time.valid_until = not_after;
         let restrictive = PermissionLattice::restrictive();
         let gap = WeakeningCostConfig::default().compute_gap(&restrictive, &lattice);

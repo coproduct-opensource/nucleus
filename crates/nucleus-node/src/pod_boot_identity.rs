@@ -41,19 +41,22 @@ impl PreparedIdentity {
         jail_owner: Option<(u32, u32)>,
     ) -> Result<PreparedBroker, ApiError> {
         let egress = crate::egress_meter::EgressMeter::for_pod(
-            spec,
+            state.authority.egress_chain(id).await?,
             crate::lifecycle::pod_dir(&state.state_dir, id),
             id,
+            state.authority.egress_record_signer(),
         );
         let broker = broker_launch::start_broker_for_pod(broker_launch::BrokerInputs {
             state,
             spec,
-            vsock_path,
+            route: broker_launch::BrokerRoute::Vsock {
+                vsock_path,
+                jail_owner,
+                withheld: self.withholding.as_ref(),
+            },
             registered: self.identity(),
             id,
             capability,
-            jail_owner,
-            withheld: self.withholding.as_ref(),
             egress: Arc::clone(&egress),
         })
         .await?;
@@ -117,13 +120,17 @@ impl PreparedPod {
 
     pub(crate) async fn gate(
         &self,
-        addr: SocketAddr,
+        addr: crate::signed_proxy::ProxyHealth,
         pod_dir: &Path,
         spec: &PodSpec,
         id: Uuid,
         child: &mut crate::vmm_process::VmmProcess,
     ) -> Result<net::confinement::WorkloadFilesystem, ApiError> {
-        let filesystem = net::confinement::gate(addr, pod_dir, spec, id, child).await?;
+        let filesystem = net::confinement::gate(addr, pod_dir, spec, id, child)
+            .await
+            .map_err(|e| crate::decision_provisioning::name_skew(spec, e))?;
+        // A pod that requires an owner decision is handed out only once its guest armed it.
+        crate::decision_provisioning::require_armed(spec, pod_dir).await?;
         if self.identity.withholding.is_some() {
             let console = tokio::fs::read_to_string(pod_dir.join("firecracker.log"))
                 .await
@@ -176,6 +183,9 @@ pub(crate) struct Inputs<'a> {
     pub state: &'a NodeState,
     pub pod_dir: &'a Path,
     pub spec: &'a PodSpec,
+    /// The spec bytes this guest is served, prepared with the plan (`delivered_spec`): the same
+    /// bytes the pod's receipt hashes.
+    pub delivered: &'a crate::delivered_spec::DeliveredSpec,
     pub image: &'a crate::rootfs_source::HostImage,
     pub id: Uuid,
     pub grant: &'a net::IdentityGrant,
@@ -206,11 +216,25 @@ fn not_attested(id: uuid::Uuid, why: &str) -> ApiError {
     ))
 }
 
+/// The profile the pod's SVID states (OID `.1.8`), read from the one decider of
+/// the spec's profile. Exhaustive (E-2): a profile added to the spec does not
+/// compile here until it says what its SVID claims.
+fn svid_profile(
+    profile: nucleus_spec::isolation_profile::IsolationProfile,
+) -> nucleus_identity::SvidProfile {
+    use nucleus_spec::isolation_profile::IsolationProfile;
+    match profile {
+        IsolationProfile::Standard => nucleus_identity::SvidProfile::Standard,
+        IsolationProfile::EvalCell => nucleus_identity::SvidProfile::EvalCell,
+    }
+}
+
 pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiError> {
     let Inputs {
         state,
         pod_dir,
         spec,
+        delivered,
         image,
         id,
         grant,
@@ -280,7 +304,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // Issue and register the attested cert: the served FETCH_SVID, and
                 // every re-issue after it, carries the measurement.
                 match manager
-                    .fetch_attested_certificate(&identity, &pod_id_str)
+                    .fetch_attested_certificate(&identity, &pod_id_str, svid_profile(profile))
                     .await
                 {
                     Ok(cert) => crate::eval_cell::require_verified_launch(
@@ -289,6 +313,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                             measured: &attestation,
                             leaf_der: cert.leaf().der(),
                             trust_bundle: manager.trust_bundle(),
+                            quotes: state.node_platform.as_ref(),
                         },
                     )?,
                     Err(e) => {
@@ -316,9 +341,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             }
         }
 
-        let (guest_spec, withheld) =
-            crate::cred_split::guest_spec_yaml(spec, state.broker_enforcing.is_required())
-                .map_err(|e| ApiError::Driver(format!("guest spec serialization failed: {e}")))?;
+        let guest_spec = delivered.yaml().to_owned();
+        let withheld = delivered.withheld().cloned();
         let bridge = workload_api_vsock::WorkloadApiVsockBridge::start(
             vsock_path,
             id,
@@ -327,6 +351,12 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 pod_spec_yaml: Some(guest_spec),
                 // The egress CA certificate (never its key), for guest-init to trust.
                 egress_ca_pem,
+                // Served beside the spec, read from the bundle directory now (`decision_provisioning`).
+                decisions: state
+                    .decisions
+                    .as_deref()
+                    .map(crate::decision_provisioning::NodeDecisions::material)
+                    .transpose()?,
                 // The same token that rides the kernel command line today.
                 // Serving it here is what lets the cmdline copy go: a value
                 // fetched after boot is not baked into a snapshot base.

@@ -45,7 +45,7 @@ fn dt(kernel: &mut Kernel, op: Operation, subject: &str) -> DecisionToken {
 
 /// Build a PermissionLattice with full uninhabitable_state capabilities + constraint.
 fn full_uninhabitable_policy() -> PermissionLattice {
-    let mut perms = PermissionLattice::default();
+    let mut perms = PermissionLattice::supervised();
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.glob_search = CapabilityLevel::Always;
     perms.capabilities.grep_search = CapabilityLevel::Always;
@@ -78,7 +78,7 @@ fn test_symlink_read_blocked_capstd() {
     // Also create a legitimate file for sanity check
     std::fs::write(sandbox_dir.join("legit.txt"), "hello").unwrap();
 
-    let policy = PermissionLattice::default();
+    let policy = PermissionLattice::supervised();
     let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
@@ -136,7 +136,7 @@ fn test_symlink_read_mcp_parity() {
     std::fs::write(&outside, r#"{"api_key":"sk-secret-12345"}"#).unwrap();
     std::os::unix::fs::symlink(&outside, sandbox_dir.join("escape.txt")).unwrap();
 
-    let policy = PermissionLattice::default();
+    let policy = PermissionLattice::supervised();
     let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
     let guard = GradedExposureGuard::new(policy, "[]");
@@ -191,7 +191,7 @@ fn test_symlink_write_blocked() {
 
     std::os::unix::fs::symlink(&outside, sandbox_dir.join("write_escape.txt")).unwrap();
 
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.write_files = CapabilityLevel::LowRisk;
     policy.capabilities.edit_files = CapabilityLevel::LowRisk;
     let mut kernel = Kernel::new(policy.clone());
@@ -231,7 +231,7 @@ fn test_path_traversal_blocked() {
     std::fs::create_dir(&sandbox_dir).unwrap();
     std::fs::write(sandbox_dir.join("ok.txt"), "safe").unwrap();
 
-    let policy = PermissionLattice::default();
+    let policy = PermissionLattice::supervised();
     let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
@@ -367,7 +367,7 @@ fn test_credential_isolation() {
     let sandbox_dir = tmp.path().join("sandbox");
     std::fs::create_dir(&sandbox_dir).unwrap();
 
-    let policy = PermissionLattice::default();
+    let policy = PermissionLattice::supervised();
     let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
@@ -431,7 +431,7 @@ fn test_full_rogue_pilot_chain() {
     std::os::unix::fs::symlink(&outside_secret, sandbox_dir.join("data.json")).unwrap();
 
     // Policy: .env files blocked by PathLattice + uninhabitable_state constraint
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.read_files = CapabilityLevel::Always;
     policy.capabilities.web_fetch = CapabilityLevel::LowRisk;
     policy.capabilities.run_bash = CapabilityLevel::LowRisk;

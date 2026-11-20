@@ -27,10 +27,12 @@ serde = ["dep:serde", "dep:toml", "nucleus-ifc-kernel/serde"]
 test-helpers = ["nucleus-ifc-kernel/test-helpers"]
 attestation = ["dep:sha2"]
 artifact = ["dep:serde", "dep:serde_json", "dep:sha2"]
-c2pa-manifest = ["dep:c2pa", "artifact"]
 envelope = ["dep:sha2"]
 wasm-sandbox = ["dep:wasmtime", "dep:sha2"]
-zkvm = ["dep:risc0-zkvm", "dep:serde", "dep:serde_json", "dep:sha2"]
+# No `zkvm` feature (removed 2026-10-12): risc0 is not in the root workspace, so a build
+# asking for `portcullis-core/zkvm` is refused by cargo by name rather than given a
+# receipt type with no zkVM behind it. The receipt type lives in the excluded
+# crates/portcullis-zkvm-guest (own Cargo.lock, not run in CI).
 
 [dependencies]
 # The IFC admission core — carved out of this crate in MVK M3. Re-exported below
@@ -42,9 +44,10 @@ serde = { version = "1", features = ["derive"], optional = true }
 toml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-wasmtime = { version = "48", optional = true }
-c2pa = { workspace = true, optional = true }
-risc0-zkvm = { workspace = true, optional = true }
+# Every wasmtime default feature except `cache`: nucleus never configures the
+# on-disk compilation cache, and `cache` alone pulls zstd 0.13 / zstd-safe 7
+# (RUSTSEC-2026-0391, -0398, -0403), which no wasmtime 48.x release lifts.
+wasmtime = { version = "48", optional = true, default-features = false, features = ["anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null", "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator", "demangle", "addr2line", "coredump", "debug-builtins", "runtime", "component-model", "component-model-async", "threads", "stack-switching", "std", "debug", "compile-time-builtins", "wit-parser"] }
 
 [dev-dependencies]
 wat = "1"

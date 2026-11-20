@@ -395,7 +395,7 @@ async fn create_pod(
         .with_context(|| format!("Failed to read spec from {}", spec_file.display()))?;
 
     // Parse YAML to JSON
-    let spec: serde_json::Value = serde_yaml::from_str(&spec_content)
+    let spec: serde_json::Value = nucleus_yaml::from_str(&spec_content)
         .with_context(|| format!("Invalid YAML in {}", spec_file.display()))?;
 
     let body = serde_json::to_string(&spec)?;

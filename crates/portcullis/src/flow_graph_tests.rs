@@ -13,10 +13,22 @@ fn empty_graph() {
 fn action_denied_with_web_parent() {
     let mut g = FlowGraph::new();
     let now = 1000;
+    let user = g
+        .insert_observation(NodeKind::UserPrompt, &[], now)
+        .unwrap();
     let web = g
         .insert_observation(NodeKind::WebContent, &[], now)
         .unwrap();
-    let r = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+    let r = g
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[web],
+            },
+            now,
+        )
+        .unwrap();
     assert_eq!(
         r.verdict,
         FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation)
@@ -34,7 +46,14 @@ fn action_allowed_with_clean_parents() {
         .insert_observation(NodeKind::FileRead, &[user], now)
         .unwrap();
     let r = g
-        .insert_action(Operation::WriteFiles, &[file], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[file],
+            },
+            now,
+        )
         .unwrap();
     assert_eq!(r.verdict, FlowVerdict::Allow);
 }
@@ -46,7 +65,16 @@ fn receipt_from_denied_action() {
     let web = g
         .insert_observation(NodeKind::WebContent, &[], now)
         .unwrap();
-    let r = g.insert_action(Operation::CreatePr, &[web], now).unwrap();
+    let r = g
+        .insert_action(
+            Operation::CreatePr,
+            ActionParents {
+                control: &[],
+                data: &[web],
+            },
+            now,
+        )
+        .unwrap();
     assert!(matches!(r.verdict, FlowVerdict::Deny(_)));
     let receipt = g.build_receipt_for(r.node_id, now).unwrap();
     assert!(receipt.display_chain().contains("BLOCKED"));
@@ -58,6 +86,10 @@ fn independent_branches_no_overtaint() {
     let mut g = FlowGraph::new();
     let now = 1000;
 
+    // The user's instruction both tasks act under.
+    let user = g
+        .insert_observation(NodeKind::UserPrompt, &[], now)
+        .unwrap();
     // Task A: web content (adversarial)
     let web = g
         .insert_observation(NodeKind::WebContent, &[], now)
@@ -67,7 +99,14 @@ fn independent_branches_no_overtaint() {
 
     // Task B write: depends ONLY on file — ALLOWED
     let b = g
-        .insert_action(Operation::WriteFiles, &[file], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[file],
+            },
+            now,
+        )
         .unwrap();
     assert_eq!(
         b.verdict,
@@ -76,7 +115,16 @@ fn independent_branches_no_overtaint() {
     );
 
     // Task A write: depends on web — DENIED
-    let a = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+    let a = g
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[web],
+            },
+            now,
+        )
+        .unwrap();
     assert!(
         matches!(a.verdict, FlowVerdict::Deny(_)),
         "Web taint — should be denied"
@@ -89,17 +137,37 @@ fn denied_then_allowed_same_operation() {
     let mut g = FlowGraph::new();
     let now = 1000;
 
+    let user = g
+        .insert_observation(NodeKind::UserPrompt, &[], now)
+        .unwrap();
+
     // Web content → write denied
     let web = g
         .insert_observation(NodeKind::WebContent, &[], now)
         .unwrap();
-    let denied = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+    let denied = g
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[web],
+            },
+            now,
+        )
+        .unwrap();
     assert!(matches!(denied.verdict, FlowVerdict::Deny(_)));
 
     // Clean source → same operation (WriteFiles) allowed
     let clean = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
     let allowed = g
-        .insert_action(Operation::WriteFiles, &[clean], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[clean],
+            },
+            now,
+        )
         .unwrap();
     assert!(
         matches!(allowed.verdict, FlowVerdict::Allow),
@@ -116,7 +184,16 @@ fn ancestors_skip_denied_nodes() {
     let web = g
         .insert_observation(NodeKind::WebContent, &[], now)
         .unwrap();
-    let denied = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+    let denied = g
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[web],
+            },
+            now,
+        )
+        .unwrap();
     assert!(matches!(denied.verdict, FlowVerdict::Deny(_)));
 
     // The denied node's own ancestors should work (for its receipt)
@@ -473,7 +550,14 @@ fn check_flow_with_quarantine_clean() {
         .insert_observation(NodeKind::UserPrompt, &[], now)
         .unwrap();
     let decision = g
-        .insert_action(Operation::WriteFiles, &[user], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[],
+            },
+            now,
+        )
         .unwrap();
 
     let qv = g.check_flow_with_quarantine(decision.node_id, now).unwrap();
@@ -496,7 +580,16 @@ fn check_flow_with_quarantine_blocked() {
 
     // Even though this action is also denied by IFC (web taint),
     // the quarantine verdict takes precedence
-    let decision = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+    let decision = g
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[web],
+            },
+            now,
+        )
+        .unwrap();
     let qv = g.check_flow_with_quarantine(decision.node_id, now).unwrap();
 
     match qv {
@@ -526,6 +619,11 @@ fn quarantine_scenario_malicious_issue_vs_clean_code() {
     let mut g = FlowGraph::new();
     let now = 1000;
 
+    // The user's instruction the agent acts under.
+    let user = g
+        .insert_observation(NodeKind::UserPrompt, &[], now)
+        .unwrap();
+
     // Agent reads malicious GitHub issue (web content)
     let malicious_issue = g
         .insert_observation(NodeKind::WebContent, &[], now)
@@ -541,7 +639,14 @@ fn quarantine_scenario_malicious_issue_vs_clean_code() {
 
     // Agent edits code based ONLY on local code (no dependency on issue)
     let code_edit = g
-        .insert_action(Operation::WriteFiles, &[local_code], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[local_code],
+            },
+            now,
+        )
         .unwrap();
 
     // Quarantine the malicious issue
@@ -561,7 +666,14 @@ fn quarantine_scenario_malicious_issue_vs_clean_code() {
 
     // Summary cannot reach GitPush (quarantine check)
     let summary_action = g
-        .insert_action(Operation::GitPush, &[summary], now)
+        .insert_action(
+            Operation::GitPush,
+            ActionParents {
+                control: &[user],
+                data: &[summary],
+            },
+            now,
+        )
         .unwrap();
     let qv = g
         .check_flow_with_quarantine(summary_action.node_id, now)
@@ -574,7 +686,14 @@ fn quarantine_scenario_malicious_issue_vs_clean_code() {
     // Code edit CAN reach GitPush (no quarantine)
     // (It may still be denied by IFC rules, but no quarantine)
     let code_push = g
-        .insert_action(Operation::GitPush, &[local_code], now)
+        .insert_action(
+            Operation::GitPush,
+            ActionParents {
+                control: &[user],
+                data: &[local_code],
+            },
+            now,
+        )
         .unwrap();
     let qv2 = g
         .check_flow_with_quarantine(code_push.node_id, now)
@@ -1198,7 +1317,16 @@ fn compaction_preserves_denied_nodes() {
         .unwrap();
 
     // Denied action — this node should survive compaction.
-    let denied = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+    let denied = g
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[web],
+            },
+            now,
+        )
+        .unwrap();
     assert!(matches!(denied.verdict, FlowVerdict::Deny(_)));
     let denied_id = denied.node_id;
 
@@ -1427,7 +1555,14 @@ fn receipt_marks_incomplete_chain_after_compaction() {
 
     // Insert action referencing bridge.
     let action = g
-        .insert_action(Operation::WriteFiles, &[bridge], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[bridge],
+            },
+            now,
+        )
         .unwrap();
 
     // Build receipt — bridge's parent (plan) is tombstoned, so
@@ -1523,7 +1658,16 @@ fn insert_action_populates_sink_class() {
         .insert_observation(NodeKind::FileRead, &[user], now)
         .unwrap();
 
-    let r = g.insert_action(Operation::GitPush, &[file], now).unwrap();
+    let r = g
+        .insert_action(
+            Operation::GitPush,
+            ActionParents {
+                control: &[user],
+                data: &[file],
+            },
+            now,
+        )
+        .unwrap();
     let node = g.get(r.node_id).unwrap();
     assert_eq!(
         node.sink_class,
@@ -1540,7 +1684,16 @@ fn insert_action_sink_class_enables_sink_based_rules() {
     let now = 1000;
     let secret = g.insert_observation(NodeKind::Secret, &[], now).unwrap();
 
-    let r = g.insert_action(Operation::GitPush, &[secret], now).unwrap();
+    let r = g
+        .insert_action(
+            Operation::GitPush,
+            ActionParents {
+                control: &[],
+                data: &[secret],
+            },
+            now,
+        )
+        .unwrap();
     assert_eq!(
         r.verdict,
         FlowVerdict::Deny(FlowDenyReason::Exfiltration),
@@ -1560,7 +1713,10 @@ fn insert_action_with_effect_stores_effect_kind() {
     let r = g
         .insert_action_with_effect(
             Operation::ReadFiles,
-            &[user],
+            ActionParents {
+                control: &[user],
+                data: &[],
+            },
             now,
             Some(EffectKind::DeterministicFetch),
         )
@@ -1578,7 +1734,14 @@ fn insert_action_without_effect_has_none() {
         .insert_observation(NodeKind::UserPrompt, &[], now)
         .unwrap();
     let r = g
-        .insert_action(Operation::WriteFiles, &[user], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[],
+            },
+            now,
+        )
         .unwrap();
     let node = g.get(r.node_id).unwrap();
     assert_eq!(node.effect_kind, None);

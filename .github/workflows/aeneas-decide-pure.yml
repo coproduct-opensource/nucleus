@@ -87,7 +87,7 @@ jobs:
 
       # --- Rust nightly for Charon MIR extraction ---
       - name: Install Rust nightly for Charon
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
@@ -223,6 +223,26 @@ jobs:
           cat crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide/Funs.lean
           echo "CANONICAL-FUNS-END"
 
+      # --- Elaborate the fresh extraction before it can be committed ---
+      # This job used to print and commit what Aeneas emitted without ever
+      # handing it to Lean. The committed Funs.lean did not elaborate (a
+      # parameter named `exposure` shadowed the `exposure` namespace) and
+      # nothing reported it. A failure here stops the job before the commit
+      # step, so output Lean rejects cannot reach the bot branch.
+      - name: Elaborate the fresh extraction (lake build PortcullisCoreDecide)
+        uses: leanprover/lean-action@f061402b660e0c34644504b324e830f2991d4865 # v1
+        env:
+          LEAN_NUM_THREADS: "4"
+        with:
+          lake-package-directory: crates/portcullis-core/lean
+          auto-config: "false"
+          build: "true"
+          test: "false"
+          lint: "false"
+          use-mathlib-cache: "true"
+          use-github-cache: "false"
+          build-args: PortcullisCoreDecide
+
       # --- Auto-commit the regenerated Lean back to the branch ---
       # [skip ci] prevents a regenerate->push->regenerate loop.
       - name: Commit regenerated decide_pure extraction
@@ -250,8 +270,8 @@ jobs:
           # GITHUB_TOKEN-created PR would never trigger the required
           # checks. So: push a bot branch and surface a notice; a human
           # (or operator tooling with user credentials) opens the PR.
-          # Own credential, not the checkout's: see clippy-ratchet.yml for the
-          # `includeIf.gitdir` / symlinked-workspace failure this avoids.
+          # Own credential, not the checkout's: see crates/xtask/src/push_auth.rs
+          # for the `includeIf.gitdir` / symlinked-workspace failure this avoids.
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force origin "HEAD:refs/heads/bot/decide-pure-extraction"
           echo "::notice::decide_pure extraction drifted — pushed to bot/decide-pure-extraction; open a PR from that branch to land it (direct push to ${GITHUB_REF_NAME} is blocked by branch protection)."

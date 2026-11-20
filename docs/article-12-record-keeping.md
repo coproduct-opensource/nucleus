@@ -1,9 +1,9 @@
-> Security configuration: without `--audit-secret`, the proxy generates a fresh
-> private MAC key from the OS RNG. It is held in memory, never derived from the
-> session ID or exported. An explicitly empty key refuses startup. Provision a
-> non-empty operator key for legacy offline MAC verification; otherwise verification
-> remains hash-chain-only, plus any host-signed evidence. Signed-record migration
-> remains tracked in #3309.
+> Signing key: each record is signed with Ed25519 by the tool proxy's audit
+> signer, the key that also signs its audit log (#3293, #3309). The proxy
+> generates it from the OS RNG at startup, holds it only in memory, and prints its
+> public half once as `NUCLEUS-AUDIT-SIGNER <hex>` on the console the host keeps.
+> No configured secret keys the log. `--audit-secret` now authenticates only the
+> shipper's channel to the host.
 
 # Article 12 record-keeping
 
@@ -19,7 +19,7 @@ applies to the Article 5 prohibitions.
 ## What is recorded
 
 With `--art12-log <path>` (or `NUCLEUS_TOOL_PROXY_ART12_LOG`), the tool proxy
-appends one hash-chained, HMAC-signed record per kernel decision — **allows,
+appends one hash-chained, Ed25519-signed record per kernel decision — **allows,
 refusals and deferrals alike**.
 
 Recording refusals is the point. Every caller reaches the kernel through `?`, so
@@ -73,13 +73,33 @@ session's readable surface.
 ## Verifying a log
 
 ```
-nucleus-audit verify-art12 --log /path/to/art12.jsonl --secret <secret>
+nucleus-audit verify-art12 --log /path/to/art12.jsonl --signer-pubkey <NUCLEUS-AUDIT-SIGNER hex>
 ```
 
-The verifier reconstructs each record's canonical preimage **from the record's
-own fields** — not by re-serialising, because JSON key order and escaping are not
+The verifier reconstructs each record's preimage **from the record's own
+fields** — not by re-serialising, because JSON key order and escaping are not
 stable across serde versions and a verifier that re-serialises is checking its own
-serialiser. It checks sequence continuity, hash chaining, and the HMAC.
+serialiser. It checks sequence continuity, hash chaining, and each record's
+Ed25519 signature (strict).
+
+A signed record passes only under a signer you pinned: `--signer-pubkey`
+(repeatable, for a log a restarted proxy continued under a new key), or an
+executor attestation (below), whose signed head commits to every record's signer.
+A record signed by a key nothing pins is refused: a key the log names for itself
+proves nothing about who wrote it.
+
+Every record names its signer inside its signed bytes. The writer and the
+verifier use one declaration of the record and its preimages
+(`portcullis::art12_record`), and the per-record check is the one
+`nucleus-audit verify` applies to the audit log, so the two logs cannot drift
+into accepting different things.
+
+**Legacy records.** A record written before #3309 carries an HMAC instead
+(`sig_alg` and `signer` absent). It verifies only against a non-empty
+`--secret`, and the report counts it as legacy. With no secret, or an empty one,
+it is refused by name (`LegacyMacUnkeyed`): before #3376 a pod with no operator
+key MAC'd its log under a key derived from the public session ID, which anyone can
+compute. A legacy record after a signed one is refused as a downgrade.
 
 `--json` emits a machine-readable report: record count, chain head, time span,
 how many records identify an authenticated actor, and the verdict distribution.
@@ -92,14 +112,13 @@ consumer cannot render "verified" without it.
 | Established | Not established |
 |---|---|
 | The records present are consecutive and unaltered | That the log is **complete** — a chain cannot show the process recorded every decision it made |
-| No party **lacking the signing secret** modified the file | That a **holder** of the secret did not rewrite history |
+| No party **lacking the signing key** modified the file | That the key's **holder** did not rewrite history |
 | Each record's fields match its own hash and signature | That the signer is independent of the signed |
 
-The third row is the one to read twice. Older releases derived a signing key
-from the public session ID when no audit secret was supplied. Those records
-do not establish writer authenticity. Current releases generate a fresh private key instead.
-A holder of an operator-provisioned MAC key can still rewrite history, so
-**the log alone is not evidence against a pod that holds that key**.
+The third row is the one to read twice. The signing key is the tool proxy's own,
+generated inside the pod. The workload cannot reach it wherever the runtime drops
+its uid, but root in the pod can, so **the log alone is not evidence against a
+pod whose root rewrote it**.
 
 ## The executor attestation closes that
 
@@ -111,15 +130,16 @@ receipt in the `session-complete` body, and the chain head is committed into
 `v1_content_hash` so it cannot be stripped in flight.
 
 ```
-nucleus-audit verify-art12 --log art12.jsonl --secret <s> \
+nucleus-audit verify-art12 --log art12.jsonl \
     --attestation att.json --executor-pubkey <hex>
 ```
 
 The verifier checks the signature over the attestation's own preimage **and**
 that the head it names is the head recomputed from the log. Both halves are
 required: a valid signature over a different head proves only that some other log
-was attested. When both pass, the secret-holder limitation is lifted from the
-report — that is the one case where it does not apply.
+was attested. The attested head also pins the record signer, so no
+`--signer-pubkey` is needed. When both pass, the key-holder limitation is lifted
+from the report — that is the one case where it does not apply.
 
 The signer and the verifier share one preimage function in
 `portcullis::art12_record`, for the reason `Art12Record` lives there too: two

@@ -35,7 +35,10 @@
 //! (`--upstreams`), because a binding names the upstreams its callers may be
 //! admitted to and one file is one atomic statement of what this node offers.
 //! Unknown fields are refused and a bad binding stops the node from starting,
-//! for the same reason `upstreams.rs` gives:
+//! for the same reason `upstreams.rs` gives. A running node re-reads the file
+//! on SIGHUP or when its digest changes (`pod_authority/registry.rs`), with the
+//! same rules; a bad file then keeps the bindings in force rather than stopping
+//! anything.
 //!
 //! ```toml
 //! [[caller]]
@@ -51,7 +54,13 @@
 //! ceiling           = { profile = "codegen" }         # or { inline = { …lattice… } }
 //! upstreams         = ["model-api"]                   # names from [[upstream]]; optional
 //! svid_ttl_secs     = 600                             # optional; default 600, at most 3600
+//! max_cost_usd_per_day = "50"                         # optional; allocations per UTC day
 //! ```
+//!
+//! `max_cost_usd_per_day` bounds what pods admitted under the binding may be
+//! allocated within one UTC day, beside the ceiling's `max_cost_usd`, which
+//! bounds the binding's whole life. Absent, there is no day dimension and the
+//! ceiling alone binds, as before the field existed.
 //!
 //! Load-time rules, each stopping the node:
 //!
@@ -149,6 +158,18 @@ const MIN_SVID_TTL_SECS: u64 = 5;
 /// the node's `Args`) rather than into `main.rs`.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct FederationArgs {
+    /// Require DPoP on HTTP API requests, pinned to this external HTTPS origin.
+    #[arg(
+        long = "request-proof-api-origin",
+        env = "NUCLEUS_REQUEST_PROOF_API_ORIGIN"
+    )]
+    pub request_proof_api_origin: Option<String>,
+    /// Require DPoP federation exchange proofs at this external HTTPS origin.
+    #[arg(
+        long = "request-proof-exchange-origin",
+        env = "NUCLEUS_REQUEST_PROOF_EXCHANGE_ORIGIN"
+    )]
+    pub request_proof_exchange_origin: Option<String>,
     /// Address for the federation exchange listener (`POST
     /// /v1/federation/exchange`), served over server-authenticated TLS with the
     /// node's own certificate and NO client certificate. Unset, the exchange is
@@ -180,6 +201,8 @@ pub(crate) struct FederationArgs {
 impl Default for FederationArgs {
     fn default() -> Self {
         Self {
+            request_proof_api_origin: None,
+            request_proof_exchange_origin: None,
             federation_listen: None,
             federation_max_concurrent: 16,
             federation_tls_cert: None,
@@ -211,6 +234,12 @@ pub(crate) struct CallerFile {
     upstreams: Vec<String>,
     #[serde(default)]
     svid_ttl_secs: Option<u64>,
+    #[serde(default)]
+    max_cost_usd_per_day: Option<rust_decimal::Decimal>,
+    /// What a pod's release charges: `"allocation"` (the default: its whole
+    /// allocation) or `"metered"` (what the host metered into its own ledger).
+    #[serde(default)]
+    settle: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -255,6 +284,15 @@ pub(crate) struct CallerBinding {
     ceiling: PermissionLattice,
     upstreams: Vec<CredentialedEgressSpec>,
     svid_ttl: Duration,
+    /// `max_cost_usd_per_day`, in micro-USD rounded down as a ledger's ceiling
+    /// is. `None`: no day dimension (the ceiling still bounds the total).
+    daily_max_micro: Option<u64>,
+    /// `settle = "metered"`: a pod's release consumes what the host metered
+    /// into its own ledger (brokered call charges; its live children's
+    /// allocations), at most its allocation, so the ceiling and the day count
+    /// what pods spent rather than what they reserved. Default: the whole
+    /// allocation, which also stands for what nothing meters (compute time).
+    settle_metered: bool,
 }
 
 impl std::fmt::Debug for CallerBinding {
@@ -281,6 +319,17 @@ impl CallerBinding {
     /// The registry upstreams a pod created under this binding may be admitted.
     pub fn upstreams(&self) -> &[CredentialedEgressSpec] {
         &self.upstreams
+    }
+
+    /// The most pods under this binding may be allocated in one UTC day, in
+    /// micro-USD; `None` when the binding sets no daily allowance.
+    pub fn daily_max_micro(&self) -> Option<u64> {
+        self.daily_max_micro
+    }
+
+    /// Whether a pod admitted under this binding settles to its metered spend.
+    pub fn settles_metered(&self) -> bool {
+        self.settle_metered
     }
 
     /// The SPIFFE ID a validated `sub` maps to, or `None` when the `sub`
@@ -334,6 +383,22 @@ impl CallerBindings {
         files: &[CallerFile],
         registry: &UpstreamRegistry,
         node_trust_domain: &str,
+    ) -> Result<Self, String> {
+        Self::succeeding(files, registry, node_trust_domain, None)
+    }
+
+    /// [`Self::from_files`] for a reload: every rule is the same, and a binding
+    /// whose issuer `previous` also binds shares its replay cache
+    /// (`ExternalIssuerValidator::succeeding`), so a token spent before the
+    /// reload stays spent after it.
+    ///
+    /// # Errors
+    /// As [`Self::from_files`].
+    pub fn succeeding(
+        files: &[CallerFile],
+        registry: &UpstreamRegistry,
+        node_trust_domain: &str,
+        previous: Option<&Self>,
     ) -> Result<Self, String> {
         if files.is_empty() {
             return Ok(Self::default());
@@ -403,8 +468,13 @@ impl CallerBindings {
                 cfg.leeway = Duration::from_secs(l);
             }
             cfg.required_claims = f.required_claims.clone();
-            let validator = ExternalIssuerValidator::new(cfg, http.clone())
-                .map_err(|e| at(&format!("issuer settings: {e}")))?;
+            let before = previous.and_then(|p| p.by_issuer(&f.issuer));
+            let validator = ExternalIssuerValidator::succeeding(
+                cfg,
+                http.clone(),
+                before.map(|b| &b.validator),
+            )
+            .map_err(|e| at(&format!("issuer settings: {e}")))?;
             let ceiling = f
                 .ceiling
                 .resolve()
@@ -424,6 +494,18 @@ impl CallerBindings {
             if svid_ttl.as_secs() < MIN_SVID_TTL_SECS || svid_ttl > MAX_SVID_TTL {
                 return Err(at("svid_ttl_secs must be between 5 and 3600"));
             }
+            let daily_max_micro = match f.max_cost_usd_per_day {
+                None => None,
+                Some(usd) => Some(
+                    usd_to_micro_floor(usd)
+                        .ok_or_else(|| at("max_cost_usd_per_day must be a non-negative amount"))?,
+                ),
+            };
+            let settle_metered = match f.settle.as_deref() {
+                None | Some("allocation") => false,
+                Some("metered") => true,
+                Some(_) => return Err(at("settle must be \"allocation\" or \"metered\"")),
+            };
             bindings.push(CallerBinding {
                 label: f.label.clone(),
                 trust_domain: f.trust_domain.clone(),
@@ -432,6 +514,8 @@ impl CallerBindings {
                 ceiling,
                 upstreams,
                 svid_ttl,
+                daily_max_micro,
+                settle_metered,
             });
         }
         Ok(Self { bindings })
@@ -459,6 +543,19 @@ impl CallerBindings {
     pub fn trust_domains(&self) -> impl Iterator<Item = &str> {
         self.bindings.iter().map(|b| b.trust_domain.as_str())
     }
+}
+
+/// USD to micro-USD rounded down, the rounding a ledger's ceiling gets
+/// (`BudgetLedger::for_parent`): an allowance never rounds up into more than
+/// was written. `None` for a negative or unrepresentable amount.
+fn usd_to_micro_floor(usd: rust_decimal::Decimal) -> Option<u64> {
+    use rust_decimal::prelude::ToPrimitive as _;
+    if usd.is_sign_negative() {
+        return None;
+    }
+    usd.checked_mul(rust_decimal::Decimal::from(1_000_000))?
+        .floor()
+        .to_u64()
 }
 
 /// The trust domain of a SPIFFE ID, or `None` for something that is not one.
@@ -498,6 +595,8 @@ pub(crate) struct ExchangeResponse {
     pub delegation_cert: String,
     /// Unix seconds after which neither credential is valid.
     pub expires_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cnf: Option<serde_json::Value>,
 }
 
 /// Why an exchange was refused. The status is what the caller sees; the
@@ -550,6 +649,7 @@ impl IntoResponse for Refusal {
 /// with), the CA that signs SVIDs, and the concurrency gate.
 #[derive(Clone)]
 pub(crate) struct IngressState {
+    pub request_proofs: Option<Arc<crate::request_proof::RequestProofs>>,
     pub authority: Arc<crate::pod_authority::PodAuthority>,
     pub identity: crate::identity::IdentityManager,
     pub gate: Arc<Semaphore>,
@@ -599,6 +699,7 @@ fn pem_encode(label: &str, der: &[u8]) -> String {
 pub(crate) async fn exchange(
     st: &IngressState,
     authorization: Option<&str>,
+    proof: Option<&str>,
     body: &[u8],
     now: u64,
 ) -> Result<ExchangeResponse, Refusal> {
@@ -606,7 +707,13 @@ pub(crate) async fn exchange(
         serde_json::from_slice(body).map_err(|_| Refusal::BadRequest("body does not parse"))?;
 
     let token = authorization
-        .and_then(|h| h.strip_prefix("Bearer "))
+        .and_then(|h| {
+            h.strip_prefix(if st.request_proofs.is_some() {
+                "DPoP "
+            } else {
+                "Bearer "
+            })
+        })
         .map(str::trim)
         .filter(|t| !t.is_empty() && t.len() <= MAX_TOKEN_BYTES)
         .ok_or(Refusal::Unauthorized("no bearer token"))?;
@@ -617,7 +724,7 @@ pub(crate) async fn exchange(
         .and_then(|iss| bindings.by_issuer(&iss))
         .ok_or(Refusal::Unauthorized("token names no configured issuer"))?;
 
-    let caller = binding.validator.validate(token, now).await.map_err(|e| {
+    let refused = |e: InboundError| {
         // Which check failed is logged here, where it is still in hand, and
         // goes no further: the caller gets the status alone.
         tracing::warn!(binding = %binding.label, check = ?e.reason(), "federated token refused");
@@ -625,7 +732,47 @@ pub(crate) async fn exchange(
             InboundError::Refused(_) => Refusal::Unauthorized("token refused by its binding"),
             InboundError::Unavailable(_) => Refusal::Unavailable("issuer keys unavailable"),
         }
-    })?;
+    };
+    // Do not spend a copied assertion before its sender proves key possession.
+    let checked = binding.validator.check(token, now).await.map_err(refused)?;
+
+    let cnf = if let Some(proofs) = &st.request_proofs {
+        let jkt = checked
+            .claims()
+            .get("cnf")
+            .and_then(|v| v.get("jkt"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or(Refusal::Unauthorized("missing issuer key binding"))?;
+        let csr = csr_pem(&request.csr).ok_or(Refusal::BadRequest("invalid CSR"))?;
+        let key = nucleus_request_proof::csr_key(&csr, jkt)
+            .map_err(|_| Refusal::Unauthorized("CSR key binding refused"))?;
+        let verified = proofs
+            .exchange
+            .verify_assertion(
+                proof.ok_or(Refusal::Unauthorized("request proof required"))?,
+                "/v1/federation/exchange",
+                token,
+                &key,
+                checked.expires_at().saturating_add(60),
+            )
+            .map_err(|e| match e {
+                nucleus_request_proof::Error::Refused => {
+                    Refusal::Unauthorized("request proof refused")
+                }
+                nucleus_request_proof::Error::Unavailable
+                | nucleus_request_proof::Error::Configuration
+                | nucleus_request_proof::Error::NoDurableLedger => {
+                    Refusal::Unavailable("request proof verifier unavailable")
+                }
+            })?;
+        let jkt = verified
+            .into_thumbprint(nucleus_request_proof::unix_now())
+            .map_err(|_| Refusal::Unauthorized("request proof refused"))?;
+        Some(serde_json::json!({ "jkt": jkt }))
+    } else {
+        None
+    };
+    let caller = checked.consume(now).map_err(refused)?;
 
     let principal = binding
         .principal(&caller.sub)
@@ -696,6 +843,7 @@ pub(crate) async fn exchange(
         trust_bundle_pem,
         delegation_cert,
         expires_at: not_after_unix,
+        cnf,
     })
 }
 
@@ -710,14 +858,19 @@ async fn exchange_route(
         tracing::warn!("federation exchange refused: at the concurrency bound");
         return Refusal::Unavailable("at the concurrency bound").into_response();
     };
-    let authorization = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
+    let authorization = match crate::request_proof::one(&headers, "authorization") {
+        Ok(v) => v,
+        Err(_) => return Refusal::Unauthorized("duplicate authorization").into_response(),
+    };
+    let proof = match crate::request_proof::one(&headers, "dpop") {
+        Ok(v) => v,
+        Err(_) => return Refusal::Unauthorized("duplicate proof").into_response(),
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    match exchange(&st, authorization, &body, now).await {
+    match exchange(&st, authorization, proof, &body, now).await {
         Ok(resp) => Json(resp).into_response(),
         Err(refusal) => {
             tracing::warn!(
@@ -774,6 +927,7 @@ pub(crate) async fn spawn(
     let tcp = tokio::net::TcpListener::bind(listen).await?;
     let addr = tcp.local_addr()?;
     let app = router(IngressState {
+        request_proofs: state.request_proofs.clone(),
         authority: state.authority.clone(),
         identity,
         gate: Arc::new(Semaphore::new(args.federation_max_concurrent.max(1))),
@@ -791,6 +945,11 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
     use serde_json::{Value, json};
+
+    // Reloading the registry, and the per-day allowance, through the exchange.
+    mod reload;
+    // A killed node's federated pods, settled at its next start.
+    mod restart;
 
     const NODE_TD: &str = "node.local";
     const ISS_A: &str = "https://issuer-a.example.invalid";
@@ -930,6 +1089,7 @@ ceiling = {{ profile = "read_only" }}
             cert_trust_anchors: Vec::new(),
             max_children_per_pod: 8,
             upstreams: Some(path),
+            upstreams_poll_secs: 0,
             federation_issuer: None,
             ingress: FederationArgs::default(),
             approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
@@ -941,6 +1101,7 @@ ceiling = {{ profile = "read_only" }}
             crate::identity::IdentityManager::new(NODE_TD, Duration::from_secs(3600)).unwrap();
         Fixture {
             st: IngressState {
+                request_proofs: None,
                 authority,
                 identity,
                 gate: Arc::new(Semaphore::new(4)),
@@ -972,7 +1133,7 @@ ceiling = {{ profile = "read_only" }}
     }
 
     async fn run(f: &Fixture, token: &str, body: &[u8]) -> Result<ExchangeResponse, Refusal> {
-        exchange(&f.st, Some(&format!("Bearer {token}")), body, now()).await
+        exchange(&f.st, Some(&format!("Bearer {token}")), None, body, now()).await
     }
 
     fn principal_a(sub: &str) -> String {
@@ -1185,12 +1346,8 @@ ceiling = {{ profile = "read_only" }}
             .await
             .unwrap(),
         );
-        let ceiling =
-            f.st.authority
-                .caller_bindings()
-                .by_trust_domain(TD_A)
-                .unwrap()
-                .ceiling();
+        let bindings = f.st.authority.caller_bindings();
+        let ceiling = bindings.by_trust_domain(TD_A).unwrap().ceiling();
         assert!(
             !ceiling.leq(&PermissionLattice::read_only()),
             "fixture: narrowing is visible"
@@ -1234,6 +1391,7 @@ ceiling = {{ profile = "read_only" }}
             cgroup: None,
             audit_sink: None,
             credentials: None,
+            requires_decision: Vec::new(),
         })
     }
 
@@ -1295,11 +1453,8 @@ ceiling = {{ profile = "read_only" }}
                 .admit(&admission(&resp), &pod_spec(granted, 1), pod)
                 .await
                 .expect("admitted through case 2");
-        let binding =
-            f.st.authority
-                .caller_bindings()
-                .by_trust_domain(TD_A)
-                .unwrap();
+        let bindings = f.st.authority.caller_bindings();
+        let binding = bindings.by_trust_domain(TD_A).unwrap();
         assert!(
             issued.effective.leq(binding.ceiling()),
             "clamped to the ceiling"
@@ -1541,4 +1696,5 @@ ceiling = {{ profile = "read_only" }}
             assert!(!v[field].is_null(), "{field}");
         }
     }
+    include!("federation_proof_tests.rs");
 }

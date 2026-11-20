@@ -47,7 +47,9 @@ nucleus-audit verify-receipts --log receipts.jsonl         # Ed25519 receipt cha
 ## Verify workload evidence
 
 Prepare expectations from separately retained admission metadata, an independently
-pinned executor public key and the intended environment inputs. `prepare-execution`
+pinned executor public key and the intended environment inputs. What the runtime
+injects (`NUCLEUS_EGRESS_<NAME>_URL`) is derived from the admission record's
+`runtime_environment_inputs`, not restated in the inputs file. `prepare-execution`
 prints the expected-record JSON; the receipt being checked supplies none of those
 expectations. The validity deadline applies when consuming verification results
 as well as to receipt issuance.
@@ -91,7 +93,7 @@ receipt by themselves.
 
 ```bash
 nucleus-audit verify-provenance --output provenance-output.json
-nucleus-audit verify-c2pa --output provenance-output.json --receipts chain.jsonl
+nucleus-audit inspect-provenance --output provenance-output.json --receipts chain.jsonl
 nucleus-audit provenance-log --output provenance-output.json
 nucleus-audit diff-provenance --old v1.json --new v2.json
 ```
@@ -105,7 +107,7 @@ nucleus-audit diff-provenance --old v1.json --new v2.json
 | `verify-chain` | Verify portcullis permission audit log |
 | `verify-receipts` | Verify Ed25519-signed receipt chain |
 | `verify-provenance` | Verify provenance output schema + derivation chains |
-| `verify-c2pa` | Cross-check C2PA sidecar with receipt chain |
+| `inspect-provenance` | Inspect a provenance header and cross-check it with the receipt chain (alias `verify-c2pa`; a `.c2pa` sidecar is reported NOT VERIFIED — C2PA support was removed) |
 | `provenance-log` | Navigate session DAG (jj-style log) |
 | `diff-provenance` | Diff two provenance outputs |
 | `rebase-witnesses` | Check if parser update changes outputs |

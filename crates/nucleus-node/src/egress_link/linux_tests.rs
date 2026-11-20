@@ -308,3 +308,63 @@ async fn ordinary_tcp_upload_larger_than_one_window_completes() {
         start.elapsed()
     );
 }
+
+/// #2905, on a real link: a rule that lets packets skip the queue is a bypass
+/// the kernel's counters see. The bypassed datagram does arrive; the detector
+/// then cuts the pod's egress and leaves the signed record.
+#[tokio::test]
+#[ignore = "requires isolated privileged Linux networking"]
+async fn a_rule_that_skips_the_queue_is_caught_by_the_link_counters() {
+    let net = Network::new().await;
+    let dir = tempfile::tempdir().unwrap();
+    let meter = meter(dir.path(), 1 << 20, EgressPace::Unpaced);
+    let mut monitor = LinkMonitor::start(&net.0, meter.clone()).await.unwrap();
+    let sink = tokio::net::UdpSocket::bind((net.0.host_ip, 0))
+        .await
+        .unwrap();
+    // Ordinary traffic first: a real frame's framing is not a finding.
+    let mut child = net.send(sink.local_addr().unwrap(), 200, false);
+    assert!(child.wait().await.unwrap().success());
+    assert_eq!(receive(&sink).await.0, 200);
+    tokio::time::sleep(bypass::CHECK_PERIOD * 2).await;
+    meter
+        .admit(1, crate::now_unix())
+        .await
+        .expect("ordinary traffic does not cut the link")
+        .sent();
+
+    // The defect: an ACCEPT ahead of the queue rule.
+    for program in ["iptables", "ip6tables"] {
+        ip(&[
+            "netns",
+            "exec",
+            &net.0.netns,
+            program,
+            "-w",
+            "-t",
+            "mangle",
+            "-I",
+            "POSTROUTING",
+            "1",
+            "-o",
+            &net.0.peer_veth,
+            "-j",
+            "ACCEPT",
+        ])
+        .await;
+    }
+    let mut child = net.send(sink.local_addr().unwrap(), 1_000, false);
+    assert!(child.wait().await.unwrap().success());
+    assert_eq!(receive(&sink).await.0, 1_000, "the bypass really sent");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while meter.admit(0, crate::now_unix()).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the link counters caught the bypass");
+    monitor.shutdown().await.unwrap();
+    let log = std::fs::read_to_string(dir.path().join("lifecycle.log")).unwrap();
+    assert!(log.contains("egress_link_bypass"), "{log}");
+    println!("bypass caught: {log}");
+}

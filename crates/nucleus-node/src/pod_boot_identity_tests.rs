@@ -1,6 +1,20 @@
 use crate::pod_boot_identity::{self, Inputs};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+/// Admit `id` through the node's authority, as `create_pod_internal` does before any driver
+/// runs: the pod's egress meter is built from the account admission issues (#2905).
+async fn admitted(st: &NodeState, spec: &nucleus_spec::PodSpec, id: uuid::Uuid) {
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    st.authority
+        .admit_kept(&root, spec, id)
+        .await
+        .expect("the root minter admits the pod");
+}
+
 async fn prepare_for_test(
     st: &NodeState,
     dir: &std::path::Path,
@@ -47,6 +61,13 @@ async fn prepare_labelled_for_test(
         "kernel_path": kernel, "rootfs_path": rootfs,
     }))
     .unwrap();
+    // Every pod names its policy (#3400); these tests are about something else.
+    let mut pod_spec = pod_spec;
+    pod_spec
+        .as_object_mut()
+        .expect("pod spec is an object")
+        .entry("policy")
+        .or_insert(serde_json::json!({"type": "profile", "name": "default"}));
     let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
         "metadata": {"name": "host-spec-before-vmm", "labels": labels}, "spec": pod_spec,
@@ -57,6 +78,12 @@ async fn prepare_labelled_for_test(
         state: st,
         pod_dir: dir,
         spec: &spec,
+        delivered: &crate::delivered_spec::DeliveredSpec::of(
+            &spec,
+            crate::delivered_spec::Delivery::Firecracker {
+                withhold: st.broker_enforcing.is_required(),
+            },
+        )?,
         image: &crate::rootfs_source::HostImage::resolve(&image).unwrap(),
         id,
         grant: &crate::net::IdentityGrant::Granted,
@@ -103,9 +130,10 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
     assert!(manager.get_attestation(&id.to_string()).await.is_some());
     let spec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
-        "metadata": {"name": "spawn-control"}, "spec": {},
+        "metadata": {"name": "spawn-control"}, "spec": {"policy":{"type":"profile","name":"default"}},
     }))
     .unwrap();
+    admitted(&st, &spec, id).await;
     let ready = ready
         .with_broker(
             &st,
@@ -151,7 +179,7 @@ async fn enforcing_broker_refusal_cleans_identity_before_spawn_is_available() {
     let spec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
         "metadata": {"name": "enforcing-refusal"},
-        "spec": {"vsock": {"guest_cid": 3, "port": 5005}},
+        "spec": {"policy":{"type":"profile","name":"default"},"vsock": {"guest_cid": 3, "port": 5005}},
     }))
     .unwrap();
     let result = ready
@@ -192,9 +220,10 @@ async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
         .unwrap();
     let spec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
-        "metadata": {"name": "child-cleanup"}, "spec": {},
+        "metadata": {"name": "child-cleanup"}, "spec": {"policy":{"type":"profile","name":"default"}},
     }))
     .unwrap();
+    admitted(&st, &spec, id).await;
     let ready = identity
         .with_broker(
             &st,
@@ -289,7 +318,7 @@ async fn enforced_host_spec_withholds_values_but_preserves_the_workload() {
         let response = ask(dir.path(), b"FETCH_POD_SPEC\n").await;
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
         let served: nucleus_spec::PodSpec =
-            serde_yaml::from_str(value["spec"].as_str().expect("spec served")).unwrap();
+            nucleus_yaml::from_str(value["spec"].as_str().expect("spec served")).unwrap();
         let credentials = served.spec.credentials.unwrap();
         if enforcing {
             assert!(
@@ -530,17 +559,60 @@ async fn a_ca_that_cannot_attest_refuses_every_pod_at_boot() {
     assert!(refused.contains("never issued in its place"), "{refused}");
 }
 
-/// Non-vacuous: on a node whose CA attests, the eval cell's launch verifies
-/// against the measurement the node took, and it is prepared.
+/// ADR 0016 S3, wired: on a node whose CA attests but which has no TPM, the
+/// eval cell's launch verifies to the node CA alone, and that is refused by
+/// name before the VMM starts. A standard pod on the same node is prepared, as
+/// before.
 #[tokio::test]
-async fn an_eval_cell_whose_launch_verifies_is_prepared() {
+async fn an_eval_cell_on_a_node_with_no_tpm_is_refused_at_boot() {
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let mut st = state(&dir);
     st.identity_manager = Some(
         crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
             .unwrap(),
     );
+    let refused = match prepare_profiled(&st, dir.path(), eval_cell_label()).await {
+        Ok(_) => panic!("an eval cell booted rooted in the node CA alone"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        refused.contains("not rooted in this node's TPM"),
+        "{refused}"
+    );
+    assert!(refused.contains("this node has no TPM"), "{refused}");
+    let _ready = prepare_profiled(&st, dir.path(), serde_json::json!({}))
+        .await
+        .expect("a standard pod boots on a node with no TPM, as before");
+}
+
+/// ADR 0016 S3, wired, positive: on a node started on a TPM, which quotes each
+/// launch it measures, the eval cell's launch is rooted in that TPM and the cell
+/// is prepared. The node's own `NodePlatformSource` holds the quote and the
+/// appraisal inputs; nothing here stands in for it.
+///
+/// Against swtpm, as `node_evidence`'s composition test:
+/// `swtpm socket --tpm2 --tpmstate dir=$D --server type=tcp,port=2321
+///  --ctrl type=tcp,port=2322 --flags not-need-init,startup-clear &`
+/// then `NUCLEUS_SWTPM_ADDR=127.0.0.1:2321 cargo nextest run -p nucleus-node
+/// --run-ignored only an_eval_cell_whose_launch_the_nodes_tpm_quoted_is_prepared`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a running swtpm at NUCLEUS_SWTPM_ADDR, or NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE"]
+async fn an_eval_cell_whose_launch_the_nodes_tpm_quoted_is_prepared() {
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let mut st = state(&dir);
+    let tpm_dir = dir.path().join("tpm-node");
+    std::fs::create_dir_all(&tpm_dir).unwrap();
+    let source = std::sync::Arc::new(crate::node_evidence::tpm_node_for_tests(
+        &tpm_dir,
+        [0x5e; 32],
+    ));
+    st.identity_manager = Some(
+        crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
+            .unwrap()
+            .with_launch_rooting(source.launch_rooting()),
+    );
+    st.node_platform = source;
     let _ready = prepare_profiled(&st, dir.path(), eval_cell_label())
         .await
-        .expect("an eval cell whose launch verifies boots");
+        .expect("an eval cell whose launch the node's TPM quoted boots");
 }

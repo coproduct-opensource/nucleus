@@ -10,7 +10,12 @@ use super::{NODE_ENV_PATH, StagedFile, Tier2Host, land_staged, stage_files};
 /// Variables an earlier `nucleus setup` wrote into [`NODE_ENV_PATH`] that
 /// nothing reads any more. One list, read by the writer's test, the Tier 2
 /// upgrade ([`scrub_retired_node_env`]) and the Apple host's own env file.
-pub(crate) const RETIRED_NODE_ENV_KEYS: &[&str] = &["NUCLEUS_NODE_AUTH_SECRET"];
+pub(crate) const RETIRED_NODE_ENV_KEYS: &[&str] = &[
+    "NUCLEUS_NODE_AUTH_SECRET",
+    // #2446 step 3: the node refuses to start with either.
+    "NUCLEUS_NODE_PROXY_AUTH_SECRET",
+    "NUCLEUS_NODE_PROXY_APPROVAL_SECRET",
+];
 
 /// `body` with every assignment of a [`RETIRED_NODE_ENV_KEYS`] key removed and
 /// every other byte kept — order, comments, blank lines, line endings, a last

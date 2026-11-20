@@ -25,8 +25,11 @@
 //!   uid comes from the admitted launch plan ([`crate::workload::WorkloadUid`]),
 //!   never from configuration. "Could not read the credentials" is a refusal
 //!   (ADR 0007 A-2).
-//! - **No secret.** The workload's environment carries no proxy credential; it
-//!   authenticates by being that uid on this socket.
+//! - **Process identity plus request proof when enabled.** The workload's
+//!   environment carries no proxy credential. Proof-enabled pods additionally
+//!   require a fresh DPoP proof from a runtime-provisioned, lease-bounded key;
+//!   the workload reads its private copy from its workspace. Kernel UID
+//!   admission remains mandatory and proof verification does not widen routes.
 //! - **The same decision.** The door binds each route to the handler the main
 //!   listener binds to the same path, under the same `auth_middleware` and the
 //!   same fail-closed panic layer. The handlers are where `http_kernel_decide`,

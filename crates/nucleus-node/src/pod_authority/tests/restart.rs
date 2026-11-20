@@ -219,3 +219,75 @@ async fn a_record_is_written_whole_and_owner_read_only() {
         assert_eq!(mode & 0o777, 0o400);
     }
 }
+
+/// What this node's startup does with the authority before it serves, for the
+/// Firecracker driver: restore every record, then settle the pods the previous
+/// life left registered (none of them runs in this one).
+async fn start(auth: &PodAuthority) -> usize {
+    auth.restore_from_disk().await;
+    auth.release_previous_life().await
+}
+
+/// A node killed with its pods registered (SIGKILL, a crash, a drain past its
+/// deadline) leaves their records. The next start settles them: each child slot
+/// and allocation returns to its ledger, a pod that ran is charged its whole
+/// allocation, and every record is removed, children before parents.
+#[tokio::test]
+async fn a_killed_nodes_pods_are_settled_at_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let ext_root = ephemeral_key().unwrap();
+    let chain = chain_caller(&ext_root, 4);
+    let one_child = || {
+        let mut a = args();
+        a.cert_trust_anchors = vec![hex::encode(ext_root.public_key().as_ref())];
+        a.max_children_per_pod = 1;
+        authority(dir.path(), a)
+    };
+    let (parent, child, under_chain) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    {
+        let auth = one_child();
+        auth.admit_kept(&chain, &spec_with(lattice(1)), under_chain)
+            .await
+            .unwrap();
+        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
+            .await
+            .unwrap();
+        auth.admit_kept(&from_pod(parent), &spec_with(lattice(2)), child)
+            .await
+            .unwrap();
+        // Killed: nothing is released.
+    }
+    let auth = one_child();
+    assert_eq!(start(&auth).await, 3);
+    let (pods, external) = held_ledgers(&auth).await;
+    assert!(
+        pods.is_empty(),
+        "no pod of the previous life is registered: {pods:?}"
+    );
+    assert_eq!(
+        external,
+        vec![LedgerView {
+            max: 4_000_000,
+            consumed: 1_000_000,
+            allocated: 0,
+            live: 0
+        }],
+        "the chain's slot and allocation came back; the pod that ran is charged its $1"
+    );
+    for id in [parent, child, under_chain] {
+        assert!(
+            !auth.authority_path(id).exists(),
+            "{id}'s record is removed"
+        );
+    }
+    auth.admit_kept(&chain, &spec_with(lattice(3)), Uuid::new_v4())
+        .await
+        .expect("the one child slot and the $3 left admit the next pod");
+
+    // And the settlement is durable: a second start restores it, not the pods.
+    drop(auth);
+    let again = one_child();
+    again.restore_from_disk().await;
+    let (_, external) = held_ledgers(&again).await;
+    assert_eq!(external[0].consumed, 1_000_000);
+}

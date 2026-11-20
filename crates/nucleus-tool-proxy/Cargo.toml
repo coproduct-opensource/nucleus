@@ -30,6 +30,7 @@ remote-audit = ["dep:aws-sdk-s3", "dep:aws-config"]
 otel = ["dep:nucleus-otel-bootstrap", "dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
+nucleus-request-proof = { path = "../nucleus-request-proof" }
 nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0", features = ["async"] }
 nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 # Wire types only. The guest must NOT link nucleus-cred-broker: that crate holds
@@ -46,7 +47,7 @@ tower-http = { version = "0.7", features = ["catch-panic"] }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+nucleus-yaml = { path = "../nucleus-yaml" }
 thiserror = { workspace = true }
 # Truthful clearing of a contended authority slot, behind `--clearing`.
 nucleus-authority-exchange = { path = "../nucleus-authority-exchange", version = "1.0.0" }
@@ -89,6 +90,8 @@ portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto", "d
 nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+# Owner decisions: the one verifier that mints a SignedDecision (owner_decision.rs).
+nucleus-signed-decision = { path = "../nucleus-signed-decision" }
 # Sealed effect home (B5): the agent NET-EGRESS effect (`NetEffect::fetch`, the
 # real reqwest HTTP send) lives here behind the `_proof`-gated, PolicyEnforced
 # API. `net` pulls the reqwest HTTP stack into the sealed home; the tool-proxy
@@ -112,7 +115,7 @@ regex = { workspace = true }
 x509-parser = { workspace = true }
 
 # MCP server mode (optional)
-rmcp = { version = "2.2", features = ["server", "macros", "transport-io"], optional = true }
+rmcp = { version = "3.10", features = ["server", "macros", "transport-io"], optional = true }
 schemars = { version = "1", optional = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
@@ -126,12 +129,15 @@ tracing-opentelemetry = { workspace = true, optional = true }
 # Remote audit sink (optional, S3-compatible)
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
+nix = { version = "0.31", default-features = false, features = ["fs", "process", "user"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = "0.7"
 
 [dev-dependencies]
-nix = { version = "0.31", default-features = false, features = ["fs", "process"] }
+# The in-process replay ledger, so the request-proof adapters stay tested.
+nucleus-request-proof = { path = "../nucleus-request-proof", features = ["volatile-test-ledger"] }
 # Credential minting for the DLC admission provisioning tests (same rev as
 # portcullis's dlc-d pin).
 dlc-crypto = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }
@@ -157,6 +163,9 @@ portcullis-core = { path = "../portcullis-core", features = ["test-helpers"] }
 # Resolver v2 keeps this test-only feature out of the published binary's
 # dependency graph; the real `[dependencies]` entry above stays unchanged.
 nucleus-identity = { path = "../nucleus-identity", features = ["tpm-devid", "test-helpers"] }
+# PublishedJournal::fail_next_write_for_test, for the store's uncertain-write
+# latch test. Dev-only; the published binary's graph is unchanged.
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory", features = ["test-helpers"] }
 
 [lints]
 workspace = true

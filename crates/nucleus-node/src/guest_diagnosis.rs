@@ -37,7 +37,6 @@
 // The tests below still exercise `diagnose` on every platform.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -198,7 +197,7 @@ pub(crate) fn diagnose(console_path: &Path) -> Option<String> {
 /// exit ends the wait at once, with the exit status and the console diagnosis.
 #[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
 pub(crate) async fn wait_for_proxy_health(
-    addr: SocketAddr,
+    addr: impl Into<crate::signed_proxy::ProxyHealth>,
     console: &Path,
     vmm: &mut crate::vmm_process::VmmProcess,
 ) -> Result<(), ApiError> {
@@ -214,7 +213,7 @@ pub(crate) async fn wait_for_proxy_health(
             live_microvms(),
         )),
     };
-    wait_while_the_vmm_lives(addr, budget, vmm)
+    wait_while_the_vmm_lives(addr.into(), budget, vmm)
         .await
         .map_err(|e| {
             // The console the node already captured usually says exactly why.
@@ -287,7 +286,7 @@ impl std::fmt::Display for HealthProbe {
 /// `Child::wait` is cancel-safe, so losing the race to a healthy guest leaves the
 /// child exactly as it was for the caller's later `status`, `kill` and teardown.
 async fn wait_while_the_vmm_lives(
-    addr: SocketAddr,
+    addr: crate::signed_proxy::ProxyHealth,
     budget: Duration,
     vmm: &mut crate::vmm_process::VmmProcess,
 ) -> Result<(), ApiError> {
@@ -310,15 +309,19 @@ async fn wait_while_the_vmm_lives(
     }
 }
 
-async fn wait_for_proxy_health_within(addr: SocketAddr, budget: Duration) -> Result<(), ApiError> {
+async fn wait_for_proxy_health_within(
+    probe: crate::signed_proxy::ProxyHealth,
+    budget: Duration,
+) -> Result<(), ApiError> {
     let start = std::time::Instant::now();
-    let host = addr.ip();
+    let addr = probe.addr();
     let mut last = HealthProbe::NotAttempted;
     while start.elapsed() < budget {
         match tokio::net::TcpStream::connect(addr).await {
             Ok(mut stream) => {
-                let request =
-                    format!("GET /v1/health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+                let request = probe
+                    .request()
+                    .map_err(|_| ApiError::Driver("health request proof unavailable".into()))?;
                 if let Err(e) = stream.write_all(request.as_bytes()).await {
                     last = HealthProbe::WriteFailed(e.to_string());
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -475,7 +478,7 @@ mod tests {
 
     /// An address nothing listens on: what the node's probe met for thirty
     /// seconds in #2904, after the guest had died.
-    async fn refused_addr() -> SocketAddr {
+    async fn refused_addr() -> std::net::SocketAddr {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");

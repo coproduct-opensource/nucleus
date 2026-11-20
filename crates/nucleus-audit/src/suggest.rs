@@ -102,11 +102,26 @@ pub fn suggest_profile(report: &ScanReport) -> ProfileSpec {
         "Auto-generated minimal profile matching observed capabilities.".to_string()
     };
 
+    // Consent is explicit: every operation the suggestion permits and does not
+    // obligate is declared autonomous, by name.
+    let autonomous = caps
+        .to_lattice()
+        .permitted_operations()
+        .into_iter()
+        .filter(|op| {
+            !obligations
+                .iter()
+                .any(|o| portcullis::Operation::from(o) == *op)
+        })
+        .map(ObligationSpec::from_operation)
+        .collect();
+
     ProfileSpec {
         name,
         description: Some(description),
         capabilities: caps,
         obligations,
+        autonomous,
         paths: Some(paths),
         budget: Some(BudgetSpec::default()),
         time: Some(TimeSpec {
@@ -216,7 +231,7 @@ pub fn format_suggestion(profile: &ProfileSpec, findings: &[Finding]) -> String 
     out.push_str("#\n\n");
 
     // Serialize the profile
-    let yaml = serde_yaml::to_string(profile).unwrap_or_else(|_| "# error serializing".into());
+    let yaml = nucleus_yaml::to_string(profile).unwrap_or_else(|_| "# error serializing".into());
     out.push_str(&yaml);
     out
 }

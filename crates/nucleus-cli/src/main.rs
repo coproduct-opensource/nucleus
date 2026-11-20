@@ -29,6 +29,7 @@ mod config;
 mod constants;
 mod doctor;
 mod envelope;
+mod envelope_export;
 mod envelope_verify;
 mod federation;
 mod goal;
@@ -82,10 +83,15 @@ mod verify_attestation;
 mod workload_verification;
 mod workspace_scan;
 
+/// What `--version` prints: the release tag this binary was built for, else
+/// the Cargo version marked `+dev` (#3208).
+static VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| nucleus_spec::reported_version!().to_string());
+
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
 #[command(name = "nucleus", mut_args = |a| a.hide_env_values(true))]
-#[command(version, about, long_about = None)]
+#[command(version = VERSION.as_str(), about, long_about = None)]
 struct Cli {
     /// Configuration file path
     #[arg(short, long, env = "NUCLEUS_CONFIG")]
@@ -183,6 +189,9 @@ enum Commands {
     /// Verify a provenance bundle standalone
     EnvelopeVerify(envelope_verify::EnvelopeVerifyArgs),
 
+    /// Export a verified bundle as an in-toto / SLSA / Sigstore attestation
+    EnvelopeExport(envelope_export::EnvelopeExportArgs),
+
     /// Content-addressed bundle transfer over iroh-blobs (publish/fetch)
     Bundle(bundle::BundleArgs),
 
@@ -260,6 +269,7 @@ async fn main() -> Result<()> {
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
         Commands::Envelope(args) => envelope::execute(args),
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
+        Commands::EnvelopeExport(args) => envelope_export::execute(args),
         Commands::Bundle(args) => bundle::execute(args).await,
         Commands::Image(args) => image::execute(args),
         Commands::VerifyAttestation(args) => verify_attestation::execute(args),
@@ -271,3 +281,17 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod help_env_tests;
+
+#[cfg(test)]
+mod version_tests {
+    /// #3208: `--version` is the decided version (the release tag, else
+    /// the Cargo version marked `+dev`), never the bare workspace Cargo version every
+    /// release used to print.
+    #[test]
+    fn version_flag_is_the_decided_version_not_the_bare_cargo_version() {
+        let cmd = <super::Cli as clap::CommandFactory>::command();
+        let decided = nucleus_spec::reported_version!().to_string();
+        assert_eq!(cmd.get_version(), Some(decided.as_str()));
+        assert_ne!(cmd.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+}

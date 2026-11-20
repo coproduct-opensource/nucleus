@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_algebraic_gap_identity() {
-        let perms = PermissionLattice::default();
+        let perms = PermissionLattice::supervised();
         let config = WeakeningCostConfig::default();
         let result = algebraic_gap(&perms, &perms, &config);
         assert!(result.priced_gap.is_empty());

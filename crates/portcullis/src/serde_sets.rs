@@ -17,7 +17,7 @@ mod tests {
 
     #[test]
     fn policy_checksum_survives_fresh_set_seeds_and_reissued_provenance() {
-        let mut original = PermissionLattice::default();
+        let mut original = PermissionLattice::supervised();
         original.paths.allowed = ["/work/z", "/work/a", "/work/m"]
             .into_iter()
             .map(str::to_owned)

@@ -3,7 +3,10 @@
 //! Plus falsification tests (tampered edge, reorder, attacker-controlled
 //! JWKS) that pin the v1 security boundary.
 
-use nucleus_envelope::{BundleBuilder, TrustAnchor, VerifyBundleError, verify_bundle};
+use nucleus_envelope::{
+    Bundle, BundleBuilder, ENVELOPE_SCHEMA_VERSION, MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION,
+    TrustAnchor, VerifyBundleError, verify_bundle,
+};
 use nucleus_lineage::{
     CallSpiffeId, Ed25519Witness, EdgeKind, EdgeSigner, InMemorySink, InProcessWitness, Jwks,
     LineageEdge, LineageSink, LocalIssuer, MerkleConfig, MerkleSink, Proof, WitnessClient,
@@ -277,6 +280,111 @@ fn attacker_jwks_passes_self_check_but_fails_against_real_anchor() {
     assert!(
         matches!(err, VerifyBundleError::Chain { .. }),
         "expected chain failure (UnknownKid inside), got {err:?}"
+    );
+}
+
+/// #3318: one honest bundle, verified against the out-of-band anchor, then
+/// one forgery per structural check `verify_bundle` makes before and during
+/// the chain walk — each refused by the variant that names it. The honest
+/// bundle verifying first is what makes every refusal the check firing, not
+/// a verifier that refuses everything.
+#[test]
+fn verify_bundle_admits_the_anchored_bundle_and_refuses_each_forgery() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let honest = BundleBuilder::new(pod())
+        .payload(serde_json::json!({"summary": "ok"}))
+        .sink(&sink)
+        .jwks(jwks)
+        .require_signed()
+        .build()
+        .unwrap();
+    let anchor = trusted_anchor(&issuer);
+    let report = verify_bundle(&honest, &anchor).expect("the honest bundle verifies");
+    assert_eq!(report.edge_count, 3);
+    assert!(!report.trust_mode_self_check_only);
+
+    let forge = |edit: &dyn Fn(&mut Bundle)| {
+        let mut forged = honest.clone();
+        edit(&mut forged);
+        verify_bundle(&forged, &anchor).expect_err("a forgery must not verify")
+    };
+
+    let err = forge(&|b: &mut Bundle| b.envelope.meta.schema_version = ENVELOPE_SCHEMA_VERSION + 1);
+    assert!(
+        matches!(err, VerifyBundleError::UnsupportedSchema { .. }),
+        "{err:?}"
+    );
+
+    let err = forge(&|b: &mut Bundle| {
+        b.envelope.meta.schema_version = MIN_SUPPORTED_ENVELOPE_SCHEMA_VERSION - 1
+    });
+    assert!(
+        matches!(err, VerifyBundleError::SchemaTooOld { .. }),
+        "{err:?}"
+    );
+
+    // A tool-call id claimed as the session: not a pod.
+    let err = forge(&|b: &mut Bundle| {
+        b.envelope.session_root = pod().derive_tool("Read", Some(b"input bytes")).unwrap()
+    });
+    assert!(
+        matches!(err, VerifyBundleError::SessionRootNotPod { .. }),
+        "{err:?}"
+    );
+
+    // Every edge dropped: an empty envelope authenticates nothing.
+    let err = forge(&|b: &mut Bundle| b.envelope.edges.clear());
+    assert!(matches!(err, VerifyBundleError::EmptyEnvelope), "{err:?}");
+
+    // The pod-admit head dropped: the chain starts at a tool call.
+    let err = forge(&|b: &mut Bundle| {
+        b.envelope.edges.remove(0);
+    });
+    assert!(matches!(err, VerifyBundleError::BadHead { .. }), "{err:?}");
+
+    // A parent from another pod's lineage grafted onto a session edge.
+    let foreign = CallSpiffeId::pod("prod.example.com", "agents", "other").unwrap();
+    let err = forge(&|b: &mut Bundle| b.envelope.edges[2].parents.push(foreign.clone()));
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::OutsideRoot {
+                index: 2,
+                endpoint: "parent",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+
+    // An edge's content edited after signing.
+    let err = forge(&|b: &mut Bundle| {
+        b.envelope.edges[1].child = pod().derive_tool("Bash", Some(b"different")).unwrap()
+    });
+    assert!(
+        matches!(err, VerifyBundleError::Chain { index: 1, .. }),
+        "{err:?}"
+    );
+
+    // The whole session re-signed by a key the anchor does not name.
+    let attacker = LocalIssuer::random().unwrap();
+    let attacker_sink = InMemorySink::new();
+    populate_session(&attacker_sink, &attacker);
+    let attacker_jwks: Jwks = serde_json::from_value(attacker.publish_jwks()).unwrap();
+    let resigned = BundleBuilder::new(pod())
+        .payload(serde_json::json!({"summary": "ok"}))
+        .sink(&attacker_sink)
+        .jwks(attacker_jwks)
+        .require_signed()
+        .build()
+        .unwrap();
+    let err = verify_bundle(&resigned, &anchor).expect_err("a foreign signer must not verify");
+    assert!(
+        matches!(err, VerifyBundleError::Chain { index: 0, .. }),
+        "{err:?}"
     );
 }
 

@@ -182,6 +182,7 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_CONCURRENT_CONNECTIONS: usize = 16;
 
+pub mod peer;
 #[cfg(test)]
 mod revocation_tests;
 
@@ -324,6 +325,8 @@ pub struct PodBrokerConfig {
     /// Per-call bounds on a streamed call (the operator's, or the defaults).
     pub stream_limits: crate::broker_stream::StreamLimits,
     pub staging_budget: crate::broker_stream::staging_budget::Budget,
+    /// Who may connect, by the kernel's account (`peer`).
+    pub peer: peer::PeerRule,
 }
 
 /// One pod's broker, owned, as the listener task needs it.
@@ -355,6 +358,8 @@ pub struct PodBroker {
     pub egress: Arc<crate::egress_meter::EgressMeter>,
     /// This pod's streamed-call caller, bounds and nonce memory.
     pub streams: crate::broker_stream::PodStreams,
+    /// Who may connect, checked before a byte of a frame is read.
+    pub peer: peer::PeerRule,
 }
 
 /// Everything the host needs to serve one pod, and nothing global.
@@ -1251,6 +1256,7 @@ pub async fn serve_broker(
         caller,
         egress,
         streams,
+        peer,
     } = pod;
     // Per listener, like the ledger below: the nonce memory must outlive every
     // connection, or a replayed open frame would find it empty.
@@ -1289,7 +1295,20 @@ pub async fn serve_broker(
                         let caller = Arc::clone(&caller);
                         let egress = Arc::clone(&egress);
                         let streams = Arc::clone(&streams);
+                        let peer = peer.clone();
                         connections.spawn(async move {
+                            // The kernel's account of the peer comes first: a
+                            // process this pod's rule does not admit is answered
+                            // as an unauthenticated frame is, and the node logs
+                            // why (#2906).
+                            if let Err(refused) = peer.admit(&stream, CONNECTION_TIMEOUT).await {
+                                tracing::warn!(%refused, "credential broker refused a peer");
+                                let mut stream = stream;
+                                let reply = format!("{}\n", refusal_line("not permitted"));
+                                let _ = stream.write_all(reply.as_bytes()).await;
+                                drop(permit);
+                                return;
+                            }
                             serve_connection(
                                 stream,
                                 &BrokerServing {
@@ -1391,6 +1410,7 @@ impl BrokerListener {
             egress,
             stream_limits,
             staging_budget,
+            peer,
         } = pod;
         // The port is the inventory's, and the helper hands the socket to the
         // jailed uid. Without that handover the node binds, logs "started
@@ -1459,6 +1479,7 @@ impl BrokerListener {
                         stream_limits,
                         staging_budget,
                     ),
+                    peer,
                 },
                 async {
                     let _ = rx.await;
@@ -1515,7 +1536,14 @@ impl BrokerListener {
             .is_err()
         {
             self.task.abort();
-            let _ = (&mut self.task).await;
+            // The abort lands at the task's next await; a task stuck in a
+            // synchronous call must not hold teardown here either.
+            crate::teardown_bound::join(
+                "credential broker after abort",
+                &mut self.task,
+                Duration::from_secs(2),
+            )
+            .await;
             ShutdownOutcome::Aborted
         } else {
             ShutdownOutcome::Stopped
@@ -1556,7 +1584,7 @@ mod listener_lifecycle_tests {
     const TEST_SECRET: &[u8] = b"lifecycle-test-capability";
 
     fn policy() -> Arc<PermissionLattice> {
-        Arc::new(PermissionLattice::default())
+        Arc::new(PermissionLattice::supervised())
     }
 
     fn store(target: &str, value: &str) -> Arc<PodCredentials> {
@@ -1615,6 +1643,7 @@ mod listener_lifecycle_tests {
                     crate::broker_stream::staging_budget::DEFAULT_BYTES,
                 )
                 .unwrap(),
+                peer: peer::PeerRule::VmmForwarded,
             },
             None,
         )
@@ -1648,6 +1677,7 @@ mod listener_lifecycle_tests {
                     crate::broker_stream::staging_budget::DEFAULT_BYTES,
                 )
                 .unwrap(),
+                peer: peer::PeerRule::VmmForwarded,
             },
             None,
         )
@@ -1689,6 +1719,7 @@ mod listener_lifecycle_tests {
                     crate::broker_stream::staging_budget::DEFAULT_BYTES,
                 )
                 .unwrap(),
+                peer: peer::PeerRule::VmmForwarded,
             },
             None,
         )
@@ -1822,6 +1853,7 @@ mod listener_tests {
                 caller,
                 egress: serving_tests::test_egress_arc(),
                 streams: serving_tests::test_streams(),
+                peer: peer::PeerRule::VmmForwarded,
             },
             async {
                 let _ = rx.await;
@@ -1903,6 +1935,7 @@ mod listener_tests {
                     dir.path().to_path_buf(),
                     "pod-1".to_string(),
                 ),
+                peer: peer::PeerRule::VmmForwarded,
             },
             async {
                 let _ = rx.await;

@@ -8,6 +8,9 @@ use nucleus_receipt::{Projection, RECEIPT_VERSION, Receipt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod namespace;
+pub use namespace::NamespaceSetup;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIdentity {
@@ -20,6 +23,8 @@ pub struct ArtifactIdentity {
 pub enum ExecutionSchema {
     #[serde(rename = "nucleus.execution.v1")]
     V1,
+    #[serde(rename = "nucleus.execution.v2")]
+    V2,
 }
 
 /// Taken from the host's spawned driver, never from pod labels.
@@ -46,6 +51,10 @@ pub struct ExecutionClaim {
     pub architecture: String,
     pub backend: Backend,
     pub uid_isolated: bool,
+    /// Namespace setup the runtime recorded for the launch (v2). A v1 body has
+    /// no such key and reads as `unrecorded`, never as `runtime`.
+    #[serde(default = "NamespaceSetup::not_recorded")]
+    pub namespace: NamespaceSetup,
     pub exit_code: Option<i32>,
     pub stdout_sha256: String,
     pub stderr_sha256: String,
@@ -61,6 +70,63 @@ pub struct ExecutionClaim {
     /// receipt from before this field reads as `Unattested`, never as more.
     #[serde(default = "NodePlatform::not_recorded")]
     pub node_platform: NodePlatform,
+    /// What the signing node declares about the isolation between this
+    /// workload and the node itself (Program C, C0). Absent on the wire for
+    /// [`SandboxTier::Driver`], so every receipt issued before the field
+    /// existed, and every receipt from a separating driver, is byte-identical
+    /// to before. Present only for [`SandboxTier::InsecureSharedUid`], which a
+    /// verifier predating the field refuses as an unknown field.
+    #[serde(
+        default = "SandboxTier::driver",
+        skip_serializing_if = "SandboxTier::is_driver"
+    )]
+    pub sandbox_tier: SandboxTier,
+}
+
+/// The issuer-kid prefix of every key a node in declared insecure mode signs
+/// with (Program C, C0). One definition: the node mints its kid from it and
+/// every verifier here refuses by it.
+///
+/// A bare-tier node's workloads run at the node's own uid and can read every
+/// file the node can, its signing keys included, so nothing such a node signs
+/// distinguishes the node from its workload. Its key is therefore one no
+/// verifier here accepts, whatever the claim it signed says.
+pub const INSECURE_SHARED_UID_KID_PREFIX: &str = "nucleus-insecure-shared-uid/";
+
+/// Whether `kid` names a declared-insecure node key.
+#[must_use]
+pub fn is_insecure_kid(kid: &str) -> bool {
+    kid.starts_with(INSECURE_SHARED_UID_KID_PREFIX)
+}
+
+/// The node's own declaration of the isolation between a workload and the
+/// node. Not a grant: [`SandboxTier::Driver`] says only that the node declared
+/// nothing weaker, and `backend` / `uid_isolated` still decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SandboxTier {
+    /// No declaration beyond the driver's: `backend` and `uid_isolated` state
+    /// the isolation.
+    #[serde(rename = "driver")]
+    Driver,
+    /// The node ran on the bare tier (local driver, `--allow-local-driver`):
+    /// the workload shared the node's uid and could read its signing keys.
+    #[serde(rename = "insecure-shared-uid")]
+    InsecureSharedUid,
+}
+
+impl SandboxTier {
+    /// What a receipt that carries no declaration reads as.
+    pub fn driver() -> Self {
+        Self::Driver
+    }
+
+    /// For `skip_serializing_if`: only the insecure declaration is written.
+    pub fn is_driver(&self) -> bool {
+        match self {
+            Self::Driver => true,
+            Self::InsecureSharedUid => false,
+        }
+    }
 }
 
 /// The node's platform evidence as a receipt records it. The digest names an
@@ -104,6 +170,11 @@ impl ExecutionClaim {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionExpectation<S, A, K> {
+    /// The setup the relying party requires, from its own record of what it
+    /// asked for. Omitted reads as `unrecorded`: no namespace requirement,
+    /// which only a v1 receipt satisfies (see `verify_execution`).
+    #[serde(default = "NamespaceSetup::not_recorded")]
+    pub namespace: NamespaceSetup,
     pub pod_id: S,
     pub source_commit: S,
     pub source_tree: S,
@@ -127,6 +198,7 @@ pub type RecordedExecution = ExecutionExpectation<String, BTreeMap<String, Strin
 impl RecordedExecution {
     pub fn as_expected(&self) -> ExpectedExecution<'_> {
         let Self {
+            namespace,
             pod_id,
             source_commit,
             source_tree,
@@ -142,6 +214,7 @@ impl RecordedExecution {
             issued_not_after_micros,
         } = self;
         ExpectedExecution {
+            namespace: *namespace,
             pod_id,
             source_commit,
             source_tree,
@@ -220,6 +293,10 @@ pub enum ExecutionError {
     InvalidWindow,
     OutsideWindow,
     NotProtectedMicroVm,
+    /// Evidence from a node in declared insecure mode (the bare tier), named
+    /// by its key or by its own declaration. Refused before anything else is
+    /// considered: that key is readable by the workload it describes.
+    InsecureSharedUid,
     InvalidDigest(&'static str),
     Artifact(&'static str),
     Log(&'static str),
@@ -259,13 +336,53 @@ impl std::fmt::Display for ExecutionError {
 
 impl std::error::Error for ExecutionError {}
 
+/// What a signed body says about namespace setup, against what the relying
+/// party independently expects. One decider, exhaustive over both, no `_` arm.
+///
+/// - `nucleus.execution.v2` must carry a recorded setup equal to a recorded
+///   expectation. `unrecorded` on either side refuses.
+/// - `nucleus.execution.v1` predates the field. It verifies, as it did before
+///   v2 existed, only for a relying party that states no namespace expectation
+///   (`unrecorded`, the value an expectation without the field reads as), and
+///   the verified claim then reports `unrecorded`: it says nothing about where
+///   the workload ran. Against any recorded expectation, `runtime` included,
+///   it is refused by schema, so absence is never read as runtime placement.
+fn namespace_binding(
+    schema: ExecutionSchema,
+    signed: NamespaceSetup,
+    expected: NamespaceSetup,
+) -> Result<(), ExecutionError> {
+    let recorded = |setup: NamespaceSetup| match setup {
+        NamespaceSetup::Unrecorded {} => false,
+        NamespaceSetup::Runtime {}
+        | NamespaceSetup::PrivateNetwork {}
+        | NamespaceSetup::PrivateUserNetwork {
+            outer_uid: _,
+            inner_uid: _,
+            loopback: _,
+        } => true,
+    };
+    match (schema, recorded(expected)) {
+        (ExecutionSchema::V1, false) if !recorded(signed) => Ok(()),
+        (ExecutionSchema::V1, false) => Err(ExecutionError::Binding("namespace")),
+        (ExecutionSchema::V1, true) => Err(ExecutionError::Binding("schema")),
+        (ExecutionSchema::V2, false) => Err(ExecutionError::Binding("namespace")),
+        (ExecutionSchema::V2, true) if signed == expected => Ok(()),
+        (ExecutionSchema::V2, true) => Err(ExecutionError::Binding("namespace")),
+    }
+}
+
 /// Authenticate first, then require exact run and actual protected microVM
 /// execution. This does not turn an observed exit into a complete build verdict.
+///
+/// Order after authentication: the sandbox tier, then the schema and namespace
+/// binding (`namespace_binding`), then the remaining field bindings.
 pub fn verify_execution(
     receipt: &Receipt,
     expected: &ExpectedExecution<'_>,
 ) -> Result<VerifiedExecution, ExecutionError> {
     let ExpectedExecution {
+        namespace: expected_namespace,
         pod_id,
         source_commit,
         source_tree,
@@ -282,6 +399,11 @@ pub fn verify_execution(
     } = expected;
     if issued_not_before_micros > issued_not_after_micros {
         return Err(ExecutionError::InvalidWindow);
+    }
+    // By name, first: a pinned insecure key verifies whatever its holder (any
+    // workload on that node) signed, so no later check could mean anything.
+    if is_insecure_kid(issuer_kid) || is_insecure_kid(&receipt.session.issuer_kid) {
+        return Err(ExecutionError::InsecureSharedUid);
     }
     if receipt.version != RECEIPT_VERSION {
         return Err(ExecutionError::Authentication("envelope version".into()));
@@ -325,7 +447,7 @@ pub fn verify_execution(
     // Every field must be considered here when the wire body grows. Exit is
     // observed data, deliberately not a condition for authenticating a failure.
     let ExecutionClaim {
-        schema: ExecutionSchema::V1,
+        schema,
         pod_id: actual_pod,
         source_commit: actual_source_commit,
         source_tree: actual_source_tree,
@@ -334,6 +456,7 @@ pub fn verify_execution(
         architecture: actual_arch,
         backend,
         uid_isolated,
+        namespace,
         exit_code: _,
         stdout_sha256,
         stderr_sha256,
@@ -342,7 +465,15 @@ pub fn verify_execution(
         environment_complete_sha256,
         artifacts,
         node_platform,
+        sandbox_tier,
     } = &claim;
+    // The tier is checked first: a shared-UID run is refused for what it is,
+    // whatever schema or namespace it claims.
+    match sandbox_tier {
+        SandboxTier::Driver => {}
+        SandboxTier::InsecureSharedUid => return Err(ExecutionError::InsecureSharedUid),
+    }
+    namespace_binding(*schema, *namespace, *expected_namespace)?;
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),
         ("program_digest", actual_program.as_str(), *program_digest),

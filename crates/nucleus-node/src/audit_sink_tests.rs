@@ -5,7 +5,7 @@ use super::*;
 
 fn spec(sink: &str) -> PodSpec {
     serde_json::from_str(&format!(
-        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"audit_sink":{sink}}}}}"#
+        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"audit_sink":{sink}}}}}"#
     ))
     .expect("test spec parses")
 }

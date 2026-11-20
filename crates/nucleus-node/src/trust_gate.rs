@@ -47,6 +47,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::insecure_mode::EvidenceTier;
 use crate::keys::{
     NodeKeyCustody, generate_signing_key, load_or_create_signing_key,
     load_or_create_task_issuer_signing_key,
@@ -85,6 +86,11 @@ pub struct TrustGateConfig {
     /// into a pod (as `NUCLEUS_TASK_TOKEN_ISSUER`); the private key never leaves
     /// the node.
     pub task_issuer_signing_key: Arc<SigningKey>,
+    /// Which signing domain `executor_signing_key` and `executor_id` are
+    /// (Program C, C0). Under [`EvidenceTier::InsecureSharedUid`] they are
+    /// the node's insecure evidence key and its insecure kid, never the
+    /// executor key: nothing this node signs is evidence a verifier accepts.
+    pub tier: EvidenceTier,
 }
 
 impl Default for TrustGateConfig {
@@ -95,6 +101,7 @@ impl Default for TrustGateConfig {
             executor_signing_key: Arc::new(generate_signing_key()),
             executor_id: format!("nucleus-executor/{}", uuid_hex()),
             task_issuer_signing_key: Arc::new(generate_signing_key()),
+            tier: EvidenceTier::Separated,
         }
     }
 }
@@ -132,7 +139,33 @@ impl TrustGateConfig {
     /// # Errors
     /// The executor or task-issuer key cannot be unsealed or sealed
     /// (`keys::load_or_create_role_key`).
-    pub fn from_env(state_dir: &Path, custody: &NodeKeyCustody) -> Result<Self, String> {
+    pub fn from_env(
+        state_dir: &Path,
+        custody: &NodeKeyCustody,
+        tier: EvidenceTier,
+    ) -> Result<Self, String> {
+        match tier {
+            EvidenceTier::Separated => Self::separated_from_env(state_dir, custody),
+            // The executor key is never created, and no trust-API variable is
+            // read: a node in insecure mode refuses to start with any of them
+            // set (`insecure_mode::refuse_trusted_authorities`).
+            EvidenceTier::InsecureSharedUid => {
+                let key = crate::keys::load_or_create_insecure_evidence_key(state_dir);
+                Ok(Self {
+                    trust_api_url: String::new(),
+                    receipt_secret: None,
+                    executor_id: crate::insecure_mode::insecure_kid(&key),
+                    executor_signing_key: Arc::new(key),
+                    task_issuer_signing_key: Arc::new(load_or_create_task_issuer_signing_key(
+                        state_dir, custody,
+                    )?),
+                    tier,
+                })
+            }
+        }
+    }
+
+    fn separated_from_env(state_dir: &Path, custody: &NodeKeyCustody) -> Result<Self, String> {
         let receipt_secret = std::env::var("TRUST_RECEIPT_SECRET")
             .ok()
             .and_then(|s| base64::prelude::BASE64_STANDARD.decode(&s).ok())
@@ -153,6 +186,7 @@ impl TrustGateConfig {
             executor_signing_key: Arc::new(executor_signing_key),
             executor_id,
             task_issuer_signing_key: Arc::new(task_issuer_signing_key),
+            tier: EvidenceTier::Separated,
         })
     }
 
@@ -235,11 +269,11 @@ pub use portcullis::art12_record::{
 /// honest signature over a possibly dishonest input, which reads exactly like a
 /// trustworthy one.
 ///
-/// When the pod also reported a head, both are carried. They can legitimately
-/// differ in ONE direction: the pod ships each record before appending it
-/// locally, so a pod that dies mid-write leaves the host holding one MORE than
-/// the pod kept. The other direction — the pod claiming more records than the
-/// host received — means records were made and never witnessed, and that is the
+/// When the pod also reported a head, both are carried. The pod ships each
+/// record only after sealing and writing it locally (#3392), so the host holds
+/// a prefix of the pod's log. The host holding MORE than the pod reported is
+/// something no honest pod produces. The pod claiming more records than the
+/// host received means records were made and never witnessed, and that is the
 /// finding this field exists to surface rather than reconcile.
 ///
 /// Falls back to the pod-reported head when the host observed nothing, so a
@@ -1334,8 +1368,12 @@ mod tests {
     #[test]
     fn test_from_env_provisions_role_separated_task_issuer_key() {
         let dir = tempfile::tempdir().unwrap();
-        let config =
-            TrustGateConfig::from_env(dir.path(), &crate::pod_authority::NO_TPM.node_keys).unwrap();
+        let config = TrustGateConfig::from_env(
+            dir.path(),
+            &crate::pod_authority::NO_TPM.node_keys,
+            EvidenceTier::Separated,
+        )
+        .unwrap();
         assert_ne!(
             config.executor_signing_key.verifying_key().as_bytes(),
             config.task_issuer_signing_key.verifying_key().as_bytes(),

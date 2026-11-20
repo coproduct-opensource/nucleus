@@ -30,7 +30,7 @@
 
 #![cfg(feature = "crypto")]
 
-use portcullis::flow_graph::FlowGraph;
+use portcullis::flow_graph::{ActionParents, FlowGraph};
 use portcullis::kernel::Kernel;
 use portcullis::token_sign;
 use portcullis::PermissionLattice;
@@ -148,9 +148,39 @@ fn graph_verdicts_match_the_extracted_decision_pointwise() {
     let mut oracle_divergence_seen = false;
 
     for op in Operation::ALL {
-        let v_token = g_token.insert_action(op, &[src_t], NOW).unwrap().verdict;
-        let v_strict = g_strict.insert_action(op, &[src_s], NOW).unwrap().verdict;
-        let v_released = g_released.insert_action(op, &[src_r], NOW).unwrap().verdict;
+        let v_token = g_token
+            .insert_action(
+                op,
+                ActionParents {
+                    control: &[],
+                    data: &[src_t],
+                },
+                NOW,
+            )
+            .unwrap()
+            .verdict;
+        let v_strict = g_strict
+            .insert_action(
+                op,
+                ActionParents {
+                    control: &[],
+                    data: &[src_s],
+                },
+                NOW,
+            )
+            .unwrap()
+            .verdict;
+        let v_released = g_released
+            .insert_action(
+                op,
+                ActionParents {
+                    control: &[],
+                    data: &[src_r],
+                },
+                NOW,
+            )
+            .unwrap()
+            .verdict;
 
         if v_strict != v_released {
             oracle_divergence_seen = true;
@@ -182,10 +212,24 @@ fn graph_verdicts_match_the_extracted_decision_pointwise() {
     let (mut g2_token, t2) = graph_with_secret_source();
     release(&mut g2_token, t2, vec![Operation::WebFetch]);
     let strict_fetch = g2_strict
-        .insert_action(Operation::WebFetch, &[s2], NOW)
+        .insert_action(
+            Operation::WebFetch,
+            ActionParents {
+                control: &[],
+                data: &[s2],
+            },
+            NOW,
+        )
         .unwrap();
     let token_fetch = g2_token
-        .insert_action(Operation::WebFetch, &[t2], NOW)
+        .insert_action(
+            Operation::WebFetch,
+            ActionParents {
+                control: &[],
+                data: &[t2],
+            },
+            NOW,
+        )
         .unwrap();
     assert_ne!(
         strict_fetch.verdict, token_fetch.verdict,
@@ -203,7 +247,16 @@ fn stored_labels_and_decision_labels_stay_strict() {
     let (mut g, src) = graph_with_secret_source();
     release(&mut g, src, vec![Operation::WriteFiles]);
 
-    let decision = g.insert_action(Operation::WriteFiles, &[src], NOW).unwrap();
+    let decision = g
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[src],
+            },
+            NOW,
+        )
+        .unwrap();
 
     // The action node's stored label is the strict join — Secret.
     assert_eq!(

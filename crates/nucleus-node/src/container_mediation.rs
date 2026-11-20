@@ -75,18 +75,21 @@ pub(crate) fn pod_yaml(
     spec: &nucleus_spec::PodSpec,
     raw: Option<&str>,
 ) -> Result<String, crate::ApiError> {
-    let mut value: serde_yaml::Value = match raw {
-        Some(raw) => serde_yaml::from_str(raw),
-        None => serde_yaml::to_value(spec),
-    }
-    .map_err(crate::ApiError::Serde)?;
-    value["spec"]["work_dir"] = serde_yaml::Value::String("/workspace".into());
-    serde_yaml::to_string(&value).map_err(crate::ApiError::Serde)
+    let Some(raw) = raw else {
+        let mut spec = spec.clone();
+        spec.spec.work_dir = "/workspace".into();
+        return nucleus_yaml::to_string(&spec).map_err(crate::ApiError::Serde);
+    };
+    let mut value: serde_json::Value =
+        nucleus_yaml::from_str(raw).map_err(crate::ApiError::Serde)?;
+    value["spec"]["work_dir"] = serde_json::Value::String("/workspace".into());
+    nucleus_yaml::to_string(&value).map_err(crate::ApiError::Serde)
 }
 
 /// The container's image and command for a pod, from node configuration and the env the node
-/// built. Nothing here reads the spec: its only influence is `NUCLEUS_TASK_CMD`, which reaches
-/// `env` through admitted `credentials.env` and is used only on an unmediated node.
+/// built. Nothing here reads the spec: its only influence is `NUCLEUS_TASK_CMD`, the one
+/// `credentials.env` key a container spec may carry (#2906), which `container_env` passes only on an
+/// unmediated node.
 pub(crate) fn launch(
     mediation: ContainerMediation,
     node_image: &str,
@@ -150,13 +153,8 @@ mod tests {
     #[test]
     fn the_default_container_pod_is_mediated_by_the_node_chosen_binary() {
         use clap::Parser;
-        let args = crate::Args::try_parse_from([
-            "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
-            "--driver=container",
-        ])
-        .expect("minimal container node");
+        let args = crate::Args::try_parse_from(["nucleus-node", "--driver=container"])
+            .expect("minimal container node");
         assert_eq!(args.container_mediation, ContainerMediation::ToolProxy);
 
         let task = [
@@ -179,8 +177,6 @@ mod tests {
         use clap::Parser;
         let args = crate::Args::try_parse_from([
             "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
             "--container-image=registry.local/mediator@sha256:00",
         ])
         .expect("args");
@@ -194,13 +190,9 @@ mod tests {
     #[test]
     fn unmediated_is_an_explicit_node_opt_in() {
         use clap::Parser;
-        let args = crate::Args::try_parse_from([
-            "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
-            "--container-mediation=unmediated",
-        ])
-        .expect("args");
+        let args =
+            crate::Args::try_parse_from(["nucleus-node", "--container-mediation=unmediated"])
+                .expect("args");
         assert_eq!(args.container_mediation, ContainerMediation::Unmediated);
         assert!(!args.container_mediation.runs_tool_proxy());
 
@@ -227,20 +219,21 @@ mod workspace_tests {
         let raw = r#"apiVersion: nucleus/v1
 kind: Pod
 spec:
+  policy: { type: profile, name: default }
   work_dir: /srv/workspaces/project
   task: run the standard tests
 "#;
         let spec =
-            serde_yaml::from_str(&raw.replace("  task: run the standard tests\n", "")).unwrap();
+            nucleus_yaml::from_str(&raw.replace("  task: run the standard tests\n", "")).unwrap();
         let translated = super::pod_yaml(&spec, Some(raw)).unwrap();
-        let value: serde_yaml::Value = serde_yaml::from_str(&translated).unwrap();
+        let value: serde_json::Value = nucleus_yaml::from_str(&translated).unwrap();
         assert_eq!(value["spec"]["work_dir"].as_str(), Some("/workspace"));
         assert_eq!(
             value["spec"]["task"].as_str(),
             Some("run the standard tests")
         );
         let typed: nucleus_spec::PodSpec =
-            serde_yaml::from_str(&super::pod_yaml(&spec, None).unwrap()).unwrap();
+            nucleus_yaml::from_str(&super::pod_yaml(&spec, None).unwrap()).unwrap();
         assert_eq!(typed.spec.work_dir, std::path::Path::new("/workspace"));
         assert_eq!(
             spec.spec.work_dir,

@@ -171,8 +171,8 @@ impl Capacity {
             ApiError::SupervisorUnavailable("node capacity lock unavailable".into())
         })?;
         if memory_mib > available.memory_mib || vcpus > available.vcpus {
-            return Err(ApiError::SupervisorUnavailable(format!(
-                "node capacity exhausted: requested {memory_mib} MiB including overhead and {vcpus} vCPUs; available {} MiB and {} vCPUs",
+            return Err(ApiError::CapacityExhausted(format!(
+                "requested {memory_mib} MiB including overhead and {vcpus} vCPUs; available {} MiB and {} vCPUs",
                 available.memory_mib, available.vcpus
             )));
         }
@@ -208,7 +208,7 @@ impl Drop for Reservation {
 mod tests {
     use super::*;
     fn spec() -> nucleus_spec::PodSpec {
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#).unwrap()
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#).unwrap()
     }
     #[test]
     fn cpu_quotas_preserve_whole_cpu_capacity() {
@@ -309,5 +309,22 @@ mod tests {
         assert!(capacity.reserve(&spec()).is_err());
         drop(held);
         assert!(capacity.reserve(&spec()).is_ok());
+    }
+    /// A full node has done nothing, so it says so definitely: a 4xx that a caller may record as
+    /// "not started" and release what it reserved, and that tells it when to try again. As a 503
+    /// it read as "outcome unknown", and a launch it refused held its budget until reconciled.
+    #[tokio::test]
+    async fn exhausted_capacity_is_a_definite_refusal_with_a_retry_hint() {
+        use axum::response::IntoResponse;
+        let capacity = Capacity::new(1280, 1);
+        let held = capacity.reserve(&spec()).unwrap();
+        let refused = capacity.reserve(&spec()).unwrap_err().into_response();
+        assert_eq!(refused.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            refused
+                .headers()
+                .contains_key(axum::http::header::RETRY_AFTER)
+        );
+        drop(held);
     }
 }

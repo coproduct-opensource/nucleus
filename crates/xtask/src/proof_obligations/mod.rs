@@ -191,7 +191,7 @@ fn tiers(root: &Path) -> Result<Vec<Tier>> {
         if !path.extension().is_some_and(|s| s == "yml" || s == "yaml") {
             continue;
         }
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&std::fs::read_to_string(&path)?)
+        let yaml: serde_json::Value = nucleus_yaml::from_str(&std::fs::read_to_string(&path)?)
             .with_context(|| path.display().to_string())?;
         if lean_action_builds::steps(&yaml)
             .with_context(|| path.display().to_string())?

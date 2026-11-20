@@ -16,7 +16,7 @@ workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+nucleus-yaml = { path = "../nucleus-yaml" }
 ureq = { workspace = true }
 nucleus-client = { path = "../nucleus-client" }
 # `exchange` drives the real RoundScheduler — real windows, real closer tasks,
@@ -46,7 +46,6 @@ nucleus-task-compiler = { path = "../nucleus-task-compiler" }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 ring = { workspace = true }
 sha2 = { workspace = true }
-hmac = { workspace = true }
 # `guest-transcript` reaches the node over mTLS, which ureq cannot present a
 # SPIFFE client identity for (see nucleus-cli's reqwest note).
 reqwest = { workspace = true, features = ["rustls-no-provider", "json", "blocking"] }

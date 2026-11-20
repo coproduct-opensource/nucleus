@@ -19,78 +19,32 @@
 //! anyone can compute, and "could not authenticate" must not read as
 //! "authenticated" (ADR 0007 A-1). A legacy record after a signed one is a
 //! downgrade and is refused.
+//!
+//! The per-record check is [`crate::signed_chain`]'s, shared with
+//! `verify-art12` (#3309).
 
 use std::path::Path;
 
-use ed25519_dalek::{Signature, VerifyingKey};
-use hmac::{Hmac, Mac, digest::KeyInit};
-use nucleus_spec::tool_proxy_audit::{AuditRecord, RecordForm};
-use sha2::Sha256;
+use nucleus_spec::tool_proxy_audit::AuditRecord;
 
 use crate::AuditError;
+pub(crate) use crate::signed_chain::legacy_secret;
+use crate::signed_chain::{Pins, Tally};
 
-/// What the caller trusts. Built only by [`Pins::parse`].
-#[derive(Debug)]
-pub(crate) struct Pins {
-    signers: Vec<VerifyingKey>,
-    tail_hash: Option<String>,
-    legacy_secret: Option<Vec<u8>>,
-}
+/// The flags that pin this log's signer, named when none was given.
+const HOW_TO_PIN: &str = "--signer-pubkey (the NUCLEUS-AUDIT-SIGNER key the proxy printed at \
+                          boot) or --tail-hash (the pod receipt's audit_tail_hash)";
 
-impl Pins {
-    /// # Errors
-    /// A signer that is not a 32-byte hex Ed25519 key.
-    pub(crate) fn parse(
-        signers: &[String],
-        tail_hash: Option<String>,
-        legacy_secret: Option<String>,
-    ) -> Result<Self, AuditError> {
-        let signers = signers
-            .iter()
-            .map(|hex| parse_key(hex).ok_or_else(|| bad_arg(format!("--signer-pubkey {hex:?}"))))
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            signers,
-            tail_hash,
-            legacy_secret: legacy_secret.map(String::into_bytes),
-        })
-    }
-}
-
-fn bad_arg(what: String) -> AuditError {
-    AuditError::Invalid {
-        line: 0,
-        message: format!("{what} is not a 32-byte Ed25519 public key in hex"),
-    }
-}
-
-fn parse_key(hex_key: &str) -> Option<VerifyingKey> {
-    let bytes: [u8; 32] = hex::decode(hex_key.trim()).ok()?.try_into().ok()?;
-    VerifyingKey::from_bytes(&bytes).ok()
-}
-
-/// The legacy secret, from the first source given. `None` when none was; an
-/// empty FILE is an error, as it always was. An empty `--secret` comes back as
-/// given and is refused when a legacy record needs it, by name.
+/// What the caller trusts for this log.
 ///
 /// # Errors
-/// An unreadable or empty secret file.
-pub(crate) fn legacy_secret(
-    secret: Option<&str>,
-    secret_file: Option<&Path>,
-    auth_secret: Option<&str>,
-) -> Result<Option<String>, AuditError> {
-    if let Some(s) = secret {
-        return Ok(Some(s.to_string()));
-    }
-    if let Some(path) = secret_file {
-        let s = std::fs::read_to_string(path)?.trim().to_string();
-        if s.is_empty() {
-            return Err(AuditError::MissingSecret);
-        }
-        return Ok(Some(s));
-    }
-    Ok(auth_secret.map(str::to_string))
+/// A signer that is not a 32-byte hex Ed25519 key.
+pub(crate) fn pins(
+    signers: &[String],
+    tail_hash: Option<String>,
+    legacy_secret: Option<String>,
+) -> Result<Pins, AuditError> {
+    Pins::parse(signers, tail_hash, legacy_secret, HOW_TO_PIN)
 }
 
 /// What a passing run established.
@@ -130,12 +84,7 @@ impl Verified {
 pub(crate) fn verify_tool_proxy_log(path: &Path, pins: &Pins) -> Result<Verified, AuditError> {
     let mut lines = crate::record_lines::open(path)?;
     let mut prev_hash = String::new();
-    let mut out = Verified {
-        signed: 0,
-        legacy: 0,
-        signers: Vec::new(),
-        head: String::new(),
-    };
+    let mut tally = Tally::default();
 
     for item in &mut lines {
         let (line_no, line) = item?;
@@ -152,61 +101,7 @@ pub(crate) fn verify_tool_proxy_log(path: &Path, pins: &Pins) -> Result<Verified
         }
         let form = rec.form().map_err(|e| invalid(e.to_string()))?;
         let bytes = rec.signed_bytes().map_err(|e| invalid(e.to_string()))?;
-        match form {
-            RecordForm::LegacyMac => {
-                if out.signed > 0 {
-                    return Err(invalid(
-                        "a legacy shared-secret record after a signed one: a downgrade".into(),
-                    ));
-                }
-                let secret = match pins.legacy_secret.as_deref() {
-                    None => {
-                        return Err(AuditError::LegacyMacUnkeyed {
-                            line: line_no,
-                            why: "no legacy secret was given",
-                        });
-                    }
-                    Some(s) if s.iter().all(u8::is_ascii_whitespace) => {
-                        return Err(AuditError::LegacyMacUnkeyed {
-                            line: line_no,
-                            why: "the legacy secret given is empty",
-                        });
-                    }
-                    Some(s) => s,
-                };
-                let tag = hex::decode(&rec.signature)
-                    .map_err(|_| invalid("signature mismatch (not hex)".into()))?;
-                let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-                    .map_err(|_| invalid("unusable legacy secret".into()))?;
-                mac.update(&bytes);
-                mac.verify_slice(&tag)
-                    .map_err(|_| invalid("signature mismatch".into()))?;
-                out.legacy += 1;
-            }
-            RecordForm::Signed { signer } => {
-                let key = parse_key(signer)
-                    .ok_or_else(|| invalid(format!("signer {signer:?} is not an Ed25519 key")))?;
-                if pins.signers.is_empty() && pins.tail_hash.is_none() {
-                    return Err(AuditError::UnpinnedSigner { line: line_no });
-                }
-                if !pins.signers.is_empty() && !pins.signers.contains(&key) {
-                    return Err(invalid(format!(
-                        "signed by {signer}, which is not a pinned --signer-pubkey"
-                    )));
-                }
-                let sig: [u8; 64] = hex::decode(&rec.signature)
-                    .ok()
-                    .and_then(|v| v.try_into().ok())
-                    .ok_or_else(|| invalid("signature is not 64 hex-encoded bytes".into()))?;
-                // STRICT (audit finding M-3): one signature must bind one key.
-                key.verify_strict(&bytes, &Signature::from_bytes(&sig))
-                    .map_err(|_| invalid(format!("signature does not verify under {signer}")))?;
-                if !out.signers.iter().any(|s| s == signer) {
-                    out.signers.push(signer.to_string());
-                }
-                out.signed += 1;
-            }
-        }
+        pins.check(line_no, form, &bytes, &rec.signature, &mut tally)?;
         let hash = rec.chain_hash().map_err(|e| invalid(e.to_string()))?;
         if hash != rec.hash {
             return Err(invalid("hash mismatch".into()));
@@ -214,27 +109,23 @@ pub(crate) fn verify_tool_proxy_log(path: &Path, pins: &Pins) -> Result<Verified
         prev_hash = rec.hash;
     }
 
-    lines.finish(out.signed + out.legacy)?;
-    if let Some(pinned) = pins.tail_hash.as_deref()
-        && pinned.trim() != prev_hash
-    {
-        return Err(AuditError::Invalid {
-            line: 0,
-            message: format!(
-                "the receipt pins chain head {pinned} but this log computes {prev_hash}: the log \
-                 is not the one the receipt was issued for"
-            ),
-        });
-    }
-    out.head = prev_hash;
-    Ok(out)
+    lines.finish(tally.signed + tally.legacy)?;
+    pins.check_head(&prev_hash, "the receipt")?;
+    Ok(Verified {
+        signed: tally.signed,
+        legacy: tally.legacy,
+        signers: tally.signers,
+        head: prev_hash,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+    use hmac::{Hmac, Mac, digest::KeyInit};
     use nucleus_spec::tool_proxy_audit::AuditEvent;
+    use sha2::Sha256;
 
     const SECRET: &[u8] = b"art12-regression-secret";
 
@@ -288,7 +179,7 @@ mod tests {
             .iter()
             .map(|k| hex::encode(k.verifying_key().to_bytes()))
             .collect();
-        Pins::parse(
+        super::pins(
             &keys,
             tail.map(str::to_string),
             secret.map(|s| String::from_utf8(s.to_vec()).unwrap()),
@@ -329,7 +220,10 @@ mod tests {
         assert!(err.to_string().contains("not a pinned"), "{err}");
         // Pinned by the receipt's head instead: the forger's record moved it.
         let err = verify_tool_proxy_log(&path, &pins(&[], Some(&first.hash), None)).unwrap_err();
-        assert!(err.to_string().contains("receipt pins chain head"), "{err}");
+        assert!(
+            err.to_string().contains("the receipt pins chain head"),
+            "{err}"
+        );
 
         let path = write(&dir, &[first]);
         assert_eq!(
@@ -383,7 +277,7 @@ mod tests {
         );
         let err = verify_tool_proxy_log(&path, &pins(&[], None, None)).unwrap_err();
         assert!(
-            matches!(err, AuditError::UnpinnedSigner { line: 1 }),
+            matches!(err, AuditError::UnpinnedSigner { line: 1, .. }),
             "{err}"
         );
     }

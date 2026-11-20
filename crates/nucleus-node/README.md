@@ -76,6 +76,30 @@ When the node is stopped by a signal:
   still alive after the kill, or its membership cannot be read, the node refuses
   to start and names it.
 
+**Give the node at least the drain deadline to stop.** A supervisor that sends
+SIGKILL before the drain finishes turns a SIGTERM into the SIGKILL case above.
+The drain can take up to 30 s (`DRAIN_DEADLINE` in `src/node_drain.rs`), and the
+node then has to exit, so allow at least 30 s plus a margin; 45 s is a
+reasonable setting. The defaults differ:
+
+| supervisor | default grace before SIGKILL | setting |
+|---|---|---|
+| systemd | 90 s (`TimeoutStopSec`) | enough as shipped |
+| `docker stop` / Compose | 10 s | `docker stop -t 45`, `docker run --stop-timeout 45`, Compose `stop_grace_period: 45s` |
+| Kubernetes | 30 s (`terminationGracePeriodSeconds`) | 45 or more; 30 leaves no time to exit |
+
+**Pod authority after an unclean stop.** Each admitted pod's authority record
+(`pods/<id>/authority.json`) holds its allocation and one of its parent's child
+slots until the pod is released. A node stopped without releasing its pods
+leaves those records. At the next start, after the driver's recovery has stopped
+the previous life's workloads, the node settles every record it restored,
+children before parents. Each pod is charged as its reaper would have charged
+it: the whole allocation, or, for a pod admitted under a binding with
+`settle = "metered"`, the spend the host metered into its ledger (checkpointed
+before each charge), at most the allocation. The settle mode is the one recorded
+when the pod was admitted. No pod is refunded as never started: the record is
+written before the spawn, and nothing durable says whether the VMM then ran.
+
 A parent-death signal does not replace the startup reclaim. The kernel clears
 `PR_SET_PDEATHSIG` when the jailer drops to `--uid`/`--gid`, so a jailed VMM never
 carries one.
@@ -213,6 +237,39 @@ node resolves the setting once at startup, from the driver:
   address space without naming one host gets no workload API, so it cannot be
   served its spec. It fails to launch, where before it booted without an
   identity.
+
+## Container pods: the host performs credentialed calls
+
+Since #2906 the container driver puts no credential value in a container. A
+container spec carrying any `credentials.env` key other than the unmediated
+task runner `NUCLEUS_TASK_CMD` is refused at create, by name: "credentials are
+delivered by the host broker; declare credentialed_egress upstreams instead".
+
+A mediated container pod reaches its upstreams the way a Firecracker pod does.
+The node binds the pod's credential broker on a Unix socket in the pod
+directory it already bind-mounts into that container (`/data/pod/broker/`),
+gives the container's tool-proxy the socket path and the pod's broker
+capability, and performs each admitted call itself with the credential from
+its own environment or minted per exchange (ADR 0010). Only the container's
+init process, the tool-proxy, may connect: the node creates the container with
+`init: false` and admits that pid alone, by the kernel's peer credentials.
+
+To migrate a container workload that used `credentials.env`:
+
+1. Put each upstream in the node's registry (`--upstreams` /
+   `NUCLEUS_UPSTREAMS`, see `src/upstreams.rs`), with its credential as
+   `credential.env.var` (a variable in the NODE's environment) or `federated`.
+2. Declare the upstreams in the pod spec's `credentialed_egress` (or run the
+   agent with `nucleus run --egress NAME`), and drop `credentials.env`.
+3. Point the workload at the loopback URL `nucleus-egress-http` gives it, or
+   have the orchestrator call `/v1/egress/{name}/{path}` on the pod's proxy.
+4. Use a tool-proxy image built from a tree with
+   `GuestCapability::ContainerBrokerSocket`. A labelled image that predates it is
+   refused by name for a pod with credentialed egress.
+
+The node must see container pids in its own pid namespace (run it on the host,
+or in a container with the host's pid namespace); otherwise every broker peer
+is refused. An unmediated container has no proxy and so no broker.
 
 ## Sealed rootfs syscall boundary
 

@@ -777,27 +777,17 @@ fn scrub_retired_env(path: &Path) -> Result<(), Refusal> {
     tracing::warn!(
         path = %path.display(),
         removed = %crate::provision::RETIRED_NODE_ENV_KEYS.join(", "),
-        "removed a retired secret from the host's node env file; nucleus-node no longer reads it"
+        "removed a retired secret from the host's node env file; nucleus-node refuses to start with it"
     );
     Ok(())
 }
 
-/// Per-install node secrets, replacing the fixed development values the
-/// image bakes in. Passed with `--env-file`, so they never appear in argv.
-/// No secret for the node's own API: it is mTLS-only (#3294).
+/// Per-install node settings, passed with `--env-file`. No shared secret: the
+/// node's own API is mTLS-only (#3294), and its pods' proxies authenticate it
+/// by transport and verify approvals against its Ed25519 key, so the two proxy
+/// secrets this file used to carry went with #2446 step 3.
 fn node_env(trust_domain: &str) -> String {
-    use rand::RngExt;
-    let secret = || {
-        let mut b = [0u8; 32];
-        rand::rng().fill(&mut b[..]);
-        hex::encode(b)
-    };
-    format!(
-        "NUCLEUS_NODE_PROXY_AUTH_SECRET={}\n\
-         NUCLEUS_NODE_PROXY_APPROVAL_SECRET={}\nNUCLEUS_IDENTITY_TRUST_DOMAIN={trust_domain}\n",
-        secret(),
-        secret()
-    )
+    format!("NUCLEUS_IDENTITY_TRUST_DOMAIN={trust_domain}\n")
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
@@ -1104,17 +1094,19 @@ mod tests {
         assert!(HostLock::acquire(dir.path(), Duration::from_secs(5)).is_ok());
     }
 
+    /// The env file is private and written once. It used to carry per-install
+    /// proxy secrets; #2446 step 3 retired them, so it now carries none, and
+    /// the image's baked development values are gone with them.
     #[test]
-    fn node_secrets_are_per_install_and_private() {
+    fn the_node_env_file_is_private_and_holds_no_secret() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("node.env");
         write_private(&path, node_env("nucleus.local").as_bytes()).expect("write");
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-        assert_ne!(node_env("x"), node_env("x"));
-        // The image's baked development value must never survive.
-        assert!(!node_env("x").contains("00000000000000000000"));
+        assert_eq!(node_env("x"), "NUCLEUS_IDENTITY_TRUST_DOMAIN=x\n");
+        assert!(!node_env("x").contains("SECRET"));
         assert!(
             write_private(&path, b"again").is_err(),
             "must not overwrite"
@@ -1122,7 +1114,8 @@ mod tests {
     }
 
     /// #3294, red on main: the host's env file carried the node API secret the
-    /// node no longer reads.
+    /// node no longer reads. #2446 step 3, red before: it carried both proxy
+    /// secrets, which the node now refuses by name.
     #[test]
     fn the_host_env_file_carries_no_retired_secret() {
         let body = node_env("nucleus.local");
@@ -1144,7 +1137,11 @@ mod tests {
             "{}OPERATOR_ADDED=1\r\nlast-line-unterminated",
             node_env("nucleus.local")
         );
-        let old = format!("NUCLEUS_NODE_AUTH_SECRET={}\n{kept}", "ab".repeat(32));
+        let old = format!(
+            "NUCLEUS_NODE_AUTH_SECRET={}\nNUCLEUS_NODE_PROXY_AUTH_SECRET={}\n{kept}",
+            "ab".repeat(32),
+            "cd".repeat(32)
+        );
         write_private(&cfg.env_file(), old.as_bytes()).unwrap();
 
         prepare_identity(&cfg).unwrap();

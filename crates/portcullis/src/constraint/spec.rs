@@ -44,7 +44,7 @@
 //! use std::fs;
 //!
 //! let yaml = fs::read_to_string("policy.yaml")?;
-//! let spec: PolicySpec = serde_yaml::from_str(&yaml)?;
+//! let spec: PolicySpec = nucleus_yaml::from_str(&yaml)?;
 //! let policy = spec.build()?;
 //! ```
 
@@ -210,7 +210,7 @@ impl From<CelError> for SpecError {
 impl PolicySpec {
     /// Parse a policy specification from YAML.
     pub fn from_yaml(yaml: &str) -> Result<Self, SpecError> {
-        serde_yaml::from_str(yaml).map_err(|e| SpecError::Yaml(e.to_string()))
+        nucleus_yaml::from_str(yaml).map_err(|e| SpecError::Yaml(e.to_string()))
     }
 
     /// Parse a policy specification from TOML.
@@ -255,7 +255,7 @@ impl PolicySpec {
 
     /// Serialize to YAML.
     pub fn to_yaml(&self) -> Result<String, SpecError> {
-        serde_yaml::to_string(self).map_err(|e| SpecError::Yaml(e.to_string()))
+        nucleus_yaml::to_string(self).map_err(|e| SpecError::Yaml(e.to_string()))
     }
 
     /// Serialize to TOML.

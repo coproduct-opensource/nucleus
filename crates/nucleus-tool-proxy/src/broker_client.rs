@@ -106,13 +106,46 @@ pub fn parse_reply(line: &str) -> BrokerOutcome {
 /// One type because they are one capability. Delivered together in a single
 /// one-shot reply, and read together, so a proxy cannot end up able to sign and
 /// unable to connect.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Capability {
     /// The HMAC key. Never logged.
     pub secret: String,
-    /// The vsock port the host broker listens on.
-    pub port: u32,
+    /// Where the host broker listens.
+    pub endpoint: Endpoint,
 }
+
+impl std::fmt::Debug for Capability {
+    /// The endpoint, never the key. The derive this replaces printed both.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Capability")
+            .field("secret", &"<redacted>")
+            .field("endpoint", &self.endpoint)
+            .finish()
+    }
+}
+
+/// Where the host broker listens for this pod.
+///
+/// Two transports, one protocol: a Firecracker guest dials the host over
+/// vsock; a container pod has no vsock, so the node binds the broker on a Unix
+/// socket in the pod directory it bind-mounts into exactly that container
+/// (#2906) and admits only the container's init process, by the kernel's peer
+/// credentials. The frames, the capability and the host's decision are the
+/// same on both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Endpoint {
+    /// `VMADDR_CID_HOST:port` (Firecracker).
+    Vsock(u32),
+    /// An absolute Unix socket path inside the pod (the container driver).
+    Unix(std::path::PathBuf),
+}
+
+/// A connection to the host broker, over either transport.
+pub trait BrokerConn:
+    tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static
+{
+}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static> BrokerConn for T {}
 
 /// Host CID for vsock. Always 2 in Firecracker.
 ///
@@ -289,15 +322,18 @@ pub fn stream_open_line(
 /// Open a connection to the host broker for a streamed call.
 ///
 /// # Errors
-/// The connection could not be made in time.
-#[cfg(target_os = "linux")]
-pub async fn dial(port: u32) -> std::io::Result<tokio_vsock::VsockStream> {
-    match tokio::time::timeout(
-        REQUEST_TIMEOUT,
-        tokio_vsock::VsockStream::connect(tokio_vsock::VsockAddr::new(VMADDR_CID_HOST, port)),
-    )
-    .await
-    {
+/// The connection could not be made in time, or the endpoint's transport does
+/// not exist on this platform.
+pub async fn dial(endpoint: &Endpoint) -> std::io::Result<Box<dyn BrokerConn>> {
+    let connect = async {
+        match endpoint {
+            Endpoint::Vsock(port) => dial_vsock(*port).await,
+            Endpoint::Unix(path) => tokio::net::UnixStream::connect(path)
+                .await
+                .map(|stream| Box::new(stream) as Box<dyn BrokerConn>),
+        }
+    };
+    match tokio::time::timeout(REQUEST_TIMEOUT, connect).await {
         Ok(r) => r,
         Err(_) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -306,13 +342,17 @@ pub async fn dial(port: u32) -> std::io::Result<tokio_vsock::VsockStream> {
     }
 }
 
-/// The non-Linux arm: no vsock, so no broker, and an error rather than a
-/// bypass, for the reason [`ask`]'s non-Linux arm gives.
-///
-/// # Errors
-/// Always.
+#[cfg(target_os = "linux")]
+async fn dial_vsock(port: u32) -> std::io::Result<Box<dyn BrokerConn>> {
+    tokio_vsock::VsockStream::connect(tokio_vsock::VsockAddr::new(VMADDR_CID_HOST, port))
+        .await
+        .map(|stream| Box::new(stream) as Box<dyn BrokerConn>)
+}
+
+/// The non-Linux arm: no vsock, so no vsock broker, and an error rather than
+/// a bypass, for the reason [`ask`]'s non-Linux arm gives.
 #[cfg(not(target_os = "linux"))]
-pub async fn dial(_port: u32) -> std::io::Result<tokio::net::UnixStream> {
+async fn dial_vsock(_port: u32) -> std::io::Result<Box<dyn BrokerConn>> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "vsock is Linux-only; there is no credential broker on this platform",

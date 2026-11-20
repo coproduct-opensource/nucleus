@@ -43,7 +43,10 @@
 //!   all allocate below the limit, raising the hard limit needs
 //!   `CAP_SYS_RESOURCE`, and a user namespace (where that capability would be
 //!   granted) is refused by [`TABLE`]. So the pinned exec happens exactly once.
-//! * `InetSocket`: `socket` and `socketpair` with `AF_INET` or `AF_INET6`.
+//! * `InetSocket`: `socket` and `socketpair` with `AF_INET`.
+//! * `Inet6Socket`: `socket` and `socketpair` with `AF_INET6`. One class per
+//!   family, so a pod whose declared egress is all IPv4 keeps `AF_INET` and
+//!   loses `AF_INET6`.
 //!
 //! The program is built in the PARENT, before fork (it allocates). The child's
 //! `pre_exec` hook only hands the finished instructions to `prctl`, which is
@@ -241,22 +244,24 @@ pub(crate) fn derived_rules(
                 rules.push(("execve", libc::SYS_execve, Rule::Deny));
                 rules.push(("execveat", libc::SYS_execveat, Rule::DenyUnlessArg0Is(fd)));
             }
-            // `web_fetch: never` and no declared egress: no internet socket.
+            // `web_fetch: never` and no family the pod declares egress in.
             // `socketpair` cannot make one today; listed so the family is
             // closed at both entry points, as `AF_VSOCK` is.
-            SyscallClass::InetSocket => {
-                for family in [libc::AF_INET, libc::AF_INET6] {
-                    rules.push(("socket", libc::SYS_socket, Rule::DenyWhenArg0Is(family)));
-                    rules.push((
-                        "socketpair",
-                        libc::SYS_socketpair,
-                        Rule::DenyWhenArg0Is(family),
-                    ));
-                }
-            }
+            SyscallClass::InetSocket => deny_family(&mut rules, libc::AF_INET),
+            SyscallClass::Inet6Socket => deny_family(&mut rules, libc::AF_INET6),
         }
     }
     Ok(rules)
+}
+
+/// Both entry points that can create a socket of `family`.
+fn deny_family(rules: &mut Vec<(&'static str, c_long, Rule)>, family: c_int) {
+    rules.push(("socket", libc::SYS_socket, Rule::DenyWhenArg0Is(family)));
+    rules.push((
+        "socketpair",
+        libc::SYS_socketpair,
+        Rule::DenyWhenArg0Is(family),
+    ));
 }
 
 /// `kexec_file_load`. The `libc` crate's aarch64 musl module (the guest's
@@ -588,12 +593,21 @@ mod tests {
     /// A derived policy from the two capability levels the rule reads, with
     /// no declared egress.
     fn policy(run_bash: CapabilityLevel, web_fetch: CapabilityLevel) -> SeccompPolicy {
+        policy_with(run_bash, web_fetch, portcullis::NetworkEgress::None)
+    }
+
+    /// The same, with the pod's declared egress named.
+    fn policy_with(
+        run_bash: CapabilityLevel,
+        web_fetch: CapabilityLevel,
+        egress: portcullis::NetworkEgress,
+    ) -> SeccompPolicy {
         let caps = portcullis::CapabilityLattice {
             run_bash,
             web_fetch,
             ..portcullis::CapabilityLattice::default()
         };
-        SeccompPolicy::from_capabilities(&caps, portcullis::NetworkEgress::None)
+        SeccompPolicy::from_capabilities(&caps, egress)
     }
 
     /// The policy that derives nothing: the denylist alone.
@@ -601,14 +615,17 @@ mod tests {
         policy(CapabilityLevel::Always, CapabilityLevel::Always)
     }
 
-    /// Every derived policy the two classes can make.
-    fn every_policy() -> [SeccompPolicy; 4] {
+    /// Every derived policy the three classes can make.
+    fn every_policy() -> [SeccompPolicy; 6] {
         use CapabilityLevel::{Always, Never};
+        use portcullis::NetworkEgress::Ipv4Only;
         [
             policy(Always, Always),
             policy(Never, Always),
             policy(Always, Never),
             policy(Never, Never),
+            policy_with(Always, Never, Ipv4Only),
+            policy_with(Never, Never, Ipv4Only),
         ]
     }
 
@@ -679,6 +696,30 @@ mod tests {
             verdict(&p, native(), libc::SYS_execve, 0),
             libc::SECCOMP_RET_ALLOW
         );
+    }
+
+    /// #2907: a pod whose declared egress is all IPv4 keeps `AF_INET` and is
+    /// denied `AF_INET6` at both entry points; `AF_VSOCK` stays denied and
+    /// `AF_UNIX` allowed.
+    #[test]
+    fn an_ipv4_only_policy_denies_the_inet6_family_alone() {
+        let p = derived(policy_with(
+            CapabilityLevel::Always,
+            CapabilityLevel::Never,
+            portcullis::NetworkEgress::Ipv4Only,
+        ));
+        let at = |f: c_int| u64::try_from(f).unwrap();
+        for nr in [libc::SYS_socket, libc::SYS_socketpair] {
+            assert_eq!(verdict(&p, native(), nr, at(libc::AF_INET6)), deny());
+            assert_eq!(verdict(&p, native(), nr, at(libc::AF_VSOCK)), deny());
+            for family in [libc::AF_INET, libc::AF_UNIX] {
+                assert_eq!(
+                    verdict(&p, native(), nr, at(family)),
+                    libc::SECCOMP_RET_ALLOW,
+                    "{nr}/{family}"
+                );
+            }
+        }
     }
 
     /// The union, never fewer: under every derived policy, every denylist

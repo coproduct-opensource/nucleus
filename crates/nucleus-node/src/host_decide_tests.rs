@@ -45,6 +45,7 @@ fn authority(dir: &Path) -> Arc<PodAuthority> {
         cert_trust_anchors: Vec::new(),
         max_children_per_pod: 64,
         upstreams: None,
+        upstreams_poll_secs: 0,
         federation_issuer: None,
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
@@ -56,7 +57,7 @@ fn authority(dir: &Path) -> Arc<PodAuthority> {
 
 fn spec_with(lattice: PermissionLattice) -> nucleus_spec::PodSpec {
     let mut spec: nucleus_spec::PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     spec.spec.policy = nucleus_spec::PolicySpec::Inline {
         lattice: Box::new(lattice),
@@ -278,7 +279,10 @@ fn no_run_bash() -> PermissionLattice {
 
 fn approval_gated() -> PermissionLattice {
     let mut p = PermissionLattice::permissive();
-    p.obligations.insert(Operation::GitCommit);
+    p.declare(
+        Operation::GitCommit,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     p
 }
 
@@ -1333,6 +1337,7 @@ async fn a_local_pod_under_the_nodes_own_dlc_is_decided_alike_on_both_sides() {
         cert_trust_anchors: Vec::new(),
         max_children_per_pod: 64,
         upstreams: None,
+        upstreams_poll_secs: 0,
         federation_issuer: None,
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,

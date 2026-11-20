@@ -21,6 +21,8 @@ mod auth;
 mod cache;
 mod reference;
 mod registry;
+#[cfg(test)]
+mod reserved_tests;
 mod source;
 #[cfg(test)]
 mod tests;
@@ -34,6 +36,7 @@ use nucleus_oci_rootfs::{
     Arch, BlobSource, ImportLimits, ImportRecord, OciArchive, PinnedReference, ReservedPath,
     ReservedPaths, Sha256Digest,
 };
+use nucleus_spec::guest_layout::{self, Reserved, ReservedKind};
 
 use cache::ImageCache;
 use reference::{PinnedImage, TaggedImage};
@@ -117,21 +120,34 @@ pub struct ResolveArgs {
     pub registry: RegistryOpts,
 }
 
-/// The guest paths the runtime owns, which no image layer may occupy.
+/// The guest paths the runtime owns, as an image import applies them.
 ///
-/// PROVISIONAL COPY: these are the paths `nucleus-guest-init` writes or execs
-/// (`POD_SPEC_PATH`, `PROXY_BIN`, `EGRESS_PROBE_BIN`, `GUEST_NET_SH`, `init=/init`).
-/// The table belongs with the guest layout it describes (`nucleus_spec::guest_layout`,
-/// not yet on main); when that lands this function becomes a call to it (G-1).
+/// Derived entry by entry from [`guest_layout::RESERVED`], the one table of
+/// guest-owned paths (ADR 0007 G-1, #3216): this function translates each
+/// entry's kind and holds no path of its own. The match has no fallthrough, so
+/// a new [`ReservedKind`] does not compile here until it is given a meaning
+/// (ADR 0007 B-3).
+///
+/// guest_layout's `Prefix` is a *string* prefix: one ending in `/` claims a
+/// directory's contents, one that does not (`/usr/local/bin/nucleus-`) claims
+/// every name that begins with it.
 fn reserved_guest_paths() -> Result<ReservedPaths> {
-    Ok(ReservedPaths::new([
-        ReservedPath::Exact(b"init".to_vec()),
-        ReservedPath::Exact(b"pod.yaml".to_vec()),
-        ReservedPath::Prefix(b"etc/nucleus".to_vec()),
-        ReservedPath::Exact(b"usr/local/bin/nucleus-tool-proxy".to_vec()),
-        ReservedPath::Exact(b"usr/local/bin/nucleus-egress-probe".to_vec()),
-        ReservedPath::Exact(b"usr/local/bin/guest-net.sh".to_vec()),
-    ])?)
+    Ok(ReservedPaths::new(guest_layout::RESERVED.iter().map(
+        |Reserved {
+             path,
+             kind,
+             why: _,
+             workload: _,
+         }| {
+            let bytes = path.as_bytes().to_vec();
+            match kind {
+                ReservedKind::Exact => ReservedPath::Exact(bytes),
+                ReservedKind::Prefix if path.ends_with('/') => ReservedPath::Prefix(bytes),
+                ReservedKind::Prefix => ReservedPath::NamePrefix(bytes),
+                ReservedKind::MustBeEmptyDir => ReservedPath::MustBeEmpty(bytes),
+            }
+        },
+    ))?)
 }
 
 fn host_arch() -> Result<Arch> {

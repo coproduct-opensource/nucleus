@@ -429,7 +429,10 @@ async fn a_get_with_a_body_is_refused() {
 async fn an_approval_for_a_get_cannot_be_spent_as_a_post_or_another_query() {
     let (base, hits) = remote().await;
     let mut gated = PermissionLattice::permissive();
-    gated.obligations.insert(portcullis::Operation::WebFetch);
+    gated.declare(
+        portcullis::Operation::WebFetch,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     let pod = declared(&base, gated);
     let approved = || {
         let mut req = advertise("git-upload-pack", "ask");

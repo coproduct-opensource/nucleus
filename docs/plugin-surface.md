@@ -60,7 +60,7 @@ clamps enforced isolation ≥ requested on every pod-create; `not_proven` makes 
 - **Seam:** `TreeWitness` (co-signs Signed Tree Heads over the Merkle lineage),
   `VerdictSink` / `AuditBackend` (where each kernel decision is recorded).
 - **Shipped:** `Ed25519Witness` (in-process); `Art12Sink` (EU AI Act Article 12
-  hash-chained + HMAC record-keeping); S3 audit sink.
+  hash-chained + Ed25519-signed record-keeping); S3 audit sink.
 - **Pluggable:** **external witnesses** (Rekor / Sigsum / C2SP `tlog-witness`) that
   lift trust off the operator to a witness quorum; SIEM sinks.
 

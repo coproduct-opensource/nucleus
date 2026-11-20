@@ -17,7 +17,8 @@ just vault              # serves the pre-built WASM and opens your browser
 cd crates/ctf-engine/dist && python3 -m http.server 8799   # → http://127.0.0.1:8799
 ```
 
-Hosted instance: **https://nucleus-ctf.fly.dev**
+There is no hosted instance; run it yourself as above, or run `ctf-server`
+(below) for the JSON/MCP API.
 
 ## Point an AI at it (the fun part)
 
@@ -33,8 +34,20 @@ GET  /api                      API docs   ·   GET /openapi.json
 /mcp                           MCP (streamable-http) for agent clients
 ```
 
+Run the API locally:
+
+```sh
+cargo run -p ctf-server                   # listens on :8080 (PORT overrides)
+curl http://localhost:8080/api/v1/levels
+```
+
+The pages that name the server's URL (`/api`, `/api/v1/prompt`,
+`/openapi.json`, `/.well-known/ai-plugin.json`) advertise
+`http://localhost:<PORT>` by default; set `CTF_PUBLIC_URL` to the URL your
+instance is reachable at if you expose it.
+
 `ctf-server` serves the built site from `/public` (a container path) — that path
-is for the Docker/Fly deployment, **not** local dev. For local play use `just
+is for the Docker image, **not** local dev. For local play use `just
 vault` (pre-built) or `trunk serve` (fresh, once the build below is fixed).
 
 ## Building from source

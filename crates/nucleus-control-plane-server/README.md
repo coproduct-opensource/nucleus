@@ -18,6 +18,7 @@ shared JSONL lineage sink. A `MockJobRunner` is registered under the name
 | `GET /v1/jobs/{job_id}` | job status |
 | `POST /v1/jobs/{job_id}/cancel` | cancel a job |
 | `GET /v1/jobs/{job_id}/bundle` | fetch the provenance bundle |
+| `GET /v1/jobs/{job_id}/attestation?format=…` | the bundle as an in-toto / SLSA / Sigstore attestation, platform-signed |
 | `GET /healthz` | liveness |
 
 ## gRPC API

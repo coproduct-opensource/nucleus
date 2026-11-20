@@ -17,7 +17,7 @@
 #![cfg(feature = "crypto")]
 
 use portcullis::exposure_core::{ifc_egress_verdict, EgressVerdict};
-use portcullis::flow_graph::FlowGraph;
+use portcullis::flow_graph::{ActionParents, FlowGraph};
 use portcullis::kernel::{DenyReason, Kernel};
 use portcullis::token_sign;
 use portcullis::{Operation, PermissionLattice};
@@ -361,7 +361,7 @@ proptest! {
         }
         // A few actions (no parents) exercise action nodes too; still no scopes.
         for &a in &acts {
-            let _ = g.insert_action(op_of(a), &[], 0);
+            let _ = g.insert_action(op_of(a), ActionParents { control: &[], data: &[] }, 0);
         }
         // Well under MAX_GRAPH_NODES, so nothing compacted.
 

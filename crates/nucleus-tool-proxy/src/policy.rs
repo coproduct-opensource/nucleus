@@ -254,7 +254,7 @@ pub async fn load_policy_file(path: &PathBuf) -> Result<PolicyConfig, PolicyErro
 
 /// Parse policy configuration from YAML string.
 pub fn parse_policy_yaml(yaml: &str) -> Result<PolicyConfig, PolicyError> {
-    serde_yaml::from_str(yaml).map_err(|e| PolicyError::Parse(e.to_string()))
+    nucleus_yaml::from_str(yaml).map_err(|e| PolicyError::Parse(e.to_string()))
 }
 
 /// Convert a preset name to a PermissionLattice.

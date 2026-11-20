@@ -5,7 +5,7 @@ use super::*;
 
 fn spec(eval_cell: bool, scratch: Option<&Path>) -> PodSpec {
     let mut spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"work_dir":"/work","image":{
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"work_dir":"/work","image":{
             "kernel_path":"/k","rootfs_path":"/r"}}}"#,
     )
     .expect("spec");

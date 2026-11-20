@@ -75,7 +75,7 @@ pub(crate) enum ApiError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serde error: {0}")]
-    Serde(#[from] serde_yaml::Error),
+    Serde(#[from] nucleus_yaml::Error),
     #[error("nucleus error: {0}")]
     Nucleus(#[from] NucleusError),
     #[error("auth error: {0}")]
@@ -231,11 +231,13 @@ impl ApiError {
             ApiError::Nucleus(NucleusError::IsolationNotConfigured)
             | ApiError::Nucleus(NucleusError::IsolationInsufficient { .. })
             | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. })
+            | ApiError::Nucleus(NucleusError::WorkloadNamespaceUnavailable { reason: _ })
             | ApiError::Nucleus(NucleusError::ChildSeparationUnavailable { .. })
             | ApiError::Nucleus(NucleusError::ChildSharesRuntimeUid { .. })
             | ApiError::Nucleus(NucleusError::UnsandboxedNotOptedIn { .. })
             | ApiError::Nucleus(NucleusError::LandlockUnavailable { .. })
-            | ApiError::Nucleus(NucleusError::LandlockRuleset { .. }) => {
+            | ApiError::Nucleus(NucleusError::LandlockRuleset { .. })
+            | ApiError::Nucleus(NucleusError::WorkspaceReadOnlyUnenforceable { .. }) => {
                 (StatusCode::FORBIDDEN, "isolation_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::ProvenanceUnverified { .. }) => {
@@ -253,11 +255,6 @@ impl ApiError {
             ApiError::Spec(_) => (StatusCode::BAD_REQUEST, "spec_error", None, None),
             ApiError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None),
             ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None, None),
-            // Not a credential failure: the cache is full of live signatures and
-            // clears as the skew window passes, so tell the caller to retry.
-            ApiError::Auth(AuthError::ReplayCapacity) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "auth_busy", None, None)
-            }
             ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None, None),
             ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None, None),
             ApiError::Lockdown(_) => (StatusCode::FORBIDDEN, "lockdown", None, None),
@@ -413,6 +410,49 @@ mod sandbox_root_redaction_tests {
         assert!(
             wire.contains("[sandbox]"),
             "root branch did not run: {wire}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod read_only_workspace_refusal_tests {
+    use super::*;
+
+    /// #2907, owner decision 2026-10-14: where a `write_files: never` pod's
+    /// workspace cannot be held read-only (macOS, a kernel without Landlock),
+    /// the refusal the caller receives -- the wire body that an agent's tool
+    /// call and the `nucleus` CLI show -- says what was refused and why, names
+    /// the way to proceed (a profile that declares workspace writes, e.g.
+    /// `--profile codegen`, or a Linux host with Landlock), and says nothing
+    /// runs unconfined instead. No bypass is offered. Red if the hint is lost,
+    /// by the message or by the body's sanitizer.
+    #[test]
+    fn the_refusal_on_the_wire_names_the_way_to_proceed() {
+        let err = ApiError::Nucleus(NucleusError::WorkspaceReadOnlyUnenforceable {
+            workspace: "/work".to_string(),
+            kernel: "no Landlock (not built into the kernel, or not enabled at boot)".to_string(),
+            minimum: 2,
+        });
+        let (status, body) = err.response_body();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body.kind, "isolation_denied");
+        for needed in [
+            "refused",
+            "cannot enforce a read-only workspace",
+            "--profile codegen",
+            "Linux host with Landlock",
+            "nothing will run unconfined",
+        ] {
+            assert!(
+                body.error.contains(needed),
+                "missing {needed:?}: {}",
+                body.error
+            );
+        }
+        assert!(
+            !body.error.contains("--allow") && !body.error.contains("waive"),
+            "no bypass is offered: {}",
+            body.error
         );
     }
 }

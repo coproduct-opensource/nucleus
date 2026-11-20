@@ -156,7 +156,10 @@ async fn without_the_fixed_header_the_upstream_refuses() {
 async fn the_review_shows_the_fixed_header_and_never_the_credential() {
     let (base, hits) = versioned().await;
     let mut gated = PermissionLattice::permissive();
-    gated.obligations.insert(portcullis::Operation::WebFetch);
+    gated.declare(
+        portcullis::Operation::WebFetch,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     let pod = pod(&base, &[("x-api-version", VERSION)], gated);
     let refused = drive(&pod, &proposing("ask"), b"{}").await;
     assert!(refused.head.reason.starts_with("host approval required:"));

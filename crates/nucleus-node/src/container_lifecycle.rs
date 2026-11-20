@@ -34,6 +34,11 @@ impl ContainerPod {
     }
 
     pub(crate) async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
+        // The broker first: its socket is in the pod directory, and a listener that outlived the
+        // pod would still speak for it (#2906).
+        if let Some(broker) = self.broker.lock().await.take() {
+            broker.shutdown().await;
+        }
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
@@ -126,6 +131,7 @@ mod tests {
                 )
                 .unwrap(),
                 signed_proxy: Mutex::new(None),
+                broker: Mutex::new(None),
                 permit: Mutex::new(Some(pool.clone().acquire_owned().await.unwrap())),
                 cached_exit: Mutex::new(Some(PodState::Exited { code: Some(0) })),
             }));

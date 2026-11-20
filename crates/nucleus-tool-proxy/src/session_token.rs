@@ -420,6 +420,75 @@ mod tests {
         ));
     }
 
+    /// #3316: the typestate's only constructor, called directly. The honest
+    /// token verifies to exactly its signed scope, and every forgery a holder
+    /// of the boot channel could try is refused by the arm that names it —
+    /// scope widened after signing, a foreign signer under the pinned root, a
+    /// replayed nonce, an expired token, and a token derived from another
+    /// pod's certificate. `resolve_session_task_token` collapses these into
+    /// `Invalid`; this keeps them apart, so a regression that refuses for the
+    /// wrong reason (or admits) reds here.
+    #[test]
+    fn verify_admits_only_the_honest_token_for_this_pod() {
+        let issuer = issuer_key(1);
+        let (token, nonce, issuer_hex) = injected(&issuer, NONCE);
+
+        let honest = VerifiedSessionToken::verify(&token, &nonce, &issuer_hex, NOW, None)
+            .expect("the honest token verifies");
+        assert_eq!(honest.scope(), &scope());
+
+        // Scope widened after signing.
+        let mut widened: SignedTaskRef = serde_json::from_str(&token).unwrap();
+        widened.blocks[0]
+            .claim
+            .scope
+            .allowed_operations
+            .push(Operation::RunBash);
+        let widened = serde_json::to_string(&widened).unwrap();
+        assert!(matches!(
+            VerifiedSessionToken::verify(&widened, &nonce, &issuer_hex, NOW, None),
+            Err(SessionTokenError::Verify(_))
+        ));
+
+        // Signed by someone other than the pinned root.
+        let (foreign, foreign_nonce, _) = injected(&issuer_key(9), NONCE);
+        assert!(matches!(
+            VerifiedSessionToken::verify(&foreign, &foreign_nonce, &issuer_hex, NOW, None),
+            Err(SessionTokenError::Verify(_))
+        ));
+
+        // A nonce other than the one the host pinned.
+        assert!(matches!(
+            VerifiedSessionToken::verify(&token, &hex::encode([9u8; 16]), &issuer_hex, NOW, None),
+            Err(SessionTokenError::Verify(_))
+        ));
+
+        // Past its deadline (ISSUED_AT + TTL = 1500).
+        assert!(matches!(
+            VerifiedSessionToken::verify(&token, &nonce, &issuer_hex, 1_501, None),
+            Err(SessionTokenError::Verify(TokenError::Expired { .. }))
+        ));
+
+        // Bound to another certificate than the one this pod holds.
+        let (bound, bound_nonce, bound_issuer) = injected_under(&issuer, CERT);
+        assert_eq!(
+            VerifiedSessionToken::verify(
+                &bound,
+                &bound_nonce,
+                &bound_issuer,
+                NOW,
+                Some([0xa5u8; 32])
+            )
+            .unwrap_err(),
+            SessionTokenError::AuthorityMismatch
+        );
+        // Non-vacuity for that arm: the same token under its own certificate.
+        assert!(
+            VerifiedSessionToken::verify(&bound, &bound_nonce, &bound_issuer, NOW, Some(CERT))
+                .is_ok()
+        );
+    }
+
     // ── #2486: the authority cross-check ────────────────────────────────────
 
     const CERT: [u8; 32] = [0x5au8; 32];

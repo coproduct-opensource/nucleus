@@ -352,7 +352,21 @@ pub fn verify_svid_chain(
     leaf: &Certificate,
     trust_bundle: &TrustBundle,
 ) -> std::result::Result<(), String> {
+    verify_svid_chain_through(leaf, &[], trust_bundle)
+}
+
+/// [`verify_svid_chain`] for a leaf presented with `intermediates` (DER), as a
+/// TLS peer presents it: the leaf may chain to a bundle root through them.
+pub(crate) fn verify_svid_chain_through(
+    leaf: &Certificate,
+    intermediates: &[&[u8]],
+    trust_bundle: &TrustBundle,
+) -> std::result::Result<(), String> {
     let leaf_der = rustls::pki_types::CertificateDer::from(leaf.der().to_vec());
+    let intermediates: Vec<rustls::pki_types::CertificateDer<'_>> = intermediates
+        .iter()
+        .map(|der| rustls::pki_types::CertificateDer::from(*der))
+        .collect();
 
     let root_store = trust_bundle
         .to_rustls_root_store()
@@ -368,7 +382,7 @@ pub fn verify_svid_chain(
         .verify_for_usage(
             webpki::ALL_VERIFICATION_ALGS,
             root_store.roots.as_slice(),
-            &[], // no intermediates beyond what's in root store
+            &intermediates,
             now,
             webpki::KeyUsage::client_auth(),
             None, // no revocation checking

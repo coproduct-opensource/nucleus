@@ -23,6 +23,11 @@ The bridge speaks MCP over stdio. It advertises a set of tools (`web_fetch`,
 Tools the loaded `PodSpec` does not grant are not advertised at all, so the
 client never sees a capability the policy would deny.
 
+A spec is required: started with neither `--spec` nor `--spec-yaml`, the
+bridge refuses to start and names both. There is no default policy. An
+unrestricted session is still available, but only by naming it in the spec
+(`policy: {type: profile, name: permissive}`).
+
 ## Usage
 
 ```bash
@@ -39,9 +44,11 @@ nucleus-mcp \
 | `--signed-upstream` | `NUCLEUS_MCP_SIGNED_UPSTREAM` | a signing proxy in front of a TCP tool-proxy signs instead (TCP only) |
 | `--approval-secret` | `NUCLEUS_MCP_APPROVAL_SECRET` | retired with `--auth-secret`: an agent's bridge must not hold an approval credential |
 | `--actor` | `NUCLEUS_MCP_ACTOR` | actor named to a signing upstream |
-| `--spec` | `NUCLEUS_MCP_SPEC` | PodSpec used to filter visible tools |
+| `--spec` | `NUCLEUS_MCP_SPEC` | required (or `--spec-yaml`): PodSpec file whose policy decides the offered tools and the kernel |
+| `--spec-yaml` | `NUCLEUS_MCP_SPEC_YAML` | the PodSpec as a YAML document, for a caller with no file the bridge can read |
 | `--session-id` | `NUCLEUS_MCP_SESSION_ID` | UUID v7 for audit correlation (auto if unset) |
 | `--kernel-trace` | `NUCLEUS_MCP_KERNEL_TRACE` | JSONL path for per-call kernel decisions |
+| ~~`--sandbox-token`~~ | `NUCLEUS_MCP_SANDBOX_TOKEN` | removed (#2446 step 3c): never sent, and nothing mints one; the flag is an unknown argument and the variable, set at all, is refused by name at startup |
 
 Run `nucleus-mcp --help` for the full list.
 
@@ -50,7 +57,8 @@ and refuses `--auth-secret` by name. `nucleus run --local` and `nucleus shell`
 point the bridge at their proxy's peer-verified socket. Inside a pod the bridge ships in the guest layer at
 `/usr/local/bin/nucleus-mcp` and needs no flags: the runtime sets
 `NUCLEUS_TOOL_PROXY_URL=unix:///run/nucleus-door/workload.sock`, the workload
-door, which admits the workload by its uid. There it holds no secret (it refuses
+door, which admits the workload by its uid, and `nucleus run`'s MCP
+configuration sets `NUCLEUS_MCP_SPEC_YAML` to the pod's policy. There it holds no secret (it refuses
 one), and an operation held for approval is returned to the agent with its
 reason, because approvals are the host's decision.
 

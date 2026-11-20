@@ -5,16 +5,82 @@
 
 use super::*;
 
-/// The node's default ceilings: these tests are about the other fields.
+/// The node's default ceilings: these tests are about the other fields. Firecracker, whose
+/// `credentials.env` the node withholds from the guest; the container driver has its own tests.
 fn admit(s: &PodSpec, sinks: &AuditSinks) -> Result<Option<AuditTarget>, PostureRefused> {
-    super::admit(s, sinks, &PodCeilings::defaults())
+    super::admit(
+        s,
+        sinks,
+        &PodCeilings::defaults(),
+        &crate::driver::DriverKind::Firecracker,
+    )
+}
+
+fn on_container(s: &PodSpec) -> Result<Option<AuditTarget>, PostureRefused> {
+    super::admit(
+        s,
+        &sinks(),
+        &PodCeilings::defaults(),
+        &crate::driver::DriverKind::Container,
+    )
+}
+
+/// #2906: the container driver put `credentials.env` VALUES in the container's environment
+/// (`docker inspect`, `/proc/<pid>/environ`, every child) and in the `pod.yaml` it mounts. Its
+/// credentialed calls are now the host broker's, so a container spec carrying a credential is
+/// refused at create, naming every key and saying what to declare instead; it is never admitted
+/// with the values dropped. Red on main: the spec was admitted and its value injected.
+#[test]
+fn a_container_spec_carrying_credentials_is_refused_by_name() {
+    let carrying = spec(
+        r#"{"credentials":{"env":{"LLM_API_TOKEN":"test-token-123","OTHER_TOKEN":"x","NUCLEUS_TASK_CMD":"run"}}}"#,
+    );
+    let refusal = on_container(&carrying).expect_err("a credential value on a container pod");
+    assert_eq!(
+        refusal,
+        PostureRefused::ContainerCredentials {
+            keys: "LLM_API_TOKEN, OTHER_TOKEN".to_string()
+        }
+    );
+    let message = refusal.to_string();
+    for needle in [
+        "LLM_API_TOKEN",
+        "credentials are delivered by the host broker",
+        "credentialed_egress",
+    ] {
+        assert!(
+            message.contains(needle),
+            "{needle:?} missing from: {message}"
+        );
+    }
+    assert!(
+        !message.contains("test-token-123"),
+        "a refusal never echoes a value"
+    );
+    // Non-vacuity: the same spec is admitted where the node withholds the values, a container
+    // spec with no credentials is admitted, and the unmediated task runner (a command, not a
+    // credential) still is.
+    admitted(&carrying).expect("Firecracker withholds the values from its guest");
+    on_container(&spec("{}")).expect("no credentials");
+    on_container(&spec(
+        r#"{"credentials":{"env":{"NUCLEUS_TASK_CMD":"run"}}}"#,
+    ))
+    .expect("the task runner is not a credential");
 }
 
 fn spec(inner: &str) -> PodSpec {
-    serde_json::from_str(&format!(
+    // Every pod names its policy (#3400); a test that is about something else
+    // names the baseline profile here rather than leaving it to the parser.
+    let mut spec: serde_json::Value = serde_json::from_str(&format!(
         r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{inner}}}"#
     ))
-    .expect("test spec parses")
+    .expect("test spec is JSON");
+    spec["spec"]
+        .as_object_mut()
+        .expect("spec is an object")
+        .entry("policy")
+        .or_insert(serde_json::json!({"type": "profile", "name": "default"}));
+    serde_json::from_value(spec).expect("test spec parses")
 }
 
 /// The operator's audit sinks every test here admits against: one sink, named `audit`.
@@ -66,7 +132,7 @@ fn a_spec_cannot_choose_where_the_operators_credentials_write() {
         ),
     ] {
         let json = format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"audit_sink":{{{fields}}}}}}}"#
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"audit_sink":{{{fields}}}}}}}"#
         );
         let refusal = match serde_json::from_str::<PodSpec>(&json) {
             Err(e) => e.to_string(),
@@ -364,6 +430,51 @@ fn a_spec_cannot_choose_its_own_mediation() {
         .expect("network label is admitted here");
 }
 
+/// #3528: a private user+network namespace is admitted at create only where the node's backend
+/// runs the workload under a guest runtime that makes it (Firecracker), and only with
+/// `workload.uid` stated and mappable. Everywhere else it is refused, naming the field, rather than
+/// admitted and run in the runtime's namespaces. Omission and an explicit `runtime` are admitted on
+/// every backend.
+#[test]
+fn a_workload_namespace_is_admitted_only_where_the_backend_makes_it() {
+    let workload = |rest: &str| {
+        spec(&format!(
+            r#"{{"workload":{{"command":"/bin/true"{rest}}}}}"#
+        ))
+    };
+    let named = |e: PostureRefused, what: &str| {
+        assert!(
+            matches!(e, PostureRefused::WorkloadNamespace(_)),
+            "{what}: {e:?}"
+        );
+        let msg = ApiError::from(e).to_string();
+        assert!(
+            msg.contains("workload.namespace"),
+            "{what}: names the field: {msg}"
+        );
+    };
+    for request in [
+        r#","namespace":{"kind":"private_user_network","inner_uid":0,"loopback":false}"#,
+        r#","namespace":{"kind":"private_user_network","inner_uid":1001,"loopback":true}"#,
+    ] {
+        let stated = workload(&format!(r#","uid":65534{request}"#));
+        admitted(&stated).expect("Firecracker makes it, at the stated uid");
+        named(
+            on_container(&stated).expect_err("the container driver does not"),
+            "container",
+        );
+        named(refused(&workload(request)), "uid unstated");
+        named(
+            refused(&workload(&format!(r#","uid":0{request}"#))),
+            "mapped onto root",
+        );
+    }
+    for placement in ["", r#","namespace":{"kind":"runtime"}"#] {
+        admitted(&workload(placement)).expect("runtime placement on Firecracker");
+        on_container(&workload(placement)).expect("runtime placement on the container driver");
+    }
+}
+
 /// A spec with none of these fields is admitted unchanged: the default is not a refusal.
 #[test]
 fn a_minimal_spec_is_admitted() {
@@ -406,6 +517,23 @@ async fn create_refuses_a_hostile_posture_before_anything_is_spawned() {
         panic!("a pod larger than the node's ceiling must be refused at create");
     };
     assert!(msg.contains("resources.memory_mib 1048576"), "{msg}");
+    assert!(st.pods.lock().await.is_empty(), "nothing was registered");
+
+    // A namespace placement this (local) driver cannot make, through the same create path.
+    let private = spec(
+        r#"{"workload":{"command":"/bin/true","uid":65534,"namespace":{"kind":"private_user_network","inner_uid":1000,"loopback":true}}}"#,
+    );
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let Err(ApiError::InvalidSpec(msg)) =
+        crate::create_pod_internal(&st, private, None, None, root).await
+    else {
+        panic!("a private namespace request must be refused at create");
+    };
+    assert!(msg.contains("workload.namespace"), "{msg}");
     assert!(st.pods.lock().await.is_empty(), "nothing was registered");
 }
 

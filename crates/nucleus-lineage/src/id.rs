@@ -303,6 +303,28 @@ impl CallSpiffeId {
         Self::parse(parent_path.to_string()).ok()
     }
 
+    /// The model provider an id minted by [`Self::derive_llm`] names, read
+    /// back from the layout `derive_llm` writes:
+    /// `…/call/<uuid>/llm/<provider>/<direction>/sha256:<hex>`.
+    ///
+    /// The id is in an edge's signed bytes and `EdgeKind::LlmCall::provider`
+    /// is not, so this is the provider a verified edge actually commits to.
+    /// `None` when the id's last call segment is not an LLM call — the id
+    /// names no provider, which is different from naming an empty one.
+    pub fn llm_provider(&self) -> Option<&str> {
+        let (_, last_call) = self.0.rsplit_once("/call/")?;
+        let mut parts = last_call.split('/');
+        let (_uuid, kind, provider, _direction, digest) = (
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+            parts.next()?,
+        );
+        (kind == "llm" && digest.starts_with("sha256:") && parts.next().is_none())
+            .then_some(provider)
+    }
+
     /// Extract the content-hash hex suffix if this ID is content-addressed.
     pub fn content_hash_hex(&self) -> Option<&str> {
         self.0
@@ -536,6 +558,23 @@ mod tests {
             leaf.content_hash_hex().unwrap(),
             hex_lower(&sha256(b"output bytes"))
         );
+    }
+
+    #[test]
+    fn llm_provider_reads_back_what_derive_llm_wrote_and_nothing_else() {
+        let p = pod();
+        let prompt = p.derive_llm("model-a", "prompt", b"x").unwrap();
+        assert_eq!(prompt.llm_provider(), Some("model-a"));
+        // A response derived from a prompt names its own (last) provider.
+        let response = prompt.derive_llm("model-b", "response", b"y").unwrap();
+        assert_eq!(response.llm_provider(), Some("model-b"));
+        // Not an LLM call: no provider, rather than a guess.
+        assert_eq!(p.llm_provider(), None);
+        assert_eq!(
+            p.derive_tool("Read", Some(b"z")).unwrap().llm_provider(),
+            None
+        );
+        assert_eq!(response.derive_artifact(b"w").unwrap().llm_provider(), None);
     }
 
     #[test]

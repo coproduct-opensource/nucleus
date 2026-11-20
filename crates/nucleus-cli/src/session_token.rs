@@ -17,10 +17,14 @@
 //! and auth secrets, so it is the right issuer for its session. The issuer key
 //! is generated per session, used for exactly one signature, and dropped; only
 //! its public half reaches the proxy. The token is a scoped capability plus a
-//! public key, not a secret (see the node's `session_mint`), so passing it on
-//! the proxy's command line is fine -- and a misspelled FLAG is a clap error,
-//! where a misspelled environment variable would be silently absent and put the
-//! proxy straight back into `Missing`.
+//! public key (see the node's `session_mint`), but its nonce is the chain's
+//! truncation defense and is meant to be host-only. A command line is not:
+//! every process on the host, at any uid, reads `/proc/<pid>/cmdline`. So the
+//! three values go in the proxy's environment, under the names the node's
+//! local driver uses and the proxy's clap arguments read (#3471). A misspelled
+//! variable would be silently absent and put the proxy straight back into
+//! `Missing`; the names are the node's, and a host-tier run that started
+//! `Missing` refuses every action by that name, so the drift is loud.
 //!
 //! The scope is `PermissionLattice::granted_operations()` of the policy written
 //! into the proxy's spec -- the same decision the node makes per pod, through
@@ -61,15 +65,13 @@ pub(crate) fn mint_local(
     .context("serializing the session task token")
 }
 
-/// The tool-proxy flags that deliver `token`.
-pub(crate) fn proxy_args(token: &MintedTaskToken) -> [String; 6] {
+/// The tool-proxy environment that delivers `token`: never its command line,
+/// which any process on the host can read (#3471).
+pub(crate) fn proxy_env(token: &MintedTaskToken) -> [(&'static str, String); 3] {
     [
-        "--task-token".into(),
-        token.token_json.clone(),
-        "--task-token-nonce".into(),
-        token.nonce_hex.clone(),
-        "--task-token-issuer".into(),
-        token.issuer_hex.clone(),
+        ("NUCLEUS_TASK_TOKEN", token.token_json.clone()),
+        ("NUCLEUS_TASK_TOKEN_NONCE", token.nonce_hex.clone()),
+        ("NUCLEUS_TASK_TOKEN_ISSUER", token.issuer_hex.clone()),
     ]
 }
 
@@ -136,13 +138,21 @@ mod tests {
         assert!(token.verify(&issuer, now() + 3_600, &nonce).is_err());
     }
 
+    /// #3471: the token, nonce and issuer are delivered in the environment
+    /// under the names the proxy reads (its clap `env =` names), each with its
+    /// value. Red before: `proxy_args` put `--task-token-nonce <hex>` on the
+    /// command line.
     #[test]
-    fn the_flags_name_the_proxys_arguments() {
+    fn the_token_rides_the_proxys_environment_names() {
         let t = mint_local("s4", &PermissionLattice::local_dev(), 60, None).unwrap();
-        let args = proxy_args(&t);
-        assert_eq!(args[0], "--task-token");
-        assert_eq!(args[2], "--task-token-nonce");
-        assert_eq!(args[4], "--task-token-issuer");
-        assert_eq!(args[5], t.issuer_hex);
+        let env = proxy_env(&t);
+        assert_eq!(
+            env,
+            [
+                ("NUCLEUS_TASK_TOKEN", t.token_json.clone()),
+                ("NUCLEUS_TASK_TOKEN_NONCE", t.nonce_hex.clone()),
+                ("NUCLEUS_TASK_TOKEN_ISSUER", t.issuer_hex.clone()),
+            ]
+        );
     }
 }

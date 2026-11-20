@@ -1,5 +1,6 @@
 //! The three public-key families a TPM attestation key or its certificate
-//! chain can use, verified through RustCrypto's prehash entry points.
+//! chain can use: ECDSA through RustCrypto's prehash entry points, RSA
+//! through this crate's own verify-only PKCS#1 v1.5 (`rsa_pkcs1`).
 //!
 //! One type, [`PublicKey`], is shared by the quote check and the certificate
 //! chain check so there is one place that decides "this signature is valid"
@@ -9,6 +10,8 @@
 use p256::ecdsa::signature::hazmat::PrehashVerifier;
 use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
 use sha2::Digest;
+
+use crate::rsa_pkcs1::RsaPublicKey;
 
 /// A digest algorithm this verifier accepts for signatures and PCR banks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +44,7 @@ impl HashAlg {
     }
 
     /// The DER `DigestInfo` prefix PKCS#1 v1.5 puts before the digest.
-    fn pkcs1_prefix(self) -> &'static [u8] {
+    pub(crate) fn pkcs1_prefix(self) -> &'static [u8] {
         match self {
             Self::Sha256 => &[
                 0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
@@ -54,7 +57,7 @@ impl HashAlg {
         }
     }
 
-    fn len(self) -> usize {
+    pub(crate) fn len(self) -> usize {
         match self {
             Self::Sha256 => 32,
             Self::Sha384 => 48,
@@ -80,7 +83,7 @@ pub(crate) enum EcdsaSig<'a> {
 pub(crate) enum PublicKey {
     P256(p256::PublicKey),
     P384(p384::PublicKey),
-    Rsa(rsa::RsaPublicKey),
+    Rsa(RsaPublicKey),
 }
 
 /// Left-pad a big-endian scalar to `N` bytes; `None` if it is longer.
@@ -103,9 +106,9 @@ impl PublicKey {
         if let Ok(k) = p384::PublicKey::from_public_key_der(der) {
             return Ok(Self::P384(k));
         }
-        rsa::pkcs8::DecodePublicKey::from_public_key_der(der)
+        RsaPublicKey::from_spki_der(der)
             .map(Self::Rsa)
-            .map_err(|e| format!("not a P-256, P-384 or RSA SubjectPublicKeyInfo: {e}"))
+            .map_err(|e| format!("not a P-256, P-384 or admissible RSA SubjectPublicKeyInfo: {e}"))
     }
 
     pub(crate) fn p256_from_xy(x: &[u8], y: &[u8]) -> Option<Self> {
@@ -124,14 +127,13 @@ impl PublicKey {
         p384::PublicKey::from_sec1_bytes(&sec1).ok().map(Self::P384)
     }
 
-    pub(crate) fn rsa_from_parts(n: &[u8], e: u32) -> Option<Self> {
-        let e = if e == 0 { 65537 } else { e };
-        rsa::RsaPublicKey::new(
-            rsa::BigUint::from_bytes_be(n),
-            rsa::BigUint::from(u64::from(e)),
-        )
-        .ok()
-        .map(Self::Rsa)
+    /// An RSA key from a TPM's `(n, exponent)`, where an exponent of 0 means
+    /// the TPM default 65537 (TPM 2.0 Part 2, `TPMS_RSA_PARMS`).
+    pub(crate) fn rsa_from_parts(n: &[u8], e: u32) -> Result<Self, String> {
+        let e = if e == 0 { 65_537 } else { u64::from(e) };
+        RsaPublicKey::from_parts(n, e)
+            .map(Self::Rsa)
+            .map_err(|e| e.to_string())
     }
 
     /// The canonical SubjectPublicKeyInfo DER. Two keys are the same key iff
@@ -143,7 +145,7 @@ impl PublicKey {
         let doc = match self {
             Self::P256(k) => k.to_public_key_der(),
             Self::P384(k) => k.to_public_key_der(),
-            Self::Rsa(k) => rsa::pkcs8::EncodePublicKey::to_public_key_der(k),
+            Self::Rsa(k) => return Ok(k.spki_der().to_vec()),
         };
         doc.map(|d| d.as_bytes().to_vec())
             .map_err(|e| format!("encoding SubjectPublicKeyInfo: {e}"))
@@ -201,15 +203,7 @@ impl PublicKey {
             return false;
         }
         match self {
-            Self::Rsa(k) => {
-                let scheme = rsa::Pkcs1v15Sign {
-                    hash_len: Some(hash.len()),
-                    prefix: hash.pkcs1_prefix().into(),
-                };
-                // Called by path: RSA has no lax/strict split, and the
-                // scoreboard's `.verify(` count is about Ed25519's.
-                rsa::traits::SignatureScheme::verify(scheme, k, digest, sig).is_ok()
-            }
+            Self::Rsa(k) => k.verify_pkcs1v15(hash, digest, sig).is_ok(),
             Self::P256(_) | Self::P384(_) => false,
         }
     }

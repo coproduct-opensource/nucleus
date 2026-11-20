@@ -39,6 +39,25 @@ pub fn upstream_url(base: &str, name: &str) -> String {
     format!("{}{ROUTE_PREFIX}{name}", base.trim_end_matches('/'))
 }
 
+/// Every `NUCLEUS_EGRESS_<NAME>_URL` entry the runtime puts in a workload's
+/// environment for `egress`, under the workload door URL `door_url`.
+///
+/// The one decider of this set (ADR 0007 G-1). The tool-proxy calls it to
+/// build the environment it launches the workload with, and the node calls it
+/// to publish the same set in the workload admission record, so a verifier
+/// derives these environment inputs from that record instead of restating the
+/// runtime's spelling of a value it never set (#3219).
+#[must_use]
+pub fn injected_env(
+    egress: &[crate::CredentialedEgressSpec],
+    door_url: &str,
+) -> std::collections::BTreeMap<String, String> {
+    egress
+        .iter()
+        .map(|s| (url_env(&s.name), upstream_url(door_url, &s.name)))
+        .collect()
+}
+
 // ── What a call may carry besides its path (#3210) ─────────────────────────
 //
 // The guest's adapter, the tool-proxy that composes the host frame, and the
@@ -49,11 +68,12 @@ pub fn upstream_url(base: &str, name: &str) -> String {
 /// Longest query a call may carry, in bytes.
 pub const MAX_QUERY_BYTES: usize = 1024;
 
-/// Most request headers a call may propose.
-pub const MAX_PROPOSED_HEADERS: usize = 16;
+/// Most request headers a call may propose. The deciders' bound
+/// (`nucleus_cred_protocol::extracted::headers`), declared there once.
+pub use nucleus_cred_protocol::extracted::headers::MAX_PROPOSED_HEADERS;
 
-/// Longest proposed header value, in bytes.
-pub const MAX_HEADER_VALUE_BYTES: usize = 1024;
+/// Longest proposed header value, in bytes. Declared with the deciders.
+pub use nucleus_cred_protocol::extracted::headers::MAX_HEADER_VALUE_BYTES;
 
 /// Why a query was refused. Each is named: the query is the workload's own
 /// input, so telling it what was wrong reveals nothing it did not send.
@@ -159,74 +179,19 @@ pub fn check_query(query: &str) -> Result<(), QueryRefusal> {
     Ok(())
 }
 
-/// Names that are a credential, matched whole, ignoring case and `-`/`_`.
-const CREDENTIAL_NAMES: &[&str] = &[
-    "key",
-    "sig",
-    "code",
-    "auth",
-    "authorization",
-    "jwt",
-    "bearer",
-    "assertion",
-    "clientassertion",
-    "pwd",
-];
-
-/// Fragments that make any name a credential, ignoring case and `-`/`_`.
-const CREDENTIAL_FRAGMENTS: &[&str] = &[
-    "token",
-    "secret",
-    "passw",
-    "credential",
-    "apikey",
-    "signature",
-    "session",
-    "cookie",
-];
-
-/// Whether `name` looks like it carries a credential: a whole-name match
-/// against [`CREDENTIAL_NAMES`] or any of [`CREDENTIAL_FRAGMENTS`], with case
-/// and the `-`/`_` separators ignored, so `Access-Token` and `ACCESSTOKEN`
-/// are one name.
+/// Whether `name` looks like it carries a credential: with case and the
+/// `-`/`_` separators ignored (so `Access-Token` and `ACCESSTOKEN` are one
+/// name), it is wholly one of `key`, `sig`, `code`, `auth`, `authorization`,
+/// `jwt`, `bearer`, `assertion`, `clientassertion`, `pwd`, or contains one of
+/// `token`, `secret`, `passw`, `credential`, `apikey`, `signature`,
+/// `session`, `cookie`.
+///
+/// Decided by `nucleus_cred_protocol::extracted::headers::names_a_credential`
+/// over the name's bytes (ADR 0007 G-1).
 #[must_use]
 pub fn names_a_credential(name: &str) -> bool {
-    let folded: String = name
-        .chars()
-        .filter(|c| *c != '-' && *c != '_')
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    CREDENTIAL_NAMES.contains(&folded.as_str())
-        || CREDENTIAL_FRAGMENTS.iter().any(|f| folded.contains(f))
+    nucleus_cred_protocol::extracted::headers::names_a_credential(name.as_bytes())
 }
-
-/// Header names a guest may never propose, whatever the operator allows.
-///
-/// The credential headers, which the host alone sets; the framing and hop
-/// headers, which the host's HTTP client owns; `content-type`, which travels
-/// in its own field; and the forwarding headers that would let a request
-/// claim to come from somewhere else.
-const NEVER_PROPOSED: &[&str] = &[
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "set-cookie",
-    "host",
-    "content-type",
-    "content-length",
-    "transfer-encoding",
-    "connection",
-    "keep-alive",
-    "upgrade",
-    "te",
-    "trailer",
-    "expect",
-    "forwarded",
-    "via",
-];
-
-/// Prefixes no proposed header name may have.
-const NEVER_PROPOSED_PREFIXES: &[&str] = &["proxy-", "x-forwarded-", "x-nucleus-", "sec-"];
 
 /// Whether a guest may propose request header `name` at all.
 ///
@@ -234,23 +199,31 @@ const NEVER_PROPOSED_PREFIXES: &[&str] = &["proxy-", "x-forwarded-", "x-nucleus-
 /// operator's registry also lists the name for that upstream, and the
 /// registry refuses to list a name this rejects. `name` must already be
 /// lower-case, as HTTP/2 spells every header and as the frame carries them.
+///
+/// Refused: a name that is not a lower-case header token of at most 64
+/// bytes; the credential headers, which the host alone sets
+/// (`authorization`, `proxy-authorization`, `cookie`, `set-cookie`); the
+/// framing and hop headers, which the host's HTTP client owns (`host`,
+/// `content-length`, `transfer-encoding`, `connection`, `keep-alive`,
+/// `upgrade`, `te`, `trailer`, `expect`); `content-type`, which travels in its
+/// own field; the forwarding headers that would let a request claim to come
+/// from somewhere else (`forwarded`, `via`); a name starting `proxy-`,
+/// `x-forwarded-`, `x-nucleus-` or `sec-`; and a name
+/// [`names_a_credential`] matches.
+///
+/// Decided by
+/// `nucleus_cred_protocol::extracted::headers::guest_may_propose_header`.
 #[must_use]
 pub fn guest_may_propose_header(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        && !NEVER_PROPOSED.contains(&name)
-        && !NEVER_PROPOSED_PREFIXES.iter().any(|p| name.starts_with(p))
-        && !names_a_credential(name)
+    nucleus_cred_protocol::extracted::headers::guest_may_propose_header(name.as_bytes())
 }
 
 /// Whether `value` may be sent as a proposed header's value: visible ASCII and
-/// spaces, at most [`MAX_HEADER_VALUE_BYTES`].
+/// spaces, at most [`MAX_HEADER_VALUE_BYTES`]. Decided by
+/// `nucleus_cred_protocol::extracted::headers::header_value_admissible`.
 #[must_use]
 pub fn header_value_admissible(value: &str) -> bool {
-    value.len() <= MAX_HEADER_VALUE_BYTES && value.bytes().all(|b| (0x20..0x7f).contains(&b))
+    nucleus_cred_protocol::extracted::headers::header_value_admissible(value.as_bytes())
 }
 
 impl crate::CredentialedEgressSpec {

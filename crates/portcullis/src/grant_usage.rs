@@ -443,24 +443,6 @@ pub fn narrow(grant: &TaskGrant, usage: &UsageReport, name: &str) -> Narrowed {
     }
 }
 
-fn obligation_for(op: Operation) -> ObligationSpec {
-    match op {
-        Operation::ReadFiles => ObligationSpec::ReadFiles,
-        Operation::WriteFiles => ObligationSpec::WriteFiles,
-        Operation::EditFiles => ObligationSpec::EditFiles,
-        Operation::RunBash => ObligationSpec::RunBash,
-        Operation::GlobSearch => ObligationSpec::GlobSearch,
-        Operation::GrepSearch => ObligationSpec::GrepSearch,
-        Operation::WebSearch => ObligationSpec::WebSearch,
-        Operation::WebFetch => ObligationSpec::WebFetch,
-        Operation::GitCommit => ObligationSpec::GitCommit,
-        Operation::GitPush => ObligationSpec::GitPush,
-        Operation::CreatePr => ObligationSpec::CreatePr,
-        Operation::ManagePods => ObligationSpec::ManagePods,
-        Operation::SpawnAgent => ObligationSpec::SpawnAgent,
-    }
-}
-
 /// A [`ProfileSpec`] that builds back to `lattice` (capabilities,
 /// obligations, paths, budget) with `duration_secs` as its time bound.
 #[must_use]
@@ -493,11 +475,26 @@ pub fn profile_from_lattice(
             manage_pods: c.manage_pods,
             spawn_agent: c.spawn_agent,
         },
-        obligations: lattice
-            .obligations
-            .approvals
-            .iter()
-            .map(|op| obligation_for(*op))
+        // Consent builds back exactly: an operation the lattice permits is
+        // listed autonomous when its consent is, and obligated otherwise
+        // (including one the lattice left undeclared, which it decides
+        // `RequiresApproval`). Raw obligations on forbidden operations carry over.
+        obligations: Operation::ALL
+            .into_iter()
+            .filter(|&op| {
+                lattice.obligations.requires(op)
+                    || (c.level_for(op) > CapabilityLevel::Never
+                        && lattice.consent_for(op) == crate::ConsentMode::RequiresApproval)
+            })
+            .map(ObligationSpec::from_operation)
+            .collect(),
+        autonomous: Operation::ALL
+            .into_iter()
+            .filter(|&op| {
+                c.level_for(op) > CapabilityLevel::Never
+                    && lattice.consent_for(op) == crate::ConsentMode::Autonomous
+            })
+            .map(ObligationSpec::from_operation)
             .collect(),
         paths: Some(PathsSpec { allowed, blocked }),
         budget: Some(BudgetSpec {

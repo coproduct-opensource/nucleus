@@ -30,6 +30,10 @@ use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+// ADR 0016 D4: the census of every TLS acceptor in the workspace. Here, in the
+// shard whose scope is the whole repository, because it reads every crate.
+#[cfg(test)]
+mod acceptor_census_tests;
 mod api_error;
 mod art12_collector;
 mod audit_sink;
@@ -45,6 +49,7 @@ mod firecracker_config;
 mod firecracker_lifecycle;
 mod grpc_tls;
 mod guest_diagnosis;
+mod guest_report;
 mod http_serve;
 mod identity;
 mod image_identity;
@@ -67,12 +72,15 @@ mod pod_resources;
 mod pod_view;
 mod production_confinement;
 mod public_evidence;
+mod request_proof;
+mod retired_config;
 mod rootfs_source;
 mod scratch_export;
 mod sealed_rootfs;
 mod spec_posture;
 mod spend_receipt_collector;
 mod state_lock;
+mod teardown_bound;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -97,11 +105,13 @@ mod broker_rollout;
 mod broker_stream;
 mod broker_transport;
 mod cgroup;
+mod container_broker;
 mod container_env;
 mod container_mediation;
 mod container_transport;
 use container_env::container_env;
 mod cred_split;
+mod delivered_spec;
 mod driver;
 #[cfg(test)]
 mod effect_footprint;
@@ -115,6 +125,7 @@ mod federation_ingress;
 mod guest_socket;
 mod host_decide;
 mod host_paths;
+mod insecure_mode;
 mod jail_reclaim;
 mod jailer_limits;
 mod launch_resources;
@@ -125,8 +136,16 @@ mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
+mod decision_provisioning;
+mod guest_proof_provision;
+mod memory_binding;
+mod memory_flow;
 mod memory_provisioning;
+mod memory_space;
+mod memory_space_api;
 mod net;
+#[cfg(test)]
+mod node_state_census;
 mod posture;
 mod session_mint;
 mod signed_proxy;
@@ -137,6 +156,7 @@ mod snapshot_vmm;
 #[cfg(test)]
 mod spiffe_walk;
 mod tls_ingress;
+mod tool_proof_provision;
 mod trust_gate;
 mod upstreams;
 mod vmm_process;
@@ -149,9 +169,14 @@ pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
+/// What `--version` prints: the release tag this binary was built for, else
+/// the Cargo version marked `+dev` (#3208).
+static VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| nucleus_spec::reported_version!().to_string());
+
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
-#[command(version, about = "Node daemon (kubelet analogue) for nucleus pods")]
+#[command(version = VERSION.as_str(), about ="Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
     #[arg(long, env = "NUCLEUS_NODE_LISTEN", default_value = "127.0.0.1:8080")]
@@ -171,6 +196,8 @@ struct Args {
     #[command(flatten)]
     memory: memory_provisioning::MemoryArgs,
     #[command(flatten)]
+    decisions: decision_provisioning::DecisionArgs,
+    #[command(flatten)]
     pod_ceilings: pod_resources::PodCeilingArgs,
     #[command(flatten)]
     jailer_limits: jailer_limits::JailerLimitArgs,
@@ -186,7 +213,9 @@ struct Args {
         default_value = "firecracker"
     )]
     driver: DriverKind,
-    /// Allow the local driver (no VM isolation).
+    /// Allow the local driver (no VM isolation). INSECURE: workloads can read the node's keys,
+    /// so the node refuses every trusted authority and its evidence is marked
+    /// `insecure-shared-uid` and rejected by verifiers. See docs/bare-tier-insecure.md.
     #[cfg(feature = "local-driver")]
     #[arg(long, env = "NUCLEUS_ALLOW_LOCAL_DRIVER", default_value_t = false)]
     allow_local_driver: bool,
@@ -321,25 +350,24 @@ struct Args {
     /// Network mode for containers ("none", "bridge", or a custom network name).
     #[arg(long, env = "NUCLEUS_CONTAINER_NETWORK", default_value = "none")]
     container_network: String,
-    /// How container pods' proxies are reached (#2446): `unix`, a peer-verified socket with no
-    /// shared secret in the container (default); `tcp-hmac`, the deprecated shared-secret listener.
-    #[arg(
-        long,
-        env = "NUCLEUS_CONTAINER_PROXY_TRANSPORT",
-        value_enum,
-        default_value = "unix"
-    )]
-    container_proxy_transport: container_transport::ContainerProxyTransport,
+    /// How container pods' proxies are reached. `unix`, a peer-verified socket with no shared
+    /// secret in the container, is the only transport; `tcp-hmac` was deleted with the
+    /// shared-secret tier (#2446 step 3) and is refused by name (`retired_config`).
+    #[arg(long, env = "NUCLEUS_CONTAINER_PROXY_TRANSPORT")]
+    container_proxy_transport: Option<String>,
     /// Max concurrent container pods (0 = unlimited).
     #[arg(long, env = "NUCLEUS_CONTAINER_MAX_PODS", default_value_t = 10)]
     container_max_pods: usize,
 
-    /// Shared secret for signing tool-proxy requests from the host.
-    #[arg(long, env = "NUCLEUS_NODE_PROXY_AUTH_SECRET")]
-    proxy_auth_secret: String,
-    /// Secret for signing approval requests (separate from tool auth).
-    #[arg(long, env = "NUCLEUS_NODE_PROXY_APPROVAL_SECRET")]
-    proxy_approval_secret: String,
+    /// RETIRED (#2446 step 3): the key the node HMAC'd tool-proxy requests and the tier-3
+    /// sandbox token with. Declared only so a launcher still passing it is refused by name
+    /// (`retired_config`) rather than silently ignored.
+    #[arg(long, env = "NUCLEUS_NODE_PROXY_AUTH_SECRET", hide = true)]
+    proxy_auth_secret: Option<String>,
+    /// RETIRED (#2446 step 3): the approval HMAC key. Every pod verifies approvals against the
+    /// node's Ed25519 PUBLIC key. Refused by name, like `--proxy-auth-secret`.
+    #[arg(long, env = "NUCLEUS_NODE_PROXY_APPROVAL_SECRET", hide = true)]
+    proxy_approval_secret: Option<String>,
     /// Default actor to use when signing proxy requests.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_ACTOR", default_value = "nucleus-node")]
     proxy_actor: String,
@@ -447,11 +475,14 @@ struct Args {
 
 #[derive(Clone)]
 struct NodeState {
+    request_proofs: Option<Arc<request_proof::RequestProofs>>,
     pods: pod_api::PodRegistry,
     /// Admission of new launches; closed by a shutdown drain (`node_drain`).
     intake: node_drain::Intake,
     state_dir: PathBuf,
     host_roots: host_paths::Roots,
+    /// Which guest the default rootfs is, measured once at startup (#3223).
+    guest_report: Arc<guest_report::GuestReport>,
     /// The most memory, vCPUs and huge pages one pod may ask for (#3130).
     pod_ceilings: pod_resources::PodCeilings,
     node_capacity: node_capacity::Capacity,
@@ -503,14 +534,12 @@ struct NodeState {
     /// Node HTTP listen address (for orchestrator pod management back-references).
     #[cfg(feature = "local-driver")]
     listen_addr: String,
-    proxy_auth_secret: String,
     /// Node-only secret for deriving per-pod caller-identity tokens.
     ///
     /// Fresh per process, never persisted, never shared with a pod — which is
     /// the whole point: a pod able to derive tokens could claim to be any other
     /// pod. See `pod_caller_identity`.
     caller_secret: std::sync::Arc<[u8; 32]>,
-    proxy_approval_secret: String,
     /// Ed25519 key whose signatures Firecracker guests and container pods on the socket
     /// transport accept on `/v1/approve`. The PRIVATE half never leaves the node; pods get the
     /// public half (`nucleus.approval_pubkeys`, `NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS`). Persisted
@@ -524,6 +553,8 @@ struct NodeState {
     /// written to with the node's credentials (#3131). Read at admission (`spec_posture::admit`).
     audit_sinks: Arc<audit_sink::AuditSinks>,
     memory: Arc<memory_provisioning::Stores>,
+    /// Owner-decision trust roots, tenant and bundles (`decision_provisioning`).
+    decisions: Option<Arc<decision_provisioning::NodeDecisions>>,
     /// Mints each pod's uploader a credential limited to its resolved sink (#3160). `None`: every
     /// audit sink is refused at create, by name; the node's own key is never the fallback.
     audit_minter: Option<Arc<dyn audit_sink::credentials::ScopedCredentialMinter>>,
@@ -556,8 +587,6 @@ struct NodeState {
     container_mediation: container_mediation::ContainerMediation,
     /// Default network mode for containers.
     container_network: String,
-    /// How the node reaches every container pod's tool-proxy (`--container-proxy-transport`).
-    container_proxy: container_transport::ContainerProxyTransport,
     /// Semaphore limiting concurrent container pods.
     container_pool: Option<Arc<Semaphore>>,
     /// Docker client (initialized at startup when container driver is active).
@@ -592,7 +621,11 @@ struct NodeState {
 #[derive(Debug)]
 struct PodHandle {
     id: Uuid,
+    /// The node's record of the admitted spec: credential values included, host paths untranslated.
     spec: PodSpec,
+    /// The pod's manifest hash: of the spec as delivered to its guest (`delivered_spec`), the
+    /// hash its receipt carries and an approval bundle binds. Never recomputed from `spec`.
+    manifest_hash: nucleus_spec::ManifestHash,
     created_at: u64,
     execution_deadline: tokio::time::Instant,
     log_path: PathBuf,
@@ -611,6 +644,9 @@ struct PodHandle {
     /// (ADR 0001; `auth::CallerScope::Tenant`). `None` only for fixtures.
     owner: Option<String>,
     capacity: Mutex<Option<node_capacity::Reservation>>,
+    /// The lineage a pod belongs to, folded from `parent_pod_id` at creation
+    /// (`memory_provisioning::LineageRoot`): the audience a lineage's memory policy names.
+    memory_lineage: memory_provisioning::LineageRoot,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -713,6 +749,8 @@ struct ContainerPod {
     docker: bollard::Docker,
     /// Only present when the node mediates its container pods.
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
+    /// The pod's credential broker (#2906), torn down with it.
+    broker: Mutex<Option<broker_transport::BrokerListener>>,
     /// Semaphore permit for concurrency limiting.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
     /// Cached exit state — set before container removal so status() works after cleanup.
@@ -723,6 +761,9 @@ pub(crate) use pod_view::{CreatePodRequest, CreatePodResponse, PodInfo, PodState
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+    // First (#3461, Program C C0): non-dumpable, so no process at this uid can
+    // open /proc/<node>/environ, mem or fd, or ptrace the node.
+    let _seal = nucleus::seal_runtime().map_err(insecure_mode::seal_failed)?;
     // Install the ring crypto provider for rustls (must be done before any TLS operations)
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -745,7 +786,7 @@ async fn main() -> Result<(), ApiError> {
             "host-spec enforcement resolved"
         ),
     }
-    tokio::fs::create_dir_all(&args.state_dir).await?;
+    state_lock::create(&args.state_dir)?;
     let _state_lock = state_lock::acquire(&args.state_dir)?;
     #[cfg(feature = "local-driver")]
     if matches!(args.driver, DriverKind::Local) && !args.allow_local_driver {
@@ -754,16 +795,14 @@ async fn main() -> Result<(), ApiError> {
                 .to_string(),
         ));
     }
-    if args.proxy_auth_secret.trim().is_empty() {
-        return Err(ApiError::Driver(
-            "proxy auth secret is required (set NUCLEUS_NODE_PROXY_AUTH_SECRET)".to_string(),
-        ));
-    }
-    if args.proxy_approval_secret.trim().is_empty() {
-        return Err(ApiError::Driver(
-            "proxy approval secret required (set NUCLEUS_NODE_PROXY_APPROVAL_SECRET)".to_string(),
-        ));
-    }
+    // The bare tier is a declared insecure mode (Program C, C0).
+    let evidence_tier = insecure_mode::start(&args).map_err(ApiError::Driver)?;
+    // What #2446 step 3 deleted, refused by name rather than ignored.
+    retired_config::refuse(&retired_config::Retired {
+        proxy_auth_secret: args.proxy_auth_secret.as_deref(),
+        proxy_approval_secret: args.proxy_approval_secret.as_deref(),
+        container_proxy_transport: args.container_proxy_transport.as_deref(),
+    })?;
 
     // Initialize identity manager. Unconditional (Move B) — HTTP and gRPC
     // both require mTLS now, so an identity manager is not optional
@@ -835,7 +874,7 @@ async fn main() -> Result<(), ApiError> {
 
     // Initialize Docker client if container driver is selected
     let docker = if matches!(args.driver, DriverKind::Container) {
-        args.container_proxy_transport.log_posture();
+        container_transport::log_posture();
         let docker = bollard::Docker::connect_with_local_defaults()
             .map_err(|e| ApiError::Driver(format!("failed to connect to Docker: {e}")))?;
         match docker.version().await {
@@ -896,9 +935,14 @@ async fn main() -> Result<(), ApiError> {
     .map_err(ApiError::Driver)?;
 
     let host_roots = args.host_paths.ensure(&args.state_dir)?;
-    let memory = Arc::new(args.memory.load(&host_roots)?);
-    let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys)
-        .map_err(ApiError::Driver)?;
+    let memory = Arc::new(args.memory.load(&host_roots, &args.state_dir, &authority)?);
+    let decisions = args
+        .decisions
+        .load(host_roots.workspace_root())?
+        .map(Arc::new);
+    let trust_gate =
+        trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys, evidence_tier)
+            .map_err(ApiError::Driver)?;
     let node_platform = Arc::new(
         node_evidence::NodePlatformSource::start(
             &args.node_evidence,
@@ -908,6 +952,11 @@ async fn main() -> Result<(), ApiError> {
         )
         .map_err(ApiError::Driver)?,
     );
+    // A node with a TPM quotes every launch it measures, and each SVID names its
+    // quote (ADR 0016 D2). The identity manager exists before the attester does,
+    // and nothing has issued a launch yet, so the rooting is attached here.
+    let identity_manager =
+        identity_manager.map(|m| m.with_launch_rooting(node_platform.launch_rooting()));
     // Every federation assertion states the platform tier from the node's own
     // appraisal of the evidence in force at the mint (ADR 0012 A3). Attached
     // here because the attester's first quote binds the issuer's JWKS, so the
@@ -919,12 +968,30 @@ async fn main() -> Result<(), ApiError> {
             )
             .map_err(ApiError::Driver)?;
     }
+    // Which guest the default rootfs is, for `/v1/health` (#3223). Read once,
+    // here: the health route is public and never reads the rootfs itself.
+    let guest_report = {
+        let root = args.host_paths.artifacts_root.clone();
+        Arc::new(
+            tokio::task::spawn_blocking(move || guest_report::GuestReport::measure(&root))
+                .await
+                .map_err(|e| ApiError::Driver(format!("measuring the guest rootfs: {e}")))?,
+        )
+    };
+    info!(guest = %guest_report, "default guest rootfs");
     let state = NodeState {
+        request_proofs: request_proof::RequestProofs::open(
+            &args.authority.ingress,
+            &args.state_dir,
+            args.grpc_listen.is_some(),
+        )?,
         pods: Arc::new(Mutex::new(HashMap::new())),
         intake: node_drain::Intake::open(),
         state_dir: args.state_dir.clone(),
         host_roots,
+        guest_report,
         memory,
+        decisions,
         pod_ceilings: args.pod_ceilings.ceilings(),
         node_capacity: args.node_capacity.build()?,
         driver: args.driver.clone(),
@@ -959,12 +1026,11 @@ async fn main() -> Result<(), ApiError> {
         network_allocator: Arc::new(net::NetworkAllocator::new()),
         #[cfg(feature = "local-driver")]
         listen_addr: args.listen.clone(),
-        proxy_auth_secret: args.proxy_auth_secret.clone(),
         // A NODE-ONLY secret, fresh per process and never persisted or shared.
         //
-        // Not `auth_secret`: every proxy holds that one, so deriving caller
-        // tokens from it would let any pod compute any other pod's token — the
-        // mechanism would authenticate nothing. Not configured, either: there is
+        // Not a secret any proxy holds: deriving caller tokens from one would
+        // let any pod compute any other pod's token — the mechanism would
+        // authenticate nothing. Not configured, either: there is
         // no operator burden and nothing to leak at rest, and a node restart
         // simply invalidates tokens for pods that cannot outlive the node.
         caller_secret: {
@@ -973,7 +1039,6 @@ async fn main() -> Result<(), ApiError> {
             rand_core::OsRng.fill_bytes(&mut k);
             std::sync::Arc::new(k)
         },
-        proxy_approval_secret: args.proxy_approval_secret.clone(),
         approval_signer: std::sync::Arc::new(
             keys::load_or_create_approval_signing_key(&args.state_dir, &custody.node_keys)
                 .map_err(ApiError::Driver)?,
@@ -1000,7 +1065,6 @@ async fn main() -> Result<(), ApiError> {
         container_image: args.container_image.clone(),
         container_mediation: args.container_mediation,
         container_network: args.container_network.clone(),
-        container_proxy: args.container_proxy_transport,
         container_pool,
         docker,
         trust_gate,
@@ -1081,6 +1145,8 @@ async fn main() -> Result<(), ApiError> {
         container_recovery::drain(docker, &state.state_dir, &state.authority).await?;
     }
     info!("restored certificate authority for {restored_authority} pod(s)");
+    // Recovery above stopped every previous-life workload: settle what they left registered.
+    state.authority.release_previous_life().await;
 
     // Enroll this executor's Ed25519 public key with the trust-service, once,
     // before serving. Every receipt POST is signed with the matching private
@@ -1097,7 +1163,8 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/snapshot", post(pod_api::snapshot_pod))
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .merge(workload_result::routes())
-        .merge(pod_api::effect_approvals::routes())
+        .merge(pod_api::routes())
+        .merge(memory_space_api::routes())
         .merge(pod_links::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
@@ -1175,6 +1242,10 @@ async fn main() -> Result<(), ApiError> {
     let reaped = start_pod_reaper(state.clone());
 
     federation_ingress::spawn(&state, &args.authority.ingress).await?;
+    pod_authority::registry::spawn(
+        state.authority.clone(),
+        Duration::from_secs(args.authority.upstreams_poll_secs),
+    );
     public_evidence::spawn(&state, &args.node_evidence.public).await?;
     // Serve until a stop signal, then drain. Leaving the select drops the listener, so no new
     // connection is accepted; the drain's intake gate is what refuses new pods on connections
@@ -1195,8 +1266,24 @@ async fn main() -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+/// `/v1/health`: the shared [`NodeHealth`](nucleus_spec::guest_release::NodeHealth)
+/// reply, plus the upstream registry's reload state. A reader of the shared
+/// shape ignores `registry`.
+#[derive(serde::Serialize)]
+struct HealthReply {
+    #[serde(flatten)]
+    node: nucleus_spec::guest_release::NodeHealth,
+    registry: serde_json::Value,
+}
+
+async fn health(State(state): State<NodeState>) -> Json<HealthReply> {
+    Json(HealthReply {
+        node: nucleus_spec::guest_release::NodeHealth {
+            status: "ok".to_string(),
+            guest: Some(state.guest_report.current()),
+        },
+        registry: state.authority.registry_health(),
+    })
 }
 
 async fn create_pod(
@@ -1206,15 +1293,15 @@ async fn create_pod(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreatePodResponse>, ApiError> {
-    let spec = match serde_yaml::from_slice::<PodSpec>(&body) {
+    let spec = match nucleus_yaml::from_slice::<PodSpec>(&body) {
         Ok(spec) => spec,
         Err(_) => {
-            let request: CreatePodRequest =
-                serde_yaml::from_slice(&body).map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
+            let request: CreatePodRequest = nucleus_yaml::from_slice(&body)
+                .map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
             if let Some(spec) = request.spec {
                 spec
             } else if let Some(yaml) = request.yaml {
-                serde_yaml::from_str(&yaml).map_err(|e| ApiError::InvalidSpec(e.to_string()))?
+                nucleus_yaml::from_str(&yaml).map_err(|e| ApiError::InvalidSpec(e.to_string()))?
             } else {
                 return Err(ApiError::InvalidSpec("missing spec".to_string()));
             }
@@ -1272,6 +1359,7 @@ async fn create_pod_internal(
     raw_yaml: Option<String>,
     admission: pod_authority::Admission,
 ) -> Result<(Uuid, Option<String>), ApiError> {
+    tool_proof_provision::admit(&spec, state.request_proofs.is_some())?;
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     rootfs_source::admit(&spec)?; // OCI needs an image store; boot_args are allowlisted (#3124)
@@ -1279,12 +1367,18 @@ async fn create_pod_internal(
     // Posture fields a spec may not weaken (#3120), and where its audit log goes (#3131). A sink
     // this node cannot mint a scoped credential for is refused here, by name (#3160).
     let audit_mint = audit_sink::credentials::admit(
-        spec_posture::admit(&spec, &state.audit_sinks, &state.pod_ceilings)?,
+        spec_posture::admit(
+            &spec,
+            &state.audit_sinks,
+            &state.pod_ceilings,
+            &state.driver,
+        )?,
         state.audit_minter.as_ref(),
     )?;
     let requested_memory = state
         .memory
         .request(&spec, &state.driver, state.container_mediation)?;
+    decision_provisioning::admit(state, &spec)?; // requires_decision this node cannot enforce
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let profile = eval_cell::admit_on(state, &spec, parent_pod_id, id)?; // ADR 0013, by name
@@ -1302,6 +1396,7 @@ async fn create_pod_internal(
 
     let pod_dir = lifecycle::pod_dir(&state.state_dir, id);
     tokio::fs::create_dir_all(&pod_dir).await?;
+    guest_proof_provision::provision(&mut spec, &state.state_dir.join("host-tool-keys"), id)?;
 
     // ── Posture Gate: proof-carrying admission (fail-closed) ──────────
     // If the pod carries a `dlc_posture` claim, admit it only when the claimed
@@ -1324,15 +1419,66 @@ async fn create_pod_internal(
     // puts into the cell, an eval cell untrusted whatever it carries (ADR 0014 §3).
     let starting =
         host_decide::StartingLabel::of(profile, &workspace_scan::sources(&spec, &state.driver));
+    // How this node's driver hands the guest its spec, decided once: the plan derives the
+    // delivered bytes and the pod's manifest hash from the applied spec (`delivered_spec`, G-1).
+    let delivery = delivered_spec::Delivery::for_driver(
+        &state.driver,
+        state.broker_enforcing,
+        state.container_mediation,
+        raw_yaml.as_deref(),
+    );
     let (plan, reservation) = state
         .authority
-        .admit_pod(&admission, spec, id, starting)
+        .admit_pod(&admission, spec, id, starting, delivery)
         .await?;
     tracing::Span::current().record("chain_depth", plan.chain_depth());
     let owner = plan.owner().to_string();
     // The registry's record of the spec; the plan, not this copy, is what launches.
     let spec = plan.spec().clone();
-    let memory = match state.memory.provision(requested_memory, &owner) {
+    // What the receipt carries: the hash of the spec the guest is handed, not of `spec` (#3395).
+    let manifest_hash = plan.delivered().manifest_hash().clone();
+    // The lineage this pod belongs to: its parent's, or its own if it has none. The parent edge
+    // is the one `parent_for_create` recorded, so memory audiences and the pod view read the
+    // same fact (G-1).
+    let parent_lineage = match parent_pod_id {
+        Some(parent) => Some((
+            parent,
+            state
+                .pods
+                .lock()
+                .await
+                .get(&parent)
+                .map(|p| p.memory_lineage),
+        )),
+        None => None,
+    };
+    let memory_lineage = memory_provisioning::LineageRoot::of(id, parent_lineage);
+    // A pod's labels speak for its tenant only when the tenant's own identity created it: a
+    // pod-created child's labels were written by a pod, and match no workspace selector.
+    let labels = match (admission.caller_pod, parent_pod_id) {
+        (None, None) => memory_space::PodLabels::TenantAuthenticated(&spec.metadata.labels),
+        (Some(_), _) | (None, Some(_)) => memory_space::PodLabels::PodAuthored,
+    };
+    let subject = memory_provisioning::Subject {
+        pod: id,
+        owner: &owner,
+        lineage: memory_lineage,
+        labels,
+        run_ends: memory_provisioning::now_unix()
+            .saturating_add(spec.spec.timeout_seconds)
+            .saturating_add(memory_provisioning::PUBLISH_WINDOW_SECS),
+        writer: memory_provisioning::writer_for(state, requested_memory.is_some()).await,
+    };
+    let memory = match state.memory.provision(
+        requested_memory,
+        &subject,
+        &state.state_dir,
+        &state.authority,
+        state
+            .decisions
+            .as_deref()
+            .map(|d| d as &dyn memory_space::DecisionCiter),
+    ) {
         Ok(memory) => memory,
         Err(error) => {
             reservation.release().await;
@@ -1342,7 +1488,16 @@ async fn create_pod_internal(
 
     // The uploader's credential, minted only now that the caller's authority is admitted: one
     // limited to this pod's resolved bucket and prefix, for the pod's lifetime (#3160).
-    let capacity = state.node_capacity.reserve(&spec)?;
+    // A full node refuses before any spawn and returns what admission reserved before it
+    // answers. Dropping the reservation would also release it, but in a spawned task that
+    // can lose the race with a caller retrying on the refusal's Retry-After.
+    let capacity = match state.node_capacity.reserve(&spec) {
+        Ok(capacity) => capacity,
+        Err(error) => {
+            reservation.release().await;
+            return Err(error);
+        }
+    };
     let audit = match audit_mint {
         None => None,
         Some(mint) => {
@@ -1371,7 +1526,6 @@ async fn create_pod_internal(
                 &pod_dir,
                 plan,
                 container_launch::Inputs {
-                    raw_yaml: raw_yaml.as_deref(),
                     audit: audit.as_ref(),
                     memory: memory.as_ref(),
                     deadline: execution_deadline,
@@ -1403,6 +1557,7 @@ async fn create_pod_internal(
     let handle = Arc::new(PodHandle {
         id,
         spec,
+        manifest_hash,
         created_at,
         execution_deadline,
         log_path,
@@ -1412,6 +1567,7 @@ async fn create_pod_internal(
         posture_stamp,
         owner: Some(owner),
         capacity: Mutex::new(Some(capacity)),
+        memory_lineage,
     });
 
     state.pods.lock().await.insert(id, handle);
@@ -1483,7 +1639,7 @@ async fn spawn_local_pod(
     pod_dir: &Path,
     plan: pod_authority::AdmittedPodPlan,
     audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    memory: Option<&memory_provisioning::Attachment>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
     let (spec, id) = (plan.spec(), plan.id());
@@ -1492,8 +1648,7 @@ async fn spawn_local_pod(
     let announce_path = pod_dir.join("proxy.addr");
     let socket = local_transport::socket(pod_dir)?;
 
-    let spec_yaml = serde_yaml::to_string(spec).map_err(ApiError::Serde)?;
-    tokio::fs::write(&spec_path, spec_yaml).await?;
+    tokio::fs::write(&spec_path, plan.delivered().yaml()).await?;
 
     if spec.spec.network.is_some() {
         return Err(ApiError::Driver(
@@ -1524,7 +1679,7 @@ async fn spawn_local_pod(
         .arg("--spec")
         .arg(&spec_path)
         // The peer-verified socket, not loopback TCP and a shared secret: that
-        // tier admits only /v1/health (#2446 step 2). See `local_transport`.
+        // tier is deleted (#2446 step 3). See `local_transport`.
         .arg("--listen-unix")
         .arg(&socket)
         .arg("--announce-path")
@@ -1533,7 +1688,7 @@ async fn spawn_local_pod(
         // (`guest_layout::WORKLOAD_DOOR`, under /run) is not writable by a
         // host-side proxy. Bound only when the pod has a workload.
         .arg("--workload-door")
-        .arg(std::path::absolute(pod_dir.join("workload.sock"))?);
+        .arg(lifecycle::local_workload_door(pod_dir)?);
     // No shared secret, and none inherited from the node's own environment.
     command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
     command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
@@ -1548,16 +1703,31 @@ async fn spawn_local_pod(
 
     provision_local_audit_env(&mut command, audit);
     memory_provisioning::local_command(&mut command, memory);
+    command.envs(state.decisions.iter().flat_map(|d| d.local_env()));
+
+    // Whether this pod's proxy calls the node, decided once from the admitted
+    // plan (#3471): the same value turns pod management on below and decides
+    // whether the pod's private key leaves the node at all.
+    let node_client = pod_identity_files::NodeClient::of(spec);
+    // Nothing reaches the proxy's stdin but the key it is handed, if any: not
+    // the node's own stdin, and no key variable by inheritance.
+    command
+        .stdin(std::process::Stdio::null())
+        .env_remove(nucleus_identity::pod_files::RETIRED_KEY_FILE_ENV)
+        .env_remove(nucleus_identity::pod_files::KEY_ON_STDIN_ENV);
 
     // The sandbox proof is the pod's node-issued SVID (tier 2). The HMAC'd
     // sandbox token needs a key this proxy no longer holds. Every local pod gets
-    // the files; an orchestrator pod also authenticates to the node with them.
+    // the public files; only an orchestrator pod, which authenticates to the
+    // node with them, is handed the key, on its stdin and never as a file
+    // (`pod_identity_files`).
     // `main` always builds the identity manager; without one (a unit-test
     // fixture) the real proxy finds no sandbox proof and refuses to start, which
     // `local_transport::exited` names below.
     if state.identity_manager.is_some() {
-        let identity = pod_identity_files::provision(state, pod_dir, id).await?;
-        command.envs(identity.env());
+        pod_identity_files::provision(state, pod_dir, id)
+            .await?
+            .hand_to(&mut command, node_client)?;
     }
 
     // Live-path: mint + inject the session capability token scoped to exactly
@@ -1580,14 +1750,8 @@ async fn spawn_local_pod(
     // proxy's parser owns that and fails CLOSED (partial/garbage config provisions deny-all).
     provision_local_dlc_env(&mut command, state.authority.dlc(id).await.as_ref());
 
-    // Detect orchestrator pod: inject pod management env vars
-    let enable_pod_mgmt = spec
-        .metadata
-        .labels
-        .get("enable_pod_mgmt")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    if enable_pod_mgmt {
+    // An orchestrator pod: inject pod management env vars.
+    if node_client == pod_identity_files::NodeClient::PodManagement {
         command.env("NUCLEUS_TOOL_PROXY_ENABLE_POD_MGMT", "true");
         // Point orchestrator's tool-proxy at this node's HTTP API. `https://`
         // since Move B: the node's HTTP listener is mTLS-only, unconditionally
@@ -1603,7 +1767,8 @@ async fn spawn_local_pod(
         // Node-assigned `ns/pods/sa/<uuid>`: the shape `AuthorizationPolicy`'s
         // pod class authorizes for pod management and nothing else. What the
         // pod may CREATE is decided by its certificate, not by this prefix.
-        // (The SVID files are provisioned above, for every local pod.)
+        // (The SVID's public files are provisioned above, for every local
+        // pod, and its key on this proxy's stdin.)
         // Caller identity → tool-proxy scopes the management API (env-parity with guest-init).
         command.env("NUCLEUS_POD_ID", id.to_string());
         command.env(
@@ -1636,17 +1801,22 @@ async fn spawn_local_pod(
                 return Err(e);
             }
         };
-        let proxy = signed_proxy::SignedProxy::start_with_drand(
+        let proxy = signed_proxy::SignedProxy::start_with_proof(
             target,
-            // Attached to forwarded requests and ignored: the socket admits the
-            // node by its uid, and the shared-secret tier is unreachable there.
-            Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
             // Ed25519, verified against the public key `local_transport` provisioned.
-            Some(signed_proxy::ApprovalSigning::Ed25519(Arc::clone(
-                &state.approval_signer,
-            ))),
+            Arc::clone(&state.approval_signer),
             state.proxy_actor.clone(),
             state.drand_config.clone(),
+            tool_proof_provision::for_listener(
+                spec,
+                state.request_proofs.is_some(),
+                pod_dir,
+                guest_proof_provision::Signer::load(
+                    spec,
+                    &state.state_dir.join("host-tool-keys"),
+                    id,
+                )?,
+            )?,
         )
         .await
         .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
@@ -1672,7 +1842,6 @@ async fn spawn_container_pod(
     // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
     let (spec, id) = (plan.spec(), plan.id());
     let container_launch::Inputs {
-        raw_yaml,
         audit,
         memory,
         deadline,
@@ -1703,40 +1872,48 @@ async fn spawn_container_pod(
             }
         };
         let version = container_transport::image_version(labels.as_ref());
-        container_transport::admit_image(state.container_proxy, &state.container_image, version)?;
+        container_transport::admit_image(&state.container_image, version)?;
+        container_broker::admit_image(&state.container_image, version, spec)?;
+        decision_provisioning::admit_image(&state.container_image, version, spec)?;
     }
+    // Before pod.yaml is written: a spec carrying a credential is refused, and the host performs
+    // the pod's credentialed calls over a broker the proxy is told how to reach (#2906).
+    let broker = container_broker::prepare(state, spec, pod_dir, id).await?;
 
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
     let announce_path = pod_dir.join("proxy.addr");
     let audit_path = pod_dir.join("audit.log");
 
-    // Keep extension fields while translating the host checkout to its container mount.
-    let spec_yaml = container_mediation::pod_yaml(spec, raw_yaml)?;
-    let spec_yaml_hash = {
-        use sha2::{Digest, Sha256};
-        hex::encode(Sha256::digest(spec_yaml.as_bytes()))
-    };
-    tokio::fs::write(&spec_path, &spec_yaml).await?;
-
-    let sandbox_token = nucleus_client::generate_sandbox_token(
-        state.proxy_auth_secret.as_bytes(),
-        &id.to_string(),
-        &spec_yaml_hash,
-    );
+    // The admitted spec under the container's workspace mount; an unmediated container's file
+    // keeps the caller's extension fields (`delivered_spec`).
+    let spec_yaml = plan.delivered().yaml();
+    tokio::fs::write(&spec_path, spec_yaml).await?;
 
     // Mediation and image are the node's (#3133); `spec_posture::admit` refused a spec naming them.
     let mediation = state.container_mediation;
     let proxy_mode = mediation.runs_tool_proxy();
-    let mut env = container_env(state, spec, id, &sandbox_token, &spec_yaml, audit, memory).await;
-    if proxy_mode && state.container_proxy.is_host_verified() {
-        pod_identity_files::provision(state, pod_dir, id).await?;
+    let mut env = container_env(state, spec, id, spec_yaml, audit, memory).await;
+    // The identity files are the proxy's sandbox proof (tier 2); the HMAC'd
+    // token that used to stand in for them is deleted (#2446 step 3).
+    // No key: this driver enables no node client in its proxy, so the pod's
+    // private key is dropped unwritten (#3471).
+    if proxy_mode {
+        let _public = pod_identity_files::provision(state, pod_dir, id)
+            .await?
+            .without_key();
         env.extend(
             pod_identity_files::Files::at(Path::new("/data/pod"))
                 .env()
                 .map(|(key, path)| format!("{key}={}", path.display())),
         );
     }
+    env.extend(
+        broker
+            .iter()
+            .flat_map(container_broker::Prepared::env)
+            .cloned(),
+    );
     let launch = container_mediation::launch(mediation, &state.container_image, &env);
     let image = launch.image.clone();
 
@@ -1752,6 +1929,9 @@ async fn spawn_container_pod(
     ];
     if let Some(grant) = memory {
         binds.push(grant.container_bind());
+    }
+    if proxy_mode {
+        binds.extend(state.decisions.iter().flat_map(|d| d.container_binds()));
     }
 
     // Network mode: the node's, or `none` if the pod asks for it; any other label is refused.
@@ -1774,6 +1954,8 @@ async fn spawn_container_pod(
         memory_swap: Some(container_memory),
         nano_cpus: Some(i64::from(size.vcpus()) * 1_000_000_000),
         pids_limit: Some(pod_resources::CONTAINER_PIDS_MAX),
+        // The proxy must be the container's init: its broker admits that pid alone.
+        init: proxy_mode.then_some(false),
         ..Default::default()
     };
 
@@ -1838,6 +2020,7 @@ async fn spawn_container_pod(
             )
             .await
             .map_err(|e| ApiError::Driver(format!("start container {container_id}: {e}")))?;
+        let broker = container_broker::arm(broker, docker, &container_id).await?;
 
         // Stream container logs to pod.log in background
         {
@@ -1886,16 +2069,17 @@ async fn spawn_container_pod(
         if proxy_mode {
             let addr = wait_for_container_announce(&announce_path, docker.as_ref(), &container_id)
                 .await
-                .map_err(|e| container_transport::unannounced(state.container_proxy, e))?;
-            let target = container_transport::target(state, &pod_dir_abs, &addr)?;
+                .map_err(container_transport::unannounced)?;
+            let target = container_transport::target(&pod_dir_abs, &addr)?;
             container_transport::ensure_reachable(&target).await?;
-            let proxy = signed_proxy::SignedProxy::start_with_drand(
+            let proxy = signed_proxy::SignedProxy::start_with_proof(
                 target,
-                Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-                // Ed25519 on the socket, the shared secret on `tcp-hmac`: what the container verifies.
-                Some(container_transport::approval_signing(state)),
+                // Ed25519, verified against the public key `container_transport` provisioned.
+                Arc::clone(&state.approval_signer),
                 state.proxy_actor.clone(),
                 state.drand_config.clone(),
+                tool_proof_provision::for_listener(spec, state.request_proofs.is_some(), pod_dir,
+                guest_proof_provision::Signer::load(spec, &state.state_dir.join("host-tool-keys"), id)?)?,
             )
             .await
             .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
@@ -1919,6 +2103,7 @@ async fn spawn_container_pod(
             container_id,
             docker: docker.as_ref().clone(),
             signed_proxy: Mutex::new(signed_proxy_opt),
+            broker: Mutex::new(broker),
             permit: Mutex::new(None),
             cached_exit: Mutex::new(None),
         };
@@ -2115,11 +2300,6 @@ async fn spawn_firecracker_pod(
                 "refusing to launch a microVM: {verdict}"
             )));
         }
-        if state.proxy_approval_secret.trim().is_empty() {
-            return Err(ApiError::Driver(
-                "proxy approval secret is required to enforce signed approvals".to_string(),
-            ));
-        }
 
         let permit =
             lifecycle::acquire_launch_slot(state.firecracker_pool.as_ref(), deadline).await?;
@@ -2274,7 +2454,8 @@ async fn spawn_firecracker_pod(
                     jail_layout.as_ref(),
                 )
                 .requiring_host_spec(state.broker_enforcing.is_required())
-                .waiving_workload_landlock(state.workload_landlock);
+                .waiving_workload_landlock(state.workload_landlock)
+                .confirming_network_isolation(spec, &state.egress_proxy);
                 let config_json = serde_json::to_vec_pretty(&config)
                     .map_err(|err| ApiError::Driver(format!("config serialize failed: {err}")))?;
                 // The host copy at `config_path` stays for operators to inspect; the
@@ -2434,6 +2615,7 @@ async fn spawn_firecracker_pod(
                         state,
                         pod_dir,
                         spec,
+                        delivered: plan.delivered(),
                         image,
                         id,
                         grant: &identity_grant,
@@ -2608,22 +2790,21 @@ async fn spawn_firecracker_pod(
                 let bridge_addr = bridge.listen_addr();
                 res.hold_bridge(bridge);
 
-                let proxy = signed_proxy::SignedProxy::start_with_drand(
+                let proxy = signed_proxy::SignedProxy::start_with_proof(
                     bridge_addr,
-                    Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
                     // Firecracker pod: it verifies approvals against the node's PUBLIC
                     // key (nucleus.approval_pubkeys), so approvals are Ed25519-signed
                     // and no approval secret exists in the guest.
-                    Some(signed_proxy::ApprovalSigning::Ed25519(Arc::clone(
-                        &state.approval_signer,
-                    ))),
+                    Arc::clone(&state.approval_signer),
                     state.proxy_actor.clone(),
                     state.drand_config.clone(),
+                    tool_proof_provision::for_listener(spec, state.request_proofs.is_some(), pod_dir,
+                guest_proof_provision::Signer::load(spec, &state.state_dir.join("host-tool-keys"), id)?)?,
                 )
                 .await
                 .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
                 let proxy_addr = format!("http://{}", proxy.listen_addr());
-                let health_addr = proxy.listen_addr();
+                let health_addr = proxy.health_endpoint();
                 res.hold_proxy(proxy);
 
                 let workload_filesystem = prepared_pod
@@ -2877,19 +3058,20 @@ async fn serve_grpc(
     // practice. Asserted rather than assumed: HMAC has no fallback any more
     // (Move B), so a caller lacking a client cert would otherwise be
     // silently unauthenticatable instead of loudly refused at startup.
-    let mtls_enabled = tls_config.mtls_enabled();
-    if !mtls_enabled {
+    let Some(client_trust) = tls_config.client_trust_bundle().cloned() else {
         return Err(ApiError::Driver(
             "gRPC TLS is configured without a client CA (--grpc-tls-ca) — with no HMAC \
              fallback, no caller could ever authenticate. Pass --grpc-tls-ca, or omit \
              --grpc-tls-cert/--grpc-tls-key to use the self-issued mTLS default."
                 .to_string(),
         ));
-    }
+    };
 
     let service =
         NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
-            let auth_ctx = auth::authenticate_grpc_request(&req)
+            // The peer's launch is admitted against the listener's own client CA
+            // before any handler runs (ADR 0016 D4).
+            let auth_ctx = auth::authenticate_grpc_request(&req, &client_trust) // hmac-allow: the second argument is the listener's client-CA TrustBundle for the launch decision (ADR 0016 D4), not an HMAC config
                 .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
             // Store the auth context in request extensions for use in handlers
@@ -2957,7 +3139,7 @@ impl NodeService for GrpcService {
             return Err(Status::invalid_argument("missing pod spec yaml"));
         }
 
-        let spec: PodSpec = serde_yaml::from_str(&yaml)
+        let spec: PodSpec = nucleus_yaml::from_str(&yaml)
             .map_err(|e| Status::invalid_argument(format!("invalid yaml: {e}")))?;
         let (id, proxy_addr) = pod_launch::create(
             &self.state,
@@ -3133,7 +3315,7 @@ impl NodeService for GrpcService {
         let pod_id_str = req.pod_id;
         let handle = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &pod_id_str).await?;
 
-        let built = pod_receipt::build(&handle, &self.state.authority)
+        let built = pod_receipt::build(&handle, pod_receipt::ReceiptSigner::of(&self.state))
             .await
             .map_err(|e| match e {
                 pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),

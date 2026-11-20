@@ -71,7 +71,7 @@ pub(crate) fn attestation_config(args: &Args) -> AttestationConfig {
     let mut config = if args.require_attestation {
         AttestationConfig::required()
     } else {
-        AttestationConfig::default()
+        AttestationConfig::not_required()
     };
     if let Some(ref hashes) = args.allowed_kernel_hashes {
         config = config.with_kernel_hashes(hashes);

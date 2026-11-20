@@ -1,0 +1,22 @@
+[package]
+name = "nucleus-memory-context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The pure kernel of context-indexed, versioned memory: views that only narrow, keyed sections, whole-candidate validation, CAS commits and current-epoch admission. Dependency-free and Aeneas-shaped; modelled in crates/portcullis-core/lean/MemoryContext.lean."
+
+# Dependency-free on purpose, like nucleus-ifc-kernel: the `extracted/` slices are
+# written in the safe-Rust subset Charon/Aeneas translate (no String, Vec, BTreeMap or
+# closures on that path; explicit ranks, never a derived comparison). This crate is
+# NOT in the wasm-embedded closure of sdks/verifier-js.
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+proptest = { workspace = true }

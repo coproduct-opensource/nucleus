@@ -295,10 +295,13 @@ nucleus-audit prepare-execution \
 
 The environment file is a JSON object mapping names to intended values. Include
 all effective inputs: explicitly pin `HOME`, `PATH`, `LANG` and `TZ` in the
-workload spec to avoid inherited defaults, and include any configured egress
-forwarder bindings. Omit `NUCLEUS_TOOL_PROXY_URL` and
-`NUCLEUS_TOOL_PROXY_AUTH_SECRET`, which are per-attempt mediator bindings rather
-than inputs. For a workload with no other inputs, a pinned example is:
+workload spec to avoid inherited defaults. Omit the egress forwarder bindings
+(`NUCLEUS_EGRESS_<NAME>_URL`): the runtime injects them, the admission record
+carries them as `runtime_environment_inputs`, and `prepare-execution` adds them
+from there and refuses a file that restates one (#3219). They stay bound in
+`environment_inputs_sha256`. An admission record without that field fails by
+name. Omit `NUCLEUS_TOOL_PROXY_URL` and `NUCLEUS_TOOL_PROXY_AUTH_SECRET`, which
+are per-attempt mediator bindings rather than inputs. For a workload with no other inputs, a pinned example is:
 
 ```json
 {"HOME":"/work/.home","PATH":"/usr/bin:/bin","LANG":"C","TZ":"UTC"}

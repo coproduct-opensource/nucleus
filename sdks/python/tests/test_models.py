@@ -10,11 +10,12 @@ from nucleus_sdk.models import PodInfo, PodSpec
 
 class TestPodSpecCredentials(unittest.TestCase):
     def test_credentials_env_default_none(self):
-        spec = PodSpec()
+        spec = PodSpec(profile="default")
         self.assertIsNone(spec.credentials_env)
 
     def test_credentials_env_in_to_dict(self):
         spec = PodSpec(
+            profile="default",
             credentials_env={"LLM_API_TOKEN": "test-token", "DB_PASSWORD": "secret"},
         )
         d = spec.to_dict()
@@ -25,19 +26,20 @@ class TestPodSpecCredentials(unittest.TestCase):
         self.assertEqual(creds["env"]["DB_PASSWORD"], "secret")
 
     def test_credentials_env_omitted_when_none(self):
-        spec = PodSpec()
+        spec = PodSpec(profile="default")
         d = spec.to_dict()
         inner = d["spec"]
         self.assertNotIn("credentials", inner)
 
     def test_credentials_env_omitted_when_empty(self):
-        spec = PodSpec(credentials_env={})
+        spec = PodSpec(profile="default", credentials_env={})
         d = spec.to_dict()
         inner = d["spec"]
         self.assertNotIn("credentials", inner)
 
     def test_credentials_redacted_in_repr(self):
         spec = PodSpec(
+            profile="default",
             credentials_env={"LLM_API_TOKEN": "super-secret-value-12345"},
         )
         r = repr(spec)
@@ -66,7 +68,7 @@ class TestPodSpecCredentials(unittest.TestCase):
 
     def test_credentials_env_matches_rust_spec_shape(self):
         """Credentials in to_dict must match Rust CredentialsSpec: {env: {k: v}}."""
-        spec = PodSpec(credentials_env={"KEY": "val"})
+        spec = PodSpec(profile="default", credentials_env={"KEY": "val"})
         d = spec.to_dict()
         creds = d["spec"]["credentials"]
         # Must have 'env' key wrapping the dict (matches Rust CredentialsSpec)
@@ -77,8 +79,13 @@ class TestPodSpecCredentials(unittest.TestCase):
 
 
 class TestPodSpecToDict(unittest.TestCase):
+    def test_profile_is_required(self):
+        """The node refuses a spec with no policy, so the SDK names one or fails."""
+        with self.assertRaises(TypeError):
+            PodSpec()  # type: ignore[call-arg]
+
     def test_minimal_spec(self):
-        spec = PodSpec()
+        spec = PodSpec(profile="default")
         d = spec.to_dict()
         self.assertEqual(d["apiVersion"], "nucleus/v1")
         self.assertEqual(d["kind"], "Pod")

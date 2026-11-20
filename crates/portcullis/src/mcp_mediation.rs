@@ -34,7 +34,7 @@
 //! assert_eq!(classifier.classify("fetch_url"), Some(Operation::WebFetch));
 //!
 //! // Create a mediator with a restrictive policy
-//! let mut policy = PermissionLattice::default();
+//! let mut policy = PermissionLattice::supervised();
 //! policy.capabilities.read_files = CapabilityLevel::Always;
 //! policy.capabilities.run_bash = CapabilityLevel::Never;
 //!
@@ -801,7 +801,7 @@ mod tests {
     use super::*;
 
     fn restrictive_policy() -> PermissionLattice {
-        let mut p = PermissionLattice::default();
+        let mut p = PermissionLattice::supervised();
         p.capabilities.read_files = CapabilityLevel::Always;
         p.capabilities.glob_search = CapabilityLevel::Always;
         p.capabilities.grep_search = CapabilityLevel::Always;
@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn test_mediator_uninhabitable_requires_approval() {
         // Build a policy where exfil ops require approval under uninhabitable_state
-        let mut policy = PermissionLattice::default();
+        let mut policy = PermissionLattice::supervised();
         policy.capabilities.read_files = CapabilityLevel::Always;
         policy.capabilities.web_fetch = CapabilityLevel::LowRisk;
         policy.capabilities.git_push = CapabilityLevel::LowRisk;
@@ -1081,7 +1081,7 @@ mod tests {
 
     #[test]
     fn quality_gate_blocks_unreliable_tool() {
-        let policy = PermissionLattice::new("test");
+        let policy = PermissionLattice::supervised().with_description("test");
         let classifier = ToolClassifier::default();
 
         let mut gate = MinReliabilityGate::new(0.5);
@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn quality_gate_allows_unknown_tools() {
-        let policy = PermissionLattice::new("test");
+        let policy = PermissionLattice::supervised().with_description("test");
         let classifier = ToolClassifier::default();
 
         let gate = MinReliabilityGate::new(0.5);
@@ -1118,7 +1118,7 @@ mod tests {
 
     #[test]
     fn no_quality_gate_allows_everything() {
-        let policy = PermissionLattice::new("test");
+        let policy = PermissionLattice::supervised().with_description("test");
         let classifier = ToolClassifier::default();
 
         // No quality gate set
@@ -1152,7 +1152,7 @@ mod tests {
         let mut registry = ToolSchemaRegistry::new();
         registry.approve_tool("read_file", "Read a file from disk", r#"{"path":"string"}"#);
 
-        let policy = PermissionLattice::new("test");
+        let policy = PermissionLattice::supervised().with_description("test");
         let mediator =
             McpMediator::new(policy, ToolClassifier::default()).with_tool_registry(registry);
 
@@ -1255,7 +1255,7 @@ mod tests {
     fn schema_registry_denies_new_unapproved_tool() {
         let registry = ToolSchemaRegistry::new(); // empty
 
-        let policy = PermissionLattice::new("test");
+        let policy = PermissionLattice::supervised().with_description("test");
         let mediator =
             McpMediator::new(policy, ToolClassifier::default()).with_tool_registry(registry);
 
@@ -1271,7 +1271,7 @@ mod tests {
 
     #[test]
     fn no_registry_allows_everything() {
-        let policy = PermissionLattice::new("test");
+        let policy = PermissionLattice::supervised().with_description("test");
         let mediator = McpMediator::new(policy, ToolClassifier::default());
 
         // No registry set — always passes

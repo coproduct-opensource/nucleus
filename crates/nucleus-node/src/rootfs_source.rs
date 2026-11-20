@@ -172,7 +172,7 @@ mod tests {
 
     fn spec(image: &str) -> PodSpec {
         serde_json::from_str(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{image}}}}}"#
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{image}}}}}"#
         ))
         .expect("test spec parses")
     }
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn a_pod_without_an_image_is_admitted_but_does_not_resolve() {
         let s: PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("parses");
         assert!(admit(&s).is_ok(), "no image, no rootfs to refuse");
         let Err(ApiError::Driver(msg)) = HostImage::of_spec(&s) else {

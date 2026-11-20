@@ -215,9 +215,13 @@ impl Case {
             Slot::Proxy => {
                 let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let to = target.local_addr().unwrap();
-                let proxy = signed_proxy::SignedProxy::start(to, Arc::new(vec![7; 32]), None, None)
-                    .await
-                    .unwrap();
+                let proxy = signed_proxy::SignedProxy::start(
+                    to,
+                    Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
+                    None,
+                )
+                .await
+                .unwrap();
                 let addr = proxy.listen_addr();
                 a.listeners.push(Witnessed {
                     addr,

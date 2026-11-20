@@ -31,19 +31,28 @@ Nucleus replaces the YAML policy file with a **permission lattice** — a mathem
 Instead of a flat allow/deny list, Nucleus uses a 12-dimensional **capability lattice**:
 
 ```
-read_files:  Always      (can read anything)
-write_files: LowRisk     (auto-approved for safe paths)
-edit_files:  LowRisk     (auto-approved for safe edits)
+read_files:  Always      (permitted)
+write_files: LowRisk     (permitted, within allowed paths)
+edit_files:  LowRisk     (permitted, within allowed paths)
 run_bash:    Never        (blocked entirely)
-glob_search: Always      (can search file names)
-grep_search: Always      (can search file contents)
-web_search:  LowRisk     (auto-approved)
-web_fetch:   LowRisk     (auto-approved for allowed domains)
-git_commit:  LowRisk     (auto-approved)
+glob_search: Always      (permitted)
+grep_search: Always      (permitted)
+web_search:  LowRisk     (permitted)
+web_fetch:   LowRisk     (permitted, for allowed domains)
+git_commit:  LowRisk     (permitted)
 git_push:    Never        (blocked entirely)
-create_pr:   LowRisk     (auto-approved)
+create_pr:   LowRisk     (permitted)
 manage_pods: Never        (blocked entirely)
 ```
+
+A level is permission, not consent: `LowRisk` and `Always` both permit the
+operation, and neither means "asks first". Whether a person must approve is
+declared per operation: one listed under **obligations** is held until
+approved, one listed under **autonomous** runs without approval, and every
+permitted operation must be in exactly one of the two — a policy that leaves
+one out is refused by name. Nucleus adds obligations automatically (for each
+permitted `git_push`, `create_pr`, `run_bash`) when private-data access,
+untrusted content and an exfiltration channel are all present.
 
 The lattice has three operations that are formally verified:
 
@@ -73,8 +82,10 @@ nucleus-audit scan --auto
 ### 2. Run your agent inside Nucleus
 
 ```bash
-# Start the tool-proxy (intercepts all tool calls)
-nucleus-tool-proxy --spec agent.yaml --auth-secret $SECRET
+# Start a tool-proxy for this directory (intercepts all tool calls). It mints
+# the run's identity and serves on a peer-verified Unix socket; there is no
+# shared secret to pass.
+nucleus shell --profile codegen --print-config
 
 # Your agent connects to the proxy instead of directly executing tools.
 # Every tool call is checked against the permission lattice.
@@ -185,7 +196,7 @@ If someone changes the Rust `CapabilityLevel` enum, the Aeneas pipeline regenera
                     │   └─────────────────┘   │
                     │                         │
                     │   ┌─────────────────┐   │
-                    │   │ Audit Chain     │   │  ← HMAC-signed,
+                    │   │ Audit Chain     │   │  ← Ed25519-signed,
                     │   │ (witness log)   │   │    tamper-evident
                     │   └─────────────────┘   │
                     └─────────────────────────┘

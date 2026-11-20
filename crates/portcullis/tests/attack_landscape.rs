@@ -115,15 +115,19 @@ fn test_uninhabitable_constraint_adds_obligations() {
     // Create a PermissionLattice with all three exposure legs
     let dangerous = PermissionLattice::builder()
         .description("dangerous")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always, // Private data
-            web_fetch: CapabilityLevel::LowRisk, // Untrusted content
-            git_push: CapabilityLevel::LowRisk,  // Exfil: git push
-            create_pr: CapabilityLevel::LowRisk, // Exfil: PR creation
-            run_bash: CapabilityLevel::LowRisk,  // Exfil: bash
-            ..Default::default()
-        })
-        .build();
+        .capabilities_with(
+            CapabilityLattice {
+                read_files: CapabilityLevel::Always, // Private data
+                web_fetch: CapabilityLevel::LowRisk, // Untrusted content
+                git_push: CapabilityLevel::LowRisk,  // Exfil: git push
+                create_pr: CapabilityLevel::LowRisk, // Exfil: PR creation
+                run_bash: CapabilityLevel::LowRisk,  // Exfil: bash
+                ..Default::default()
+            },
+            portcullis::ConsentMode::Autonomous,
+        )
+        .build()
+        .expect("consent is declared");
 
     // The meet with itself triggers normalization via the uninhabitable_state constraint
     let safe = dangerous.meet(&dangerous);
@@ -493,8 +497,12 @@ fn test_delegation_never_exceeds_parent() {
     // Child requests maximal permissions
     let greedy_request = PermissionLattice::builder()
         .description("greedy")
-        .capabilities(CapabilityLattice::permissive())
-        .build();
+        .capabilities_with(
+            CapabilityLattice::permissive(),
+            portcullis::ConsentMode::Autonomous,
+        )
+        .build()
+        .expect("consent is declared");
 
     let result = parent.delegate_to(&greedy_request, "greedy child agent");
 
@@ -537,13 +545,13 @@ fn test_delegation_never_exceeds_parent() {
 fn test_delegation_chain_monotonicity() {
     let root = PermissionLattice::permissive();
     let l1 = root
-        .delegate_to(&PermissionLattice::default(), "orchestrator")
+        .delegate_to(&PermissionLattice::supervised(), "orchestrator")
         .expect("L1 delegation should succeed");
     let l2 = l1
-        .delegate_to(&PermissionLattice::default(), "sub-agent")
+        .delegate_to(&PermissionLattice::supervised(), "sub-agent")
         .expect("L2 delegation should succeed");
     let l3 = l2
-        .delegate_to(&PermissionLattice::default(), "leaf-agent")
+        .delegate_to(&PermissionLattice::supervised(), "leaf-agent")
         .expect("L3 delegation should succeed");
 
     // Monotonicity at each hop
@@ -561,16 +569,26 @@ fn test_delegation_chain_monotonicity() {
 #[test]
 fn test_delegation_budget_overcommit_rejected() {
     let mut parent = PermissionLattice::builder()
+        .capabilities_with(
+            portcullis::CapabilityLattice::default(),
+            portcullis::ConsentMode::Autonomous,
+        )
         .description("parent-budget")
         .budget(portcullis::BudgetLattice::with_cost_limit(10.0))
-        .build();
+        .build()
+        .expect("consent is declared");
     // Consume most of the parent's budget
     parent.budget.charge_f64(9.5);
 
     let child_request = PermissionLattice::builder()
+        .capabilities_with(
+            portcullis::CapabilityLattice::default(),
+            portcullis::ConsentMode::Autonomous,
+        )
         .description("child-budget")
         .budget(portcullis::BudgetLattice::with_cost_limit(5.0))
-        .build();
+        .build()
+        .expect("consent is declared");
 
     let result = parent.delegate_to(&child_request, "over-budget child");
     assert!(
@@ -594,7 +612,7 @@ fn test_delegation_budget_overcommit_rejected() {
 /// changing the description) is detected by the checksum.
 #[test]
 fn test_effective_permissions_detect_tampering() {
-    let original = PermissionLattice::default();
+    let original = PermissionLattice::supervised();
     let effective = EffectivePermissions::new(original);
 
     // Integrity should pass on untampered permissions
@@ -665,6 +683,7 @@ fn test_deserialization_always_enforces_uninhabitable() {
             "create_pr": "low_risk"
         },
         "obligations": {"approvals": []},
+        "autonomous": ["read_files", "write_files", "edit_files", "run_bash", "glob_search", "grep_search", "web_search", "web_fetch", "git_commit", "git_push", "create_pr"],
         "paths": {"allowed": [], "blocked": [], "work_dir": null},
         "budget": {"max_cost_usd": "10", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
         "commands": {"allowed": [], "blocked": []},

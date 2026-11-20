@@ -95,7 +95,11 @@ measured by the TPM. That is recorded as a limit.
 `CertificateChain` (verified offline to a root the relying party trusts) >
 `OperatorFetched{source}` (the relying party holds a pin for this AK that an operator fetched
 from an authenticated source such as a cloud API — the operator vouching, the weakest
-anchor) > `None`. The anchor is resolved **only** against the relying party's inputs. A
+anchor that names hardware) > `SoftwareTpm{source}` (the relying party pinned this AK in a
+separate software-TPM list: no hardware holds it, so it shows only that the measurements
+match, as nucleus's CI live boot uses it; `--allow-software-tpm-pin` in the audit CLI,
+`software_tpm_pins` in a relying-party document, and a pin never crosses lists in either
+direction) > `None`. The anchor is resolved **only** against the relying party's inputs. A
 claimed chain that is internally broken, or certifies another key, is a false claim and the
 evidence is refused (`FalseAnchor`), never downgraded. A chain to an untrusted root, or an
 operator claim without a matching pin, resolves to `None` and the tier is `Unattested`. An

@@ -9,13 +9,14 @@ The node provisions tap + guest IP when `spec.network` is set.
 ## 1) Start the tool proxy
 
 ```bash
-cargo run -p nucleus-tool-proxy -- \
-  --spec examples/openclaw-demo/pod.yaml \
-  --listen 127.0.0.1:8080 \
-  --auth-secret demo-secret \
-  --approval-secret approval-secret \
-  --audit-log /tmp/nucleus-demo-audit.log
+cargo build -p nucleus-cli -p nucleus-tool-proxy -p nucleus-mcp --release
+./target/release/nucleus shell --profile demo --print-config
 ```
+
+This starts a tool proxy for the current directory and keeps it running until
+Ctrl+C. It serves on a peer-verified Unix socket (the `Tool-proxy:` line) and
+proves its sandbox with an identity minted for the run, so there is no shared
+secret to choose or pass (#2446).
 
 Note: The `demo` profile has the uninhabitable state (read + web + bash), so all bash commands
 require approval. This is the secure default when an agent has access to both
@@ -44,19 +45,8 @@ cargo build -p nucleus-net-probe --release --target x86_64-unknown-linux-musl
 ./scripts/firecracker/build-rootfs.sh
 ```
 
-To bake in the tool-proxy auth secret (for signed proxy mode):
-
-```bash
-TOOL_PROXY_AUTH_SECRET=demo-secret \
-  ./scripts/firecracker/build-rootfs.sh
-```
-
-To require a separate approval authority secret:
-
-```bash
-APPROVAL_SECRET=approval-secret \
-  ./scripts/firecracker/build-rootfs.sh
-```
+No secret is baked into the image: the node reaches the proxy over vsock, which
+admits only the host, and approvals are verified against the node's public key.
 
 To include a network allow/deny list in the image (optional guest defense):
 
@@ -74,7 +64,6 @@ Provide a kernel at `./build/firecracker/vmlinux` (pinned, known-good).
 cargo run -p nucleus-node -- \
   --driver firecracker \
   --listen 127.0.0.1:8081 \
-  --proxy-auth-secret demo-secret \
   --artifacts-root ./build/firecracker \
   --scratch-root ./build/firecracker \
   --firecracker-netns
@@ -94,18 +83,9 @@ curl -sS -X POST --data-binary @examples/openclaw-demo/firecracker-pod.yaml \
   http://127.0.0.1:8081/v1/pods
 ```
 
-Use the returned `proxy_addr` as the OpenClaw plugin `proxyUrl`. The signed
-proxy injects auth headers so the OpenClaw plugin can omit `authSecret`.
-
-Note: the tool-proxy inside the VM must have the same secret baked into the
-image (see `TOOL_PROXY_AUTH_SECRET`), or auth enforcement will fail closed.
-If `APPROVAL_SECRET` is set, approval requests must be signed with that secret.
-
-To have the signed proxy handle approval signing, pass:
-
-```bash
---proxy-approval-secret approval-secret
-```
+Use the returned `proxy_addr` as the OpenClaw plugin `proxyUrl`. The node's
+proxy forwards over vsock, which authenticates it to the guest, and signs
+approvals with the node's Ed25519 key, so the OpenClaw plugin holds no secret.
 
 ## 2) Install the OpenClaw adapter
 

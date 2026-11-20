@@ -10,11 +10,12 @@
 
 use portcullis::flow_graph::FlowGraph;
 use portcullis::{CapabilityLevel, Operation};
+use portcullis_effects::authority::Authority;
 
 use nucleus_ifc_kernel::discharge::{
     self, DischargedBundle, PreflightResult, VerifiedScope, preflight_action,
 };
-use nucleus_ifc_kernel::{IFCLabel, SinkClass};
+use nucleus_ifc_kernel::{ConfLevel, IFCLabel, SinkClass};
 use nucleus_provenance_memory::TokenScope;
 
 /// The two INDEPENDENTLY-sourced inputs to `WithinDelegationCeiling`.
@@ -361,6 +362,27 @@ fn preflight_scoped(
     subject: &str,
     flow: &FlowGraph,
 ) -> PreflightResult {
+    preflight_action(&scoped_term(
+        operation,
+        sink_class,
+        verified_scope,
+        levels,
+        subject,
+        flow,
+    ))
+}
+
+/// The term [`preflight_scoped`] discharges: the session's real labels, their join, and the
+/// honest ceiling. Built once, so a caller that needs the artifact label (the memory write's
+/// floor) reads the very label the obligations were decided over.
+fn scoped_term(
+    operation: Operation,
+    sink_class: SinkClass,
+    verified_scope: Option<&TokenScope>,
+    levels: GateLevels,
+    subject: &str,
+    flow: &FlowGraph,
+) -> discharge::ActionTerm {
     // Real source labels from the session flow tracker (#1633 taint state) —
     // NOT fabricated defaults. Mirrors `build_term_scoped` in portcullis-effects.
     // In the same pass, collect the per-node content hash (InputsAuthorized
@@ -407,7 +429,7 @@ fn preflight_scoped(
         allowed_paths: s.allowed_paths.clone(),
     });
 
-    let term = discharge::ActionTerm {
+    discharge::ActionTerm {
         operation,
         sink_class,
         source_labels,
@@ -422,9 +444,90 @@ fn preflight_scoped(
         // Plumbed inputs channel → InputsAuthorized minted (empty on a clean
         // session = vacuously authorized). Never a `None` default.
         content_addressed_inputs: Some(content_addressed_inputs),
-    };
+    }
+}
 
-    preflight_action(&term)
+/// The confidentiality a memory write is stamped with (Program C, C1): the session's floating
+/// label — the join of every label the session has observed, live and compacted, with the flow
+/// graph's own confidentiality ratchet. What the session HAS READ, not what it is cleared for.
+///
+/// Minted only by [`preflight_memory_write`], from the flow graph it holds locked to decide the
+/// write (ADR 0007 C-1): the field is private and there is no other constructor outside tests,
+/// so the workload never chooses it and no handler can restate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WriterFloor(ConfLevel);
+
+impl WriterFloor {
+    /// The level joined into the record's confidentiality.
+    pub(crate) const fn level(self) -> ConfLevel {
+        self.0
+    }
+}
+
+/// A memory write's discharge and the floor read from the same term, under the same lock.
+#[must_use = "a memory write preflight carries the floor its record must be stamped with"]
+#[derive(Debug)]
+pub(crate) struct MemoryWritePreflight {
+    result: PreflightResult,
+    floor: WriterFloor,
+}
+
+impl MemoryWritePreflight {
+    /// The write authority, bound to its floor by value, or the refusal's reason. `mint` turns
+    /// the discharged bundle into the `Authority` (the handler mints it, witnessed by its
+    /// receipt log); the floor is never separated from the authority it was decided with: a
+    /// write is reachable only by spending a [`MemoryWriteAuthority`], and that is the only
+    /// place its record gets a floor.
+    pub(crate) fn authorize(
+        self,
+        mint: impl FnOnce(DischargedBundle) -> Authority,
+    ) -> Result<MemoryWriteAuthority, String> {
+        match self.result {
+            PreflightResult::Allowed(bundle) => Ok(MemoryWriteAuthority {
+                authority: mint(bundle),
+                floor: self.floor,
+            }),
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => Err(reason),
+        }
+    }
+
+    /// The discharge verdict alone, for the tests that are about the obligations.
+    #[cfg(test)]
+    pub(crate) fn result(&self) -> &PreflightResult {
+        &self.result
+    }
+
+    /// The floor alone, for the tests that are about it.
+    #[cfg(test)]
+    pub(crate) fn floor(&self) -> WriterFloor {
+        self.floor
+    }
+}
+
+/// The authority a memory write spends and the floor its record is stamped with, held together
+/// and taken by value (ADR 0007 C-4): the one way to `memory_write_core`.
+#[must_use = "a memory write authority that is never spent is a write decided and not made"]
+pub(crate) struct MemoryWriteAuthority {
+    authority: Authority,
+    floor: WriterFloor,
+}
+
+impl MemoryWriteAuthority {
+    /// The authority to spend and the floor to stamp, consumed together.
+    pub(crate) fn into_parts(self) -> (Authority, WriterFloor) {
+        (self.authority, self.floor)
+    }
+
+    /// A test's authority with a floor it names: the tests drive the floor directly, and the
+    /// handler's own path through [`preflight_memory_write`] is tested beside them.
+    #[cfg(test)]
+    pub(crate) fn for_test(authority: Authority, floor: ConfLevel) -> Self {
+        Self {
+            authority,
+            floor: WriterFloor(floor),
+        }
+    }
 }
 
 /// Discharge obligations for a memory WRITE (`/v1/memory/write`, 2026-09-27).
@@ -447,20 +550,35 @@ fn preflight_scoped(
 /// for that pair (G-1), with the recall's own subject. The subject is not a
 /// filesystem path, and it does not need to be — `InScopeWithTask` checks the
 /// operation, not the path, and the spend binds whatever string was rendered.
+///
+/// **The floor (Program C, C1).** The same term's artifact label — the join over every live
+/// node and the compaction log, read while the caller holds the flow graph locked — joined with
+/// the graph's confidentiality ratchet, is the write's [`WriterFloor`]. It is returned with the
+/// verdict and bound into the [`MemoryWriteAuthority`] the record is written with, so a session
+/// that read Secret writes Secret records, whatever value it chose and whatever label it claims.
 pub(crate) fn preflight_memory_write(
     verified_scope: Option<&TokenScope>,
     levels: GateLevels,
     subject: &str,
     flow: &FlowGraph,
-) -> PreflightResult {
-    preflight_scoped(
+) -> MemoryWritePreflight {
+    let term = scoped_term(
         Operation::WriteFiles,
         SinkClass::MemoryPersist,
         verified_scope,
         levels,
         subject,
         flow,
-    )
+    );
+    let floor = WriterFloor(
+        term.artifact_label
+            .confidentiality
+            .max(flow.session_conf_ceiling()),
+    );
+    MemoryWritePreflight {
+        result: preflight_action(&term),
+        floor,
+    }
 }
 
 /// Discharge obligations for one pod-management act (2026-09-27).
@@ -898,9 +1016,12 @@ mod tests {
         let scope = TokenScope::new(vec![Operation::WriteFiles], vec![]);
         let levels = GateLevels::honest(FS_CEILING);
         let result = preflight_memory_write(Some(&scope), levels, "memory://x", &tainted_flow());
-        assert!(result.is_denied(), "got {result:?}");
+        assert!(result.result().is_denied(), "got {result:?}");
         let clean = preflight_memory_write(Some(&scope), levels, "memory://x", &FlowGraph::new());
-        assert!(clean.is_allowed(), "a clean session must mint: {clean:?}");
+        assert!(
+            clean.result().is_allowed(),
+            "a clean session must mint: {clean:?}"
+        );
     }
 
     /// **…and can still recall.** A recall is a pure read through
@@ -913,6 +1034,101 @@ mod tests {
         let levels = GateLevels::honest(FS_CEILING);
         let result = preflight_read_fs(Some(&scope), levels, "memory://recall/x", &tainted_flow());
         assert!(result.is_allowed(), "got {result:?}");
+    }
+
+    /// #3313: the six scoped preflights, each driven through the same four
+    /// cases on a clean session, so the only thing that differs between them
+    /// is the operation each one binds:
+    ///
+    /// 1. no verified scope ⇒ denied by `InScopeWithTask`;
+    /// 2. a verified scope naming every OTHER operation here ⇒ denied by
+    ///    `InScopeWithTask` (a grant for one effect is not spendable on another);
+    /// 3. a policy that requests more than the certificate's ceiling ⇒ denied
+    ///    by `WithinDelegationCeiling`;
+    /// 4. a scope naming exactly its operation, honest levels ⇒ the bundle is
+    ///    minted. This is the non-vacuity case: the three denials above are
+    ///    the obligations firing, not a gate that refuses everything.
+    #[test]
+    fn every_scoped_preflight_mints_only_for_its_own_in_scope_operation() {
+        type Gate = fn(Option<&TokenScope>, GateLevels, &str, &FlowGraph) -> PreflightResult;
+        let gates: [(Operation, &str, Gate); 8] = [
+            (Operation::RunBash, "cargo test", |s, l, x, f| {
+                preflight_runbash(s, l, x, f)
+            }),
+            (Operation::WebFetch, "https://api.example", |s, l, x, f| {
+                preflight_web(Operation::WebFetch, s, l, x, f)
+            }),
+            (Operation::WebSearch, "https://api.example", |s, l, x, f| {
+                preflight_web(Operation::WebSearch, s, l, x, f)
+            }),
+            (Operation::WriteFiles, "/workspace/out.txt", |s, l, x, f| {
+                preflight_fs(Operation::WriteFiles, s, l, x, f)
+            }),
+            (Operation::EditFiles, "/workspace/out.txt", |s, l, x, f| {
+                preflight_fs(Operation::EditFiles, s, l, x, f)
+            }),
+            (
+                Operation::ReadFiles,
+                "/workspace/notes.txt",
+                |s, l, x, f| preflight_read_fs(s, l, x, f),
+            ),
+            (Operation::GrepSearch, "src/lib.rs", |s, l, x, f| {
+                preflight_grep_fs(s, l, x, f)
+            }),
+            (Operation::GlobSearch, "**/*.rs", |s, l, x, f| {
+                preflight_glob_fs(s, l, x, f)
+            }),
+        ];
+        let flow = FlowGraph::new();
+        let honest = GateLevels::honest(FS_CEILING);
+        let widened = GateLevels {
+            ceiling: CapabilityLevel::Never,
+            requested: CapabilityLevel::LowRisk,
+        };
+        let paths = vec!["/workspace/**".to_string()];
+        for (op, subject, gate) in gates {
+            let denied_by = |result: PreflightResult, obligation: &str, case: &str| {
+                assert!(result.is_denied(), "{op:?} {case}: got {result:?}");
+                let reason = result.denial_reason().unwrap();
+                assert!(
+                    reason.contains(obligation),
+                    "{op:?} {case}: denied by `{reason}`, not {obligation}"
+                );
+            };
+
+            denied_by(
+                gate(None, honest, subject, &flow),
+                "InScopeWithTask",
+                "without a verified scope",
+            );
+
+            let others = TokenScope::new(
+                gates.iter().map(|g| g.0).filter(|o| *o != op).collect(),
+                paths.clone(),
+            );
+            denied_by(
+                gate(Some(&others), honest, subject, &flow),
+                "InScopeWithTask",
+                "with every other operation in scope",
+            );
+
+            let own = TokenScope::new(vec![op], paths.clone());
+            denied_by(
+                gate(Some(&own), widened, subject, &flow),
+                "DelegationCeiling",
+                "requesting above the certificate's ceiling",
+            );
+
+            let minted = gate(Some(&own), honest, subject, &flow);
+            assert!(
+                minted.is_allowed(),
+                "{op:?} in scope at honest levels must mint, got {minted:?}"
+            );
+            assert!(
+                discharge_witness(&minted.unwrap_bundle()).contains("in_scope_with_task"),
+                "{op:?}: the bundle must carry the InScopeWithTask witness"
+            );
+        }
     }
 
     /// The certificate-ceiling middleware now sees both memory routes: they
@@ -945,6 +1161,7 @@ pub(crate) fn endpoint_operation(path: &str) -> Option<Operation> {
         | "/v1/pod/cancel" => Some(Operation::ManagePods),
         "/v1/memory/write" => Some(Operation::WriteFiles),
         "/v1/memory/recall" => Some(Operation::ReadFiles),
+        "/v1/decision/read" | "/v1/decision/list" => Some(Operation::ReadFiles),
         p if p.starts_with("/v1/egress/") => Some(Operation::WebFetch),
         _ => None,
     }

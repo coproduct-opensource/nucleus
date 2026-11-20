@@ -347,10 +347,14 @@ fn refuses_uncredentialed_egress(ctx: &Ctx<'_>) -> Result<Outcome> {
 ///
 /// This replaced a check that asserted an unapproved write is DEFERRED, and the
 /// replacement is worth explaining because the old one failing is what exposed
-/// it. Under the `codegen` profile writes are `low_risk`, so they defer and the
-/// check passed. Under a compiled grant for the same work they are authorised
-/// outright — `nucleus run --goal` says so in as many words, "no approval
-/// prompts expected" — so the write landed and the check reported a breach.
+/// it. In the recorded `codegen` profile run the write deferred and the check
+/// passed. (That was not because writes are `low_risk`: a level is permission,
+/// not consent, and the kernel defers only operations the policy obligates.
+/// The YAML `codegen` profile's effective obligation set is empty — see
+/// `docs/agency-frontier.md`.) Under a compiled grant for the same work writes
+/// are authorised outright — `nucleus run --goal` says so in as many words, "no
+/// approval prompts expected" — so the write landed and the check reported a
+/// breach.
 ///
 /// It was the check that was wrong. It encoded a property of one profile rather
 /// than an invariant, and containment checks decide whether a whole reading may
@@ -846,7 +850,7 @@ fn prepare_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<PreparedProxy> {
             "network": cfg.network,
         }
     });
-    std::fs::write(&spec_path, serde_yaml::to_string(&spec)?)
+    std::fs::write(&spec_path, nucleus_yaml::to_string(&spec)?)
         .with_context(|| format!("writing {}", spec_path.display()))?;
 
     // The proxy needs an approval authority to start. The PUBLIC half of a key
@@ -1106,8 +1110,11 @@ mod tests {
     /// identity, not by a secret. Red before: the command carried
     /// `--auth-secret <hex>` and `NUCLEUS_SANDBOX_TOKEN`, an orchestrator token
     /// HMAC'd with that secret, and no identity.
+    ///
+    /// #3471: and no private key is named for it: this proxy calls no node.
+    /// Red before: `NUCLEUS_IDENTITY_KEY` named a `key.pem` at the proxy's uid.
     #[test]
-    fn the_harness_proxy_is_proven_by_the_runs_identity_not_a_secret() {
+    fn the_harness_proxy_is_proven_by_the_runs_identity_and_names_no_key() {
         let work = std::env::temp_dir();
         let run_id = format!("identity-test-{}", std::process::id());
         let prepared = prepare_local_proxy(&LocalProxyConfig {
@@ -1146,12 +1153,20 @@ mod tests {
             "no tier-3 token or secret in the proxy's env: {env:?}"
         );
         let cert = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_CERT"]).unwrap();
-        let key = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_KEY"]).unwrap();
-        let certificate = nucleus_identity::WorkloadCertificate::from_pem(&cert, &key).unwrap();
+        let leaf = nucleus_identity::certificate::Certificate::from_pem(&cert).unwrap();
         assert_eq!(
-            certificate.identity().to_spiffe_uri(),
+            leaf.extract_spiffe_identity().unwrap().to_spiffe_uri(),
             format!("spiffe://host-tier.nucleus.local/ns/pods/sa/{run_id}")
         );
-        assert!(std::path::Path::new(&env["NUCLEUS_IDENTITY_TRUST_BUNDLE"]).is_file());
+        let bundle = std::path::Path::new(&env["NUCLEUS_IDENTITY_TRUST_BUNDLE"]);
+        assert!(bundle.is_file());
+        assert!(
+            !env.keys().any(|k| k.starts_with("NUCLEUS_IDENTITY_KEY")),
+            "no key is named: {env:?}"
+        );
+        assert!(
+            !bundle.with_file_name("key.pem").exists(),
+            "no key file beside the certificate"
+        );
     }
 }

@@ -122,15 +122,18 @@ mod tests {
         state.authz_policy = state.authz_policy.with_operator_identity(&root);
         let id = Uuid::new_v4();
         let mut lattice = portcullis::PermissionLattice::permissive();
-        lattice.obligations.insert(portcullis::Operation::GitCommit);
-        let mut spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
-            "apiVersion": "nucleus/v1", "kind": "Pod", "metadata": {"name": "approvals"},
-            "spec": {"work_dir": "/work"}
-        }))
-        .unwrap();
-        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+        lattice.declare(
+            portcullis::Operation::GitCommit,
+            portcullis::ConsentMode::RequiresApproval,
+        );
+        let policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(lattice),
         };
+        let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
+            "apiVersion": "nucleus/v1", "kind": "Pod", "metadata": {"name": "approvals"},
+            "spec": {"work_dir": "/work", "policy": policy}
+        }))
+        .unwrap();
         state
             .authority
             .admit_kept(

@@ -15,9 +15,11 @@
 //! approval; it is refused with its reason, which the bridge relays.
 //!
 //! The proxy's sandbox proof (#2446 step 3a) is an identity minted for the
-//! run: an SVID naming the run, its key and the root that issued it, written
-//! into the run directory by `nucleus_identity::pod_files`, the declaration
-//! nucleus-node's local driver writes from. The proxy reads it as tier 2. It
+//! run: an SVID naming the run and the root that issued it, written into the
+//! run directory by `nucleus_identity::pod_files`, the declaration
+//! nucleus-node's local driver writes from. Its private key is never written:
+//! this proxy calls no node, so it is dropped (#3471). The proxy reads the
+//! certificate as tier 2. It
 //! replaced tier 3, an orchestrator token HMAC'd with a secret this process
 //! made up and passed as `--auth-secret`, on an argv any local user can read,
 //! for no other purpose than that one check.
@@ -69,14 +71,17 @@ impl LocalProxyTransport {
 
     /// The tool-proxy command both host-tier callers start: the explicit
     /// host-tier opt-in, the spec, the socket and approval key, the
-    /// announcement and audit paths, and the identity that proves the launch.
-    /// No secret is on it. The caller adds its task token and stdio.
+    /// announcement and audit paths, the identity that proves the launch, and
+    /// the session's task token. No secret is on it, and the token's nonce
+    /// is in the environment, never on the command line (#3471). The caller
+    /// adds its stdio.
     pub(crate) fn command(
         &self,
         proxy_bin: &Path,
         spec: &Path,
         announce: &Path,
         audit: &Path,
+        task_token: &nucleus_provenance_memory::taskref_token::MintedTaskToken,
     ) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(proxy_bin);
         command
@@ -89,6 +94,7 @@ impl LocalProxyTransport {
             .arg("--audit-log")
             .arg(audit)
             .envs(self.identity.env())
+            .envs(crate::session_token::proxy_env(task_token))
             .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false");
         command
     }
@@ -132,8 +138,13 @@ mod tests {
     /// the run's own identity, not by a secret. Red before: the command carried
     /// `--auth-secret <hex>` and `NUCLEUS_SANDBOX_TOKEN`, an orchestrator token
     /// HMAC'd with that secret, and no identity.
+    ///
+    /// #3471: and it is handed no private key, as a file or otherwise: this
+    /// proxy calls no node, so nothing would read it, and a file at this uid
+    /// is every bare-tier child's. Red before: `key.pem` was in the run
+    /// directory, named by `NUCLEUS_IDENTITY_KEY`.
     #[test]
-    fn the_proxy_is_proven_by_the_runs_identity_not_a_secret() {
+    fn the_proxy_is_proven_by_the_runs_identity_and_holds_no_key() {
         let dir = tempfile::tempdir().unwrap();
         let run_id = Uuid::new_v4();
         let transport = LocalProxyTransport::new(dir.path(), &run_id).unwrap();
@@ -142,6 +153,7 @@ mod tests {
             &dir.path().join("pod.yaml"),
             &dir.path().join("proxy.addr"),
             &dir.path().join("audit.log"),
+            &token(),
         );
         let command = command.as_std();
         let args: Vec<String> = command
@@ -167,18 +179,98 @@ mod tests {
             "no tier-3 token or secret in the proxy's env: {env:?}"
         );
         let cert = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_CERT"]).unwrap();
-        let key = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_KEY"]).unwrap();
         let bundle = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_TRUST_BUNDLE"]).unwrap();
-        let certificate = nucleus_identity::WorkloadCertificate::from_pem(&cert, &key).unwrap();
+        let leaf = nucleus_identity::certificate::Certificate::from_pem(&cert).unwrap();
         assert_eq!(
-            certificate.identity().to_spiffe_uri(),
+            leaf.extract_spiffe_identity().unwrap().to_spiffe_uri(),
             format!("spiffe://host-tier.nucleus.local/ns/pods/sa/{run_id}")
         );
         nucleus_identity::verify_svid_chain(
-            certificate.leaf(),
+            &leaf,
             &nucleus_identity::TrustBundle::from_pem(&bundle).unwrap(),
         )
         .unwrap();
+        assert!(
+            !env.keys().any(|k| k.starts_with("NUCLEUS_IDENTITY_KEY")),
+            "no key is named or delivered: {env:?}"
+        );
+        for entry in walk(dir.path()) {
+            let contents = std::fs::read(&entry).unwrap_or_default();
+            assert!(
+                !String::from_utf8_lossy(&contents).contains("PRIVATE KEY"),
+                "{} holds a private key",
+                entry.display()
+            );
+        }
+    }
+
+    fn token() -> nucleus_provenance_memory::taskref_token::MintedTaskToken {
+        crate::session_token::mint_local(
+            "argv",
+            &portcullis::PermissionLattice::local_dev(),
+            60,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// #3471: the command both host-tier callers spawn carries the session
+    /// token's nonce in its environment and nowhere on its command line,
+    /// which every process on the host reads (`/proc/<pid>/cmdline`). Red
+    /// before: `--task-token-nonce <hex>` was on it.
+    #[test]
+    fn the_task_token_nonce_is_never_on_the_proxys_command_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let transport = LocalProxyTransport::new(dir.path(), &Uuid::new_v4()).unwrap();
+        let token = token();
+        let command = transport.command(
+            Path::new("nucleus-tool-proxy"),
+            &dir.path().join("pod.yaml"),
+            &dir.path().join("proxy.addr"),
+            &dir.path().join("audit.log"),
+            &token,
+        );
+        let command = command.as_std();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.contains(&token.nonce_hex) || a.starts_with("--task-token")),
+            "the nonce is on the proxy's argv: {args:?}"
+        );
+        let env: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(
+            env.contains(&(
+                "NUCLEUS_TASK_TOKEN_NONCE".into(),
+                Some(token.nonce_hex.clone())
+            )),
+            "the nonce is delivered in the environment: {env:?}"
+        );
+    }
+
+    /// Every file under `dir`.
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(walk(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 
     /// The socket path fits macOS's 104-byte limit under a typical temp dir.

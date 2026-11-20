@@ -55,7 +55,8 @@ Two facts are already established and should not be re-litigated:
 ## How to run one iteration
 
 ```
-cargo run -p nucleus-perf -- podburst --spec <spec> --counts <N> --auth-secret "$SECRET"
+cargo run -p nucleus-perf -- podburst --spec <spec> --counts <N> \
+  --tls-cert <client.pem> --tls-key <client.key> --trust-bundle <bundle.pem>
 ```
 
 Every iteration must state its number in the commit subject, e.g.

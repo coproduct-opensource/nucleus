@@ -403,6 +403,7 @@ fn admit_inner(spec: &mut PodSpecInner, driver: &DriverKind, roots: &Roots) -> R
         // `workload_identity[].source` carries host paths no runtime reads yet;
         // see "What this does not cover".
         credentials: _,
+        requires_decision: _, // capability names, not paths
     } = spec;
 
     if let Some(role) = work_dir_role(driver) {

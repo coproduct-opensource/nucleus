@@ -56,13 +56,13 @@ what a launch needs; its `unmet` half is pure and runs anywhere.
 
 ## Booting a node, verified
 
-Only two arguments lack defaults:
+No argument is required; the node holds no shared secret (#2446 step 3
+refuses the old `--proxy-auth-secret`/`--proxy-approval-secret` by name):
 
 ```sh
 cargo build -p nucleus-node
 ./target/debug/nucleus-node \
-  --state-dir /tmp/nstate --listen 127.0.0.1:8080 \
-  --proxy-auth-secret <any> --proxy-approval-secret <any>
+  --state-dir /tmp/nstate --listen 127.0.0.1:8080
 ```
 
 On first boot it creates `<state-dir>/ca/{ca-cert,ca-key}.pem`, four signing
@@ -129,8 +129,7 @@ cargo build -p nucleus-node --features local-driver
 cargo build -p nucleus-tool-proxy
 ./target/debug/nucleus-node --state-dir /tmp/nstate --listen 127.0.0.1:8088 \
   --driver local --allow-local-driver \
-  --tool-proxy-path "$PWD/target/debug/nucleus-tool-proxy" \
-  --proxy-auth-secret <any> --proxy-approval-secret <any>
+  --tool-proxy-path "$PWD/target/debug/nucleus-tool-proxy"
 ```
 
 A minimal spec that is accepted — `command` is **not** a field, and the error

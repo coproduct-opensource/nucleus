@@ -354,28 +354,42 @@ async fn list_links(
 /// A cancel through the API: refused (409) while a link names the pod
 /// (`may_cancel`, `cancel_refuses_linked`). The table lock is held across the
 /// teardown, so no link is made in between.
-pub(crate) async fn cancel_unlinked(state: &NodeState, pod: &PodHandle) -> Result<(), ApiError> {
-    let mut links = state.links.lock().await;
-    if links
-        .table
-        .links()
-        .iter()
-        .any(|l| names(*l, pod.id.as_u128()))
-    {
-        return Err(ApiError::Conflict(
-            "the pod is linked; unlink it before cancelling".into(),
-        ));
-    }
-    pod.cancel().await?;
-    // No link names it, so this drops nothing; it only forgets the pod.
-    let dropped = links.table.exit(pod.id.as_u128());
-    links.relays.remove(&pod.id);
-    debug_assert!(dropped.is_empty());
-    Ok(())
+///
+/// The check, the teardown and the forget run in one detached task, as
+/// `PodHandle::cancel_detached` does for an unlinked node: a caller that drops
+/// the request mid-teardown neither strands the pod's capacity nor releases the
+/// table lock while the pod is half torn down.
+pub(crate) async fn cancel_unlinked(
+    state: &NodeState,
+    pod: &Arc<PodHandle>,
+) -> Result<(), ApiError> {
+    let links = Arc::clone(&state.links);
+    let pod = Arc::clone(pod);
+    tokio::spawn(async move {
+        let mut links = links.lock().await;
+        if links
+            .table
+            .links()
+            .iter()
+            .any(|l| names(*l, pod.id.as_u128()))
+        {
+            return Err(ApiError::Conflict(
+                "the pod is linked; unlink it before cancelling".into(),
+            ));
+        }
+        pod.cancel().await?;
+        // No link names it, so this drops nothing; it only forgets the pod.
+        let dropped = links.table.exit(pod.id.as_u128());
+        links.relays.remove(&pod.id);
+        debug_assert!(dropped.is_empty());
+        Ok(())
+    })
+    .await
+    .map_err(|e| ApiError::SupervisorUnavailable(format!("teardown task failed: {e}")))?
 }
 
 /// The gRPC form of [`cancel_unlinked`]: a linked pod is `FAILED_PRECONDITION`.
-pub(crate) async fn grpc_cancel(state: &NodeState, pod: &PodHandle) -> Result<(), tonic::Status> {
+pub(crate) async fn grpc_cancel(state: &NodeState, pod: &Arc<PodHandle>) -> Result<(), tonic::Status> {
     cancel_unlinked(state, pod).await.map_err(|e| match e {
         ApiError::Conflict(m) => tonic::Status::failed_precondition(m),
         other => tonic::Status::internal(other.to_string()),

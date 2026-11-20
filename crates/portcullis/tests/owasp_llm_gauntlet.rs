@@ -110,6 +110,7 @@ mod llm01_prompt_injection {
                 "create_pr": "low_risk"
             },
             "obligations": {"approvals": []},
+            "autonomous": ["read_files", "write_files", "edit_files", "run_bash", "glob_search", "grep_search", "web_search", "web_fetch", "git_commit", "git_push", "create_pr"],
             "paths": {"allowed": [], "blocked": [], "work_dir": null},
             "budget": {"max_cost_usd": "100", "consumed_usd": "0", "max_input_tokens": 1000000, "max_output_tokens": 100000},
             "commands": {"allowed": [], "blocked": [], "allowed_rules": [], "blocked_rules": []},
@@ -153,25 +154,33 @@ mod llm01_prompt_injection {
         // If either parent enforces uninhabitable_state, the child must too
         let enforcing = PermissionLattice::builder()
             .description("enforcing uninhabitable_state")
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::LowRisk,
-                ..Default::default()
-            })
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::LowRisk,
+                    git_push: CapabilityLevel::LowRisk,
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
             .uninhabitable_constraint(true)
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let not_enforcing = PermissionLattice::builder()
             .description("not enforcing")
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::LowRisk,
-                ..Default::default()
-            })
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::LowRisk,
+                    git_push: CapabilityLevel::LowRisk,
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
             .uninhabitable_constraint(false)
             .build()
+            .expect("consent is declared")
             .with_uninhabitable_disabled();
 
         // Meet should inherit enforcement from either parent
@@ -192,14 +201,18 @@ mod llm01_prompt_injection {
         // Serialize a permission set and deserialize it - uninhabitable_state must remain enforced
         let original = PermissionLattice::builder()
             .description("test roundtrip")
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::LowRisk,
-                ..Default::default()
-            })
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::LowRisk,
+                    git_push: CapabilityLevel::LowRisk,
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
             .uninhabitable_constraint(true)
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let json = serde_json::to_string(&original).expect("Should serialize");
         let restored: PermissionLattice = serde_json::from_str(&json).expect("Should deserialize");
@@ -235,6 +248,7 @@ mod llm01_prompt_injection {
                 "create_pr": "never"
             },
             "obligations": {"approvals": []},
+            "autonomous": ["read_files", "glob_search", "grep_search", "web_search", "web_fetch", "git_push"],
             "paths": {"allowed": [], "blocked": []},
             "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
             "commands": {"allowed": [], "blocked": [], "allowed_rules": [], "blocked_rules": []},
@@ -589,7 +603,7 @@ mod llm04_data_poisoning {
 
     #[test]
     fn checksum_detects_description_change() {
-        let original = PermissionLattice::default();
+        let original = PermissionLattice::supervised();
         let effective = EffectivePermissions::new(original);
 
         assert!(effective.verify_integrity(), "Initial integrity check");
@@ -644,7 +658,7 @@ mod llm04_data_poisoning {
         // Create a delegation chain
         let root = PermissionLattice::permissive();
         let child = root
-            .delegate_to(&PermissionLattice::default(), "child")
+            .delegate_to(&PermissionLattice::supervised(), "child")
             .unwrap();
 
         // Wrap in EffectivePermissions
@@ -665,8 +679,13 @@ mod llm04_data_poisoning {
     #[test]
     fn checksum_detects_budget_tampering() {
         let lattice = PermissionLattice::builder()
+            .capabilities_with(
+                portcullis::CapabilityLattice::default(),
+                portcullis::ConsentMode::Autonomous,
+            )
             .budget(BudgetLattice::with_cost_limit(10.0))
-            .build();
+            .build()
+            .expect("consent is declared");
         let effective = EffectivePermissions::new(lattice);
 
         assert!(effective.verify_integrity());
@@ -817,15 +836,19 @@ mod llm06_excessive_agency {
         // Create a permission set with uninhabitable_state
         let perms = PermissionLattice::builder()
             .description("uninhabitable_state complete")
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always, // Private data
-                web_fetch: CapabilityLevel::LowRisk, // Untrusted content
-                git_push: CapabilityLevel::LowRisk,  // Exfiltration
-                create_pr: CapabilityLevel::LowRisk, // Exfiltration
-                run_bash: CapabilityLevel::LowRisk,  // Exfiltration
-                ..Default::default()
-            })
-            .build();
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always, // Private data
+                    web_fetch: CapabilityLevel::LowRisk, // Untrusted content
+                    git_push: CapabilityLevel::LowRisk,  // Exfiltration
+                    create_pr: CapabilityLevel::LowRisk, // Exfiltration
+                    run_bash: CapabilityLevel::LowRisk,  // Exfiltration
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         assert!(
             perms.is_uninhabitable_vulnerable(),
@@ -886,8 +909,9 @@ mod llm06_excessive_agency {
         for (name, caps, op) in exfil_capabilities {
             let perms = PermissionLattice::builder()
                 .description(format!("test {}", name))
-                .capabilities(caps)
-                .build();
+                .capabilities_with(caps, portcullis::ConsentMode::Autonomous)
+                .build()
+                .expect("consent is declared");
 
             assert!(
                 perms.requires_approval(op),
@@ -901,8 +925,12 @@ mod llm06_excessive_agency {
     fn delegation_cannot_escalate() {
         let parent = PermissionLattice::restrictive();
         let requested = PermissionLattice::builder()
-            .capabilities(CapabilityLattice::permissive())
-            .build();
+            .capabilities_with(
+                CapabilityLattice::permissive(),
+                portcullis::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         let result = parent.delegate_to(&requested, "escalation attempt");
 
@@ -922,12 +950,22 @@ mod llm06_excessive_agency {
     #[test]
     fn budget_delegation_bounded() {
         let parent = PermissionLattice::builder()
+            .capabilities_with(
+                portcullis::CapabilityLattice::default(),
+                portcullis::ConsentMode::Autonomous,
+            )
             .budget(BudgetLattice::with_cost_limit(5.0))
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let requested = PermissionLattice::builder()
+            .capabilities_with(
+                portcullis::CapabilityLattice::default(),
+                portcullis::ConsentMode::Autonomous,
+            )
             .budget(BudgetLattice::with_cost_limit(10.0)) // Requests more
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let result = parent.delegate_to(&requested, "budget escalation");
 
@@ -948,12 +986,22 @@ mod llm06_excessive_agency {
     #[test]
     fn time_delegation_bounded() {
         let parent = PermissionLattice::builder()
+            .capabilities_with(
+                portcullis::CapabilityLattice::default(),
+                portcullis::ConsentMode::Autonomous,
+            )
             .time(TimeLattice::minutes(30))
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let requested = PermissionLattice::builder()
+            .capabilities_with(
+                portcullis::CapabilityLattice::default(),
+                portcullis::ConsentMode::Autonomous,
+            )
             .time(TimeLattice::hours(24)) // Requests longer duration
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let result = parent.delegate_to(&requested, "time escalation");
 
@@ -1117,12 +1165,16 @@ mod llm08_vector_weaknesses {
     fn web_fetch_never_blocks_all() {
         // If web_fetch is Never, no web access is possible
         let perms = PermissionLattice::builder()
-            .capabilities(CapabilityLattice {
-                web_fetch: CapabilityLevel::Never,
-                web_search: CapabilityLevel::Never,
-                ..Default::default()
-            })
-            .build();
+            .capabilities_with(
+                CapabilityLattice {
+                    web_fetch: CapabilityLevel::Never,
+                    web_search: CapabilityLevel::Never,
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         assert_eq!(perms.capabilities.web_fetch, CapabilityLevel::Never);
         assert_eq!(perms.capabilities.web_search, CapabilityLevel::Never);
@@ -1132,13 +1184,17 @@ mod llm08_vector_weaknesses {
     fn web_fetch_with_uninhabitable_gated() {
         // If web_fetch is enabled with read_files and exfil, it must be gated
         let perms = PermissionLattice::builder()
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::LowRisk,
-                ..Default::default()
-            })
-            .build();
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::LowRisk,
+                    git_push: CapabilityLevel::LowRisk,
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         assert!(
             perms.is_uninhabitable_vulnerable(),
@@ -1156,24 +1212,32 @@ mod llm08_vector_weaknesses {
     fn untrusted_content_detection() {
         // Test that untrusted content (web_fetch OR web_search) is detected
         let with_fetch = PermissionLattice::builder()
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::LowRisk,
-                web_search: CapabilityLevel::Never,
-                git_push: CapabilityLevel::LowRisk,
-                ..Default::default()
-            })
-            .build();
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::LowRisk,
+                    web_search: CapabilityLevel::Never,
+                    git_push: CapabilityLevel::LowRisk,
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         let with_search = PermissionLattice::builder()
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::Never,
-                web_search: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::LowRisk,
-                ..Default::default()
-            })
-            .build();
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::Never,
+                    web_search: CapabilityLevel::LowRisk,
+                    git_push: CapabilityLevel::LowRisk,
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         assert!(
             with_fetch.is_uninhabitable_vulnerable(),
@@ -1263,14 +1327,18 @@ mod llm09_misinformation {
         // git_commit + read + web should trigger uninhabitable_state gating on exfil
         // Note: git_commit alone is not an exfil vector, but run_bash could be
         let perms = PermissionLattice::builder()
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::LowRisk,
-                git_commit: CapabilityLevel::LowRisk,
-                run_bash: CapabilityLevel::LowRisk, // This IS an exfil vector
-                ..Default::default()
-            })
-            .build();
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::LowRisk,
+                    git_commit: CapabilityLevel::LowRisk,
+                    run_bash: CapabilityLevel::LowRisk, // This IS an exfil vector
+                    ..Default::default()
+                },
+                portcullis::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         assert!(
             perms.is_uninhabitable_vulnerable(),
@@ -1284,10 +1352,10 @@ mod llm09_misinformation {
 
     #[test]
     fn delegation_fails_when_parent_expired() {
-        let mut parent = PermissionLattice::default();
+        let mut parent = PermissionLattice::supervised();
         parent.time.valid_until = Utc::now() - Duration::hours(1);
 
-        let result = parent.delegate_to(&PermissionLattice::default(), "test");
+        let result = parent.delegate_to(&PermissionLattice::supervised(), "test");
 
         assert!(
             result.is_err(),
@@ -1297,7 +1365,7 @@ mod llm09_misinformation {
 
     #[test]
     fn effective_permissions_expired_check() {
-        let mut lattice = PermissionLattice::default();
+        let mut lattice = PermissionLattice::supervised();
         lattice.time.valid_until = Utc::now() - Duration::minutes(5);
 
         let effective = EffectivePermissions::new(lattice);
@@ -1570,6 +1638,7 @@ mod integration_attacks {
                 "create_pr": "always"
             },
             "obligations": {"approvals": []},
+            "autonomous": ["read_files", "write_files", "edit_files", "run_bash", "glob_search", "grep_search", "web_search", "web_fetch", "git_commit", "git_push", "create_pr"],
             "paths": {"allowed": [], "blocked": []},
             "budget": {"max_cost_usd": "1000000", "consumed_usd": "0", "max_input_tokens": 99999999, "max_output_tokens": 99999999},
             "commands": {"allowed": [], "blocked": [], "allowed_rules": [], "blocked_rules": []},
@@ -1775,12 +1844,22 @@ mod legitimate_operations {
     #[test]
     fn delegation_with_sufficient_budget_works() {
         let parent = PermissionLattice::builder()
+            .capabilities_with(
+                portcullis::CapabilityLattice::default(),
+                portcullis::ConsentMode::Autonomous,
+            )
             .budget(BudgetLattice::with_cost_limit(10.0))
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let requested = PermissionLattice::builder()
+            .capabilities_with(
+                portcullis::CapabilityLattice::default(),
+                portcullis::ConsentMode::Autonomous,
+            )
             .budget(BudgetLattice::with_cost_limit(5.0))
-            .build();
+            .build()
+            .expect("consent is declared");
 
         let result = parent.delegate_to(&requested, "valid delegation");
 

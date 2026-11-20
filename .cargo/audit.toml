@@ -8,122 +8,35 @@ ignore = [
     # TODO: Watch for cel-interpreter updates that remove paste dependency.
     "RUSTSEC-2024-0436",
 
-    # rsa Marvin Attack (RUSTSEC-2023-0071) — no fix available upstream.
-    # Transitive dependency via c2pa-rs. Not exploitable in our use case:
-    # we use c2pa for content credential assertions, not RSA key operations.
-    "RUSTSEC-2023-0071",
-
     # proc-macro-error unmaintained (RUSTSEC-2024-0370) — no security impact.
-    # Transitive via c2pa-rs → iref → static-regular-grammar.
+    # proc-macro-error 0.4.12, transitive via iroh-blobs → bao-tree →
+    # genawaiter. (The 1.0.4 copy via c2pa-rs → iref is gone.)
     "RUSTSEC-2024-0370",
-
-    # proc-macro-error2 unmaintained (RUSTSEC-2026-0173, filed 2026-06-07) — the
-    # maintained fork of proc-macro-error above, itself now flagged unmaintained.
-    # Build-time proc-macro only (no runtime/security impact); transitive via
-    # age 0.11.3 → i18n-embed-fl → nucleus-oidc-provider. Same unmaintained-only
-    # class as the proc-macro-error/paste/bincode/derivative ignores. No patched
-    # successor yet; drops when age/i18n-embed-fl migrate off it.
-    "RUSTSEC-2026-0173",
-
-    # lru unsound (RUSTSEC-2026-0253, filed 2026-05-12) — potential use-after-free
-    # from lack of panic safety in `LruCache::pop()`. `unsound` class, not a
-    # directly exploitable vulnerability; the UAF requires a panic inside pop() in
-    # a specific usage. Nucleus does not use lru directly — it is transitive via
-    # iroh-blobs (→ nucleus-cli) and ratatui-core (→ exposure-playground, a dev TUI),
-    # both of which pin lru 0.18, so there is no patched version reachable without
-    # an upstream iroh/ratatui bump. Same unsound/transitive/no-patched class as the
-    # rand and proc-macro-error ignores; drops when iroh/ratatui move to a fixed lru.
-    "RUSTSEC-2026-0253",
-
-    # tracing-subscriber ANSI escape (RUSTSEC-2025-0055) — transitive via
-    # risc0-zkvm → ark-relations. Feature-gated behind `zkvm`, not in default build.
-    "RUSTSEC-2025-0055",
-
-    # bincode unmaintained (RUSTSEC-2025-0141) — transitive via risc0-zkvm.
-    # Feature-gated, no security impact.
-    "RUSTSEC-2025-0141",
-
-    # derivative unmaintained (RUSTSEC-2024-0388) — transitive via
-    # risc0-zkvm → ark-crypto-primitives. Feature-gated, no security impact.
-    "RUSTSEC-2024-0388",
-
-    # rand unsoundness via custom logger calling rand::rng() (Stacked Borrows).
-    # Direct deps bumped to patched versions; remaining exposure is transitive
-    # rand 0.8.5 via rust_decimal/ruint — upstream has no patched 0.8.x.
-    # Not exploitable: no custom logger in these deps calls rand::rng().
-    "RUSTSEC-2026-0097",
-
-    # rustls-webpki 0.101.x URI name-constraint / wildcard-name vulns (2026-04-14).
-    # Transitive via aws-smithy-http-client 1.1.12 → rustls 0.21 → rustls-webpki 0.101.
-    # AWS SDK fix path: BehaviorVersion v2025_01_17+ (hyper 1.x + rustls 0.23).
-    # Tracked separately; AWS path does not process attacker-controlled certs.
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-
-    # rustls-webpki 0.101.7 reachable panic in CRL parsing (RUSTSEC-2026-0104).
-    # Active dep tree uses rustls-webpki 0.103.13 (already patched). The 0.101.7
-    # entry is orphan lockfile residue from the same aws-smithy-http-client
-    # 1.1.12 chain as 2026-0098/0099 — `cargo tree --invert -p rustls-webpki@0.101.7`
-    # finds no active path. Drops on next AWS SDK BehaviorVersion bump.
-    "RUSTSEC-2026-0104",
-
-    # wasmtime 43.0.1 panic on oversize table allocation (RUSTSEC-2026-0114).
-    # Behind portcullis-core's `wasm-sandbox` feature, not in any default build,
-    # no production .wasm execution path. Bumping to wasmtime 44+ tracked in PR #1600.
-    "RUSTSEC-2026-0114",
 
     # atomic-polyfill unmaintained (RUSTSEC-2023-0089) — no security impact.
     # Transitive via iroh-blobs → postcard 1.1.3 → heapless 0.7.17. postcard pins
     # heapless ^0.7 (the atomic-polyfill era); no escape until postcard adopts
     # heapless 0.8+. Informational/unmaintained only — same class as the paste/
-    # proc-macro-error/bincode/derivative ignores above.
+    # proc-macro-error ignores above.
     "RUSTSEC-2023-0089",
 
-    # quick-xml 0.39.4 quadratic runtime on duplicate XML attribute names
-    # (RUSTSEC-2026-0194). Transitive via plist←netdev←netwatch←iroh; no
-    # patched path exists (plist 1.9.0, the latest, pins quick-xml ^0.39).
-    # Exposure is macOS network-interface plist parsing, not
-    # attacker-controlled XML. REVISIT when plist releases >1.9.0.
-    "RUSTSEC-2026-0194",
+    # EXPIRES 2027-01-31. crypto-bigint 0.5.5 timing variability (patched only
+    # in 0.7.6+). Reachable only through age 0.12.1 (latest) -> p256 0.13 for
+    # p256tag recipients; nucleus-oidc-provider decrypts with
+    # age::scrypt::Identity only. All nucleus P-256/P-384 code is on p256/p384
+    # 0.14. Mirrors the deny.toml ignore.
+    "RUSTSEC-2026-0387",
 
-    # quick-xml 0.39.4 NsReader unbounded namespace-declaration allocation
-    # (RUSTSEC-2026-0195, memory-exhaustion DoS). Same unpatchable chain and
-    # exposure as RUSTSEC-2026-0194 above: transitive via plist 1.9.0 (pins
-    # ^0.39); local macOS plist parsing, not attacker-controlled XML.
-    # REVISIT when plist releases >1.9.0.
-    "RUSTSEC-2026-0195",
+    # EXPIRES 2027-01-31. basic-toml unmaintained (RUSTSEC-2026-0374), no
+    # security issue. Transitive, build-time only: age 0.12.1 -> i18n-embed-fl /
+    # i18n-embed-impl (proc-macros) -> i18n-config. cargo-deny already scopes
+    # unmaintained to workspace deps and does not flag it.
+    "RUSTSEC-2026-0374",
 
-    # event-listener 5.4.1 unsound: `!Send` tags can cross thread boundaries
-    # via `StackSlot` (RUSTSEC-2026-0221, filed 2026-07-13; hit CI when the
-    # advisory DB refreshed — the tree didn't change). No fixed release yet
-    # (5.4.1 is latest). Transitive via sqlx-core in nucleus-verifier-service
-    # only — not in the enforcement path — and sqlx does not use the unsound
-    # StackSlot API with !Send tags. REVISIT when event-listener releases a
-    # fix or sqlx bumps past it.
-    "RUSTSEC-2026-0221",
-
-    # wasmtime 45.0.3 — "Stores can mix up type indices between engines"
-    # (RUSTSEC-2026-0222, filed 2026-07-31, severity 3.8 LOW). Advisory-DB
-    # refresh; the tree did not change. NO FIX EXISTS IN THE 45.x LINE — the
-    # patched ranges (>=24.0.12<25, >=36.0.13<37, >=46.0.2<47, >=47.0.3) skip 45
-    # entirely, so clearing this requires a MAJOR bump of wasmtime, coordinated
-    # with portcullis-core's `wasm-sandbox` pin (workspace dep convergence).
-    # Exposure is narrow: wasmtime is optional and reachable only via
-    # portcullis-wasi's non-default `host` feature (`default = []`), i.e. it is
-    # absent from every default build and enters only under --all-features; the
-    # bug requires mixing Stores across two distinct Engines, which that host
-    # does not do. REVISIT as its own PR — a major engine bump does not belong
-    # inside unrelated work.
-    "RUSTSEC-2026-0222",
-
-    # rkyv 0.7.46 out-of-bounds reads validating Rc/Arc archives
-    # (RUSTSEC-2026-0235). Advisory-DB refresh red — hit unrelated PRs the
-    # same day with no tree change. rkyv is orphan lockfile residue: it backs
-    # rust_decimal's optional `rkyv` feature, which nothing enables —
-    # `cargo tree -i rkyv --all-features --target all` finds no path, so the
-    # crate is never compiled, same class as the RUSTSEC-2026-0104 orphan
-    # entry. The fix line (rkyv >=0.8.17) is unreachable until rust_decimal
-    # migrates off the 0.7 API. Drops if rust_decimal bumps or the lock stops
-    # recording the unused optional dep. REVISIT with rust_decimal updates.
-    "RUSTSEC-2026-0235",
+    # EXPIRES 2027-01-31. chrono unmaintained (RUSTSEC-2026-0543), published
+    # 2026-11-17: informational, no vulnerability. A direct workspace dependency
+    # (chrono 0.4.45; Cargo.toml [workspace.dependencies] and more than a dozen
+    # crates), so leaving it is a migration to `jiff` or `time`. Mirrors the
+    # deny.toml ignore.
+    "RUSTSEC-2026-0543",
 ]

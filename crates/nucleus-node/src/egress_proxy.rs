@@ -682,6 +682,25 @@ impl ProxyConfig {
     }
 }
 
+/// Whether [`start_for_pod`] may attach an egress proxy to this pod, decided
+/// before the VM's configuration is built (#3493).
+///
+/// The proxy is an outbound path whose replies the in-guest tool-proxy does
+/// not observe, so a pod that may have one is never confirmed network-isolated
+/// (`FirecrackerConfig::confirming_network_isolation`). It answers `true` on
+/// any doubt: a profile label that names no profile counts as one that may
+/// attach. Today no guest reaches the proxy before E4, so this costs eval
+/// cells nothing they could use; it keeps the confirmation true when E4 lands.
+pub(crate) fn may_attach(spec: &nucleus_spec::PodSpec, config: &ProxyConfig) -> bool {
+    use nucleus_spec::isolation_profile::IsolationProfile;
+    match config {
+        ProxyConfig::NotConfigured => false,
+        ProxyConfig::Binary { .. } => {
+            !matches!(IsolationProfile::of(spec), Ok(IsolationProfile::Standard))
+        }
+    }
+}
+
 /// Start the pod's egress proxy if it is an eval cell and the node has one.
 ///
 /// # Errors
@@ -840,6 +859,8 @@ pub(crate) async fn spawn_confined(spawn: Spawn<'_>) -> Result<Spawned, String> 
         &mut cmd,
         nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
         syscalls,
+        // A host service, not a pod child: it has no workspace to hold.
+        &nucleus::WorkspaceWrites::Writable,
     ) {
         nucleus::SpawnHardening::Hardened(_) => {}
         nucleus::SpawnHardening::Unhardened(why) => {

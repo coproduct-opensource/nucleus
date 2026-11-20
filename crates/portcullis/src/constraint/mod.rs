@@ -305,7 +305,7 @@ impl Nucleus<PermissionLattice> for Policy {
         if self.enforce_uninhabitable {
             let constraint = IncompatibilityConstraint::enforcing();
             let uninhabitable_state_obs = constraint.obligations_for(&result.capabilities);
-            result.obligations = result.obligations.union(&uninhabitable_state_obs);
+            result.add_obligations(&uninhabitable_state_obs);
         }
 
         // Apply user-defined constraints (with limited context)
@@ -316,7 +316,7 @@ impl Nucleus<PermissionLattice> for Policy {
 
             for constraint in &self.constraints {
                 if let Ok(obs) = constraint.evaluate(&ctx) {
-                    result.obligations = result.obligations.union(&obs);
+                    result.add_obligations(&obs);
                 }
             }
         }
@@ -477,13 +477,17 @@ mod tests {
 
         // Permissive lattice with uninhabitable_state
         let perms = PermissionLattice::builder()
-            .capabilities(CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::LowRisk,
-                ..Default::default()
-            })
-            .build();
+            .capabilities_with(
+                CapabilityLattice {
+                    read_files: CapabilityLevel::Always,
+                    web_fetch: CapabilityLevel::LowRisk,
+                    git_push: CapabilityLevel::LowRisk,
+                    ..Default::default()
+                },
+                crate::ConsentMode::Autonomous,
+            )
+            .build()
+            .expect("consent is declared");
 
         let result = policy.apply(&perms);
 

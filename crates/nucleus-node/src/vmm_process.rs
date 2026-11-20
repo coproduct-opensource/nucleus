@@ -449,6 +449,11 @@ mod pidfd {
                 Errno::SRCH => Handoff::VmmGone(pid),
                 errno => Handoff::Unobservable(errno.into()),
             })?;
+            // tokio 1.54 deprecates `with_interest` (tokio#8587) for `T`s whose descriptor can
+            // change under the reactor. `owned` is the pidfd's `OwnedFd`, moved in and closed only
+            // when the `AsyncFd` drops, so the `register_with_interest` obligation holds; see
+            // egress_link/queue.rs for why this is an `expect` and not an `unsafe` block.
+            #[expect(deprecated, reason = "OwnedFd pidfd owned by the AsyncFd; tokio#8587")]
             let fd = AsyncFd::with_interest(owned, tokio::io::Interest::READABLE)
                 .map_err(Handoff::Unobservable)?;
             Ok(Self { fd, exit: None })

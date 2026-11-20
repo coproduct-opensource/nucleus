@@ -25,51 +25,85 @@
 //! FM-3: no effect without a receipt, and a pod losing its egress is an effect.
 //! The FIRST refusal of each kind — the call that latched the ceiling, or the
 //! first pace refusal in a window — is appended to the pod's `lifecycle.log`
-//! with the dimension and the counts. Repeats are not, so a workload hammering
-//! a latched ledger cannot grow the host's log without bound.
+//! with the dimension and the counts, as an [`EgressRecord`] signed by the
+//! node's root key: the key that signs the pod's receipt (#2905). Repeats are
+//! not, so a workload hammering a latched ledger cannot grow the host's log
+//! without bound.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub mod body;
+pub mod link_record;
+pub mod record;
 mod upload;
+pub use link_record::LinkRecord;
+pub use record::EgressRecord;
 pub use upload::UploadCharge;
 
 use portcullis::{
-    EgressBytes, EgressCeiling, EgressDecision, EgressHold, EgressLedger, EgressNovelty,
-    EgressRefusal, EgressSettlement,
+    EgressBytes, EgressDecision, EgressHold, EgressNovelty, EgressRefusal, EgressSettlement,
 };
+
+use crate::pod_authority::egress::EgressChain;
 
 /// One pod's egress balance, as the host holds it.
 #[derive(Debug)]
 pub struct EgressMeter {
-    // None means accounting failed; it never means an unlimited balance (B-2).
-    ledger: Mutex<Option<EgressLedger>>,
+    /// The pod's own egress account and every ancestor's: each send reserves from all of them
+    /// (`pod_authority::egress`, #2905).
+    chain: EgressChain,
     /// Where the exhaustion record goes: this pod's directory.
     pod_dir: PathBuf,
     /// The pod, as the record names it.
     pod_id: String,
+    /// Signs the exhaustion record with the node's root key (#2905).
+    signer: crate::pod_authority::EgressRecordSigner,
 }
 
 impl EgressMeter {
-    /// A meter for a pod granted `ceiling`, recording into `pod_dir`.
+    /// A meter drawing on `chain`, recording into `pod_dir` and signing its
+    /// records with `signer`.
     #[must_use]
-    pub fn new(ceiling: EgressCeiling, pod_dir: PathBuf, pod_id: String) -> Arc<Self> {
+    fn signed(
+        chain: EgressChain,
+        pod_dir: PathBuf,
+        pod_id: String,
+        signer: crate::pod_authority::EgressRecordSigner,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            ledger: Mutex::new(Some(EgressLedger::new(ceiling))),
+            chain,
             pod_dir,
             pod_id,
+            signer,
         })
     }
 
-    /// The meter for a pod whose spec is `spec`: its declared
-    /// `network.egress`, or the finite default when it declared none.
+    /// The meter for an admitted pod: the egress chain its admission issued
+    /// (`PodAuthority::egress_chain`), never its spec read again — the
+    /// admitted ceiling is the meet of the spec and the parent's remaining
+    /// bytes (#2905). Its records are signed by the node's root key, through
+    /// `signer`.
     #[must_use]
-    pub fn for_pod(spec: &nucleus_spec::PodSpec, pod_dir: PathBuf, id: uuid::Uuid) -> Arc<Self> {
-        Self::new(
-            nucleus_spec::NetworkSpec::egress_ceiling(spec.spec.network.as_ref()),
+    pub fn for_pod(
+        chain: EgressChain,
+        pod_dir: PathBuf,
+        id: uuid::Uuid,
+        signer: crate::pod_authority::EgressRecordSigner,
+    ) -> Arc<Self> {
+        Self::signed(chain, pod_dir, id.to_string(), signer)
+    }
+
+    /// A meter for tests over one account nothing restores, signing with
+    /// [`test_authority`]'s key.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new(ceiling: portcullis::EgressCeiling, pod_dir: PathBuf, pod_id: String) -> Arc<Self> {
+        Self::signed(
+            EgressChain::root(crate::pod_authority::egress::EgressAccount::memory(ceiling)),
             pod_dir,
-            id.to_string(),
+            pod_id,
+            test_authority().egress_record_signer(),
         )
     }
 
@@ -82,39 +116,55 @@ impl EgressMeter {
         bytes: EgressBytes,
         now_unix: u64,
     ) -> Result<EgressCharge<'_>, EgressRefusal> {
-        // A poisoned lock means a holder panicked mid-update: the balance
-        // cannot be trusted, and "could not look" is a refusal (ADR 0007 A-1).
-        let decision = match self.ledger.lock() {
-            Ok(mut ledger) => match ledger.as_mut() {
-                Some(ledger) => ledger.reserve(bytes, now_unix),
-                None => EgressDecision::Refused(EgressRefusal::LedgerFault, EgressNovelty::Repeat),
-            },
-            Err(_) => EgressDecision::Refused(EgressRefusal::LedgerFault, EgressNovelty::First),
-        };
-        match decision {
-            EgressDecision::Admitted(hold) => Ok(EgressCharge {
-                meter: self,
-                hold: Some(hold),
-            }),
-            EgressDecision::Refused(refusal, novelty) => {
-                if novelty == EgressNovelty::First {
-                    self.record(&refusal).await;
+        // Every account on the chain, own first, all or nothing: a byte this
+        // pod sends is a byte each ancestor has spent too (#2905). A faulted or
+        // poisoned account refuses (ADR 0007 A-1).
+        let mut holds = Vec::with_capacity(self.chain.accounts().len());
+        for account in self.chain.accounts() {
+            match account.reserve(bytes, now_unix).await {
+                EgressDecision::Admitted(hold) => holds.push(hold),
+                EgressDecision::Refused(refusal, novelty) => {
+                    // Nothing left the host: the nearer accounts' holds go back.
+                    for (account, hold) in self.chain.accounts().iter().zip(holds) {
+                        account.settle(hold, EgressSettlement::NotSent);
+                    }
+                    if novelty == EgressNovelty::First {
+                        self.record(&refusal).await;
+                    }
+                    return Err(refusal);
                 }
-                Err(refusal)
             }
         }
+        Ok(EgressCharge { meter: self, holds })
     }
 
     /// A packet-accounting failure disables new sends through every path (A-2).
+    /// Only this pod's own account: its ancestors and siblings keep theirs.
     pub async fn fault(&self) {
-        let first = self
-            .ledger
-            .lock()
-            .map(|mut ledger| ledger.take().is_some())
-            .unwrap_or(true);
-        if first {
+        if self.chain.own().fault() {
             self.record(&EgressRefusal::LedgerFault).await;
         }
+    }
+
+    /// The pod's link check cut its egress: the kernel counted more leaving the link than this
+    /// ledger admitted (`cut` is [`LinkCut::Bypass`]), or the counters could not be read
+    /// ([`LinkCut::CouldNotCheck`]). Every path is refused from here on, as for [`Self::fault`],
+    /// and the cut leaves a [`LinkRecord`] signed by the node's root key (#2905).
+    ///
+    /// Recorded every time it is called, not once per latch: the detector calls it at most once
+    /// per pod, because it stops checking when it cuts.
+    pub async fn cut_link(&self, cut: link_record::LinkCut, finding: &str) {
+        // This pod's own account: the bypass is on its link. Its ancestors keep theirs.
+        self.chain.own().fault();
+        tracing::error!(pod = %self.pod_id, dimension = "egress.link", "{finding}");
+        let record = LinkRecord::signed(
+            &self.signer,
+            crate::lifecycle::now_unix(),
+            cut,
+            &self.pod_id,
+            finding.to_string(),
+        );
+        crate::lifecycle::write_lifecycle_record(&self.pod_dir, &record).await;
     }
 
     pub async fn record_packets(&self, bytes: u64, rejected: u64) {
@@ -132,11 +182,7 @@ impl EgressMeter {
     /// Bytes this pod has sent or has in flight.
     #[cfg(test)]
     pub fn counted(&self) -> EgressBytes {
-        self.ledger
-            .lock()
-            .ok()
-            .and_then(|l| l.as_ref().map(EgressLedger::counted))
-            .unwrap_or(EgressBytes::MAX)
+        self.chain.own().counted().unwrap_or(EgressBytes::MAX)
     }
 
     async fn record(&self, refusal: &EgressRefusal) {
@@ -147,13 +193,9 @@ impl EgressMeter {
             EgressRefusal::LedgerFault => "egress_ledger_fault",
         };
         tracing::warn!(pod = %self.pod_id, dimension = refusal.dimension(), "{refusal}");
-        crate::lifecycle::write_lifecycle_audit(
-            &self.pod_dir,
-            event,
-            &self.pod_id,
-            &refusal.to_string(),
-        )
-        .await;
+        let now = crate::lifecycle::now_unix();
+        let record = EgressRecord::signed(&self.signer, now, event, &self.pod_id, refusal);
+        crate::lifecycle::write_lifecycle_record(&self.pod_dir, &record).await;
     }
 
     /// Record one host-performed call this meter charged, in the pod's
@@ -172,17 +214,11 @@ impl EgressMeter {
         .await;
     }
 
-    fn settle(&self, hold: EgressHold, outcome: EgressSettlement) {
-        // Poisoned: the hold cannot be settled, so its bytes stay reserved —
-        // counted as sent, the fail-closed reading.
-        if let Ok(mut state) = self.ledger.lock() {
-            let Some(ledger) = state.as_mut() else { return };
-            // Unreachable from `EgressCharge`, which borrows the meter that
-            // decided its hold. Reported rather than dropped: the bytes stay
-            // reserved (fail-closed), and a fault here is a defect to find.
-            if let Err(e) = ledger.settle(hold, outcome) {
-                tracing::error!(pod = %self.pod_id, "egress settle refused: {e}");
-            }
+    /// Settle `holds`, one per account on the chain in order, as the charge
+    /// that borrowed this meter made them.
+    fn settle(&self, holds: Vec<EgressHold>, outcome: EgressSettlement) {
+        for (account, hold) in self.chain.accounts().iter().zip(holds) {
+            account.settle(hold, outcome);
         }
     }
 }
@@ -196,38 +232,65 @@ impl EgressMeter {
 #[must_use = "an egress charge must be settled with what happened to the send"]
 pub struct EgressCharge<'a> {
     meter: &'a EgressMeter,
-    hold: Option<EgressHold>,
+    /// One hold per account on the meter's chain, in order. Empty once settled.
+    holds: Vec<EgressHold>,
 }
 
 impl EgressCharge<'_> {
     /// The send went out, or may have.
     pub fn sent(mut self) {
-        if let Some(hold) = self.hold.take() {
-            self.meter.settle(hold, EgressSettlement::Sent);
-        }
+        self.meter
+            .settle(std::mem::take(&mut self.holds), EgressSettlement::Sent);
     }
 
     /// Provably nothing left the host: refund the bytes.
     #[cfg(test)]
     pub fn not_sent(mut self) {
-        if let Some(hold) = self.hold.take() {
-            self.meter.settle(hold, EgressSettlement::NotSent);
-        }
+        self.meter
+            .settle(std::mem::take(&mut self.holds), EgressSettlement::NotSent);
     }
 }
 
 impl Drop for EgressCharge<'_> {
     fn drop(&mut self) {
-        if let Some(hold) = self.hold.take() {
-            self.meter.settle(hold, EgressSettlement::Sent);
-        }
+        self.meter
+            .settle(std::mem::take(&mut self.holds), EgressSettlement::Sent);
     }
+}
+
+/// The node authority every test meter signs with: one per test process, over
+/// a state directory kept for the process's life.
+#[cfg(test)]
+pub(crate) fn test_authority() -> &'static Arc<crate::pod_authority::PodAuthority> {
+    static AUTHORITY: std::sync::OnceLock<Arc<crate::pod_authority::PodAuthority>> =
+        std::sync::OnceLock::new();
+    AUTHORITY.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        Arc::new(
+            crate::pod_authority::PodAuthority::new(
+                &crate::pod_authority::AuthorityArgs {
+                    root_minter_spiffe_id: None,
+                    cert_trust_anchors: Vec::new(),
+                    max_children_per_pod: 8,
+                    upstreams: None,
+                    upstreams_poll_secs: 0,
+                    federation_issuer: None,
+                    ingress: Default::default(),
+                    approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
+                },
+                "nucleus.local",
+                &dir,
+                &crate::pod_authority::NO_TPM,
+            )
+            .expect("a test authority"),
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use portcullis::EgressPace;
+    use portcullis::{EgressCeiling, EgressPace};
 
     fn meter(max: u64, dir: &std::path::Path) -> Arc<EgressMeter> {
         EgressMeter::new(
@@ -259,6 +322,69 @@ mod tests {
             "the latch is recorded once, not per refusal: {log}"
         );
         assert!(log.contains("80 of 100 bytes"), "{log}");
+    }
+
+    /// #2905: the exhaustion record is a receipt, not a log line. It carries the node's
+    /// signature and the key that made it, so a reader holding the node's pinned root key can
+    /// tell a record the node wrote from one anybody with write access to the pod directory
+    /// appended.
+    #[tokio::test]
+    async fn the_exhaustion_record_is_signed_by_the_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = meter(10, dir.path());
+        let _ = m.admit(11, 0).await.err().expect("past the ceiling");
+
+        let log = lifecycle(dir.path());
+        let line = log
+            .lines()
+            .find(|l| l.contains("egress_budget_exhausted"))
+            .unwrap_or_else(|| panic!("the exhaustion is recorded: {log}"));
+        let entry: serde_json::Value = serde_json::from_str(line).expect("one JSON record");
+        for field in ["signature", "signer_pubkey"] {
+            assert!(
+                entry
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|v| !v.is_empty()),
+                "the exhaustion record carries no {field}: {line}"
+            );
+        }
+
+        // The key is the node's root key — the one that signs its pod receipts — and the
+        // reader checks against the key it pinned, not the one the record names.
+        let node_key = test_authority().root_pubkey_hex();
+        let record: EgressRecord = serde_json::from_str(line).expect("an EgressRecord");
+        assert_eq!(record.dimension, "egress.max_bytes");
+        assert!(record.result.contains("0 of 10 bytes"), "{}", record.result);
+        assert!(
+            record.verifies_under(&node_key),
+            "the node's key verifies it"
+        );
+
+        // Every committed field is covered: moving the counts breaks the signature.
+        let mut forged = record.clone();
+        forged.result = forged.result.replace("10 bytes", "10000 bytes");
+        assert!(
+            !forged.verifies_under(&node_key),
+            "a rewritten count verifies"
+        );
+        let mut forged = record.clone();
+        forged.subject = "pod:another".into();
+        assert!(
+            !forged.verifies_under(&node_key),
+            "a re-attributed record verifies"
+        );
+
+        // A record naming some other key is not the node's, whatever it says.
+        assert!(!record.verifies_under(&"00".repeat(32)));
+
+        // Domain-separated from the pod receipt the same key signs: the exhaustion signature
+        // is not a receipt signature over the same bytes.
+        assert!(!crate::pod_authority::verify_pod_receipt(
+            &node_key,
+            &record.preimage(),
+            &record.signature
+        ));
     }
 
     #[tokio::test]

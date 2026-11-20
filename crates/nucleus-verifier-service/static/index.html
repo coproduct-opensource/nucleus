@@ -6,7 +6,7 @@
     <title>nucleus — cryptographically verifiable AI agent outputs</title>
     <meta
       name="description"
-      content="A signed certificate for every AI-generated output. Open-source verifier. EU AI Act Article 50 ready."
+      content="A signed certificate for every AI-generated output. Open-source verifier. Provenance evidence for EU AI Act Article 50."
     />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
@@ -44,7 +44,9 @@
         <p class="callout">
           <strong>EU AI Act Article 50</strong> takes effect 2026-08-02.
           Penalties up to &euro;15M or 3% global turnover for ungoverned
-          AI output. We're built for the deadline.
+          AI output. Nucleus supplies the signed provenance layer; embedding
+          a marking into the generated media is the generating application's
+          step.
         </p>
       </section>
 
@@ -111,8 +113,8 @@ const report = verifyBundle(bundleJson, trustAnchorJson);
         <ul class="grid">
           <li>
             <strong>nucleus-envelope</strong> &mdash; portable provenance
-            bundle format. C2PA v2.3, in-toto, SLSA Provenance v1.1,
-            Sigstore Bundle v0.3 exports built in.
+            bundle format. in-toto, SLSA Provenance v1.1 and Sigstore
+            Bundle v0.3 exports built in.
           </li>
           <li>
             <strong>nucleus-control-plane-server</strong> &mdash; REST

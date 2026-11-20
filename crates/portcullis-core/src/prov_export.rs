@@ -403,7 +403,7 @@ mod tests {
     /// The serialized document must not carry relation keys at all — a consumer
     /// reading the JSON should see plainly that no derivation was asserted,
     /// rather than an empty object that looks like a graph with no findings.
-    /// `serde_json` is an OPTIONAL dependency (`artifact`/`zkvm`), and `default = []`. A unit
+    /// `serde_json` is an OPTIONAL dependency (`artifact`), and `default = []`. A unit
     /// test inside `src/` has no `required-features` to lean on the way the `[[test]]` targets
     /// do, so it has to carry the gate itself -- which the sibling `prov_json_serializes` does
     /// and this one did not.

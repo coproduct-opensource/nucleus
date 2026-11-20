@@ -312,7 +312,10 @@ pub enum GuestCapability {
     /// (`portcullis::SeccompPolicy`, #2907): `execve` under `run_bash: never`,
     /// starting the child itself through one pinned descriptor, and
     /// `AF_INET`/`AF_INET6` sockets under `web_fetch: never` with no declared
-    /// egress, as `EPERM`, in the same filter as the workload denylist.
+    /// egress, as `EPERM`, in the same filter as the workload denylist. A
+    /// guest after 2.7.0 also denies `AF_INET6` alone when every declared
+    /// destination is IPv4 (`inet6_socket`); the node depends on neither, and
+    /// a guest without it denies less, never more.
     /// [`Demand::When`]`(`[`GuestUse::EvalCell`]`)`: an ordinary pod does not
     /// depend on it, and an older guest runs the denylist alone, which denies
     /// less, and its launch receipt carries no derived classes; an eval-cell pod
@@ -338,13 +341,6 @@ pub enum GuestCapability {
     /// nothing in the log; `nucleus-audit verify` refuses an older guest's
     /// keyless log by name rather than report it verified.
     SignedAuditLog,
-    /// The tool-proxy's shared-secret (HMAC) tier carries no authority: it
-    /// admits only `/v1/health`, which is answered before authentication
-    /// (#2446 step 2). [`Demand::Optional`]: nothing the node does needs the
-    /// tier gone. It is the one thing the deprecated
-    /// `--container-proxy-transport tcp-hmac` cannot work with, so the node
-    /// refuses that transport, by name, for an image whose release has it.
-    SharedSecretTierRetired,
     /// The tool-proxy prints its shadow telemetry on the guest console
     /// (`nucleus_spec::host_decide_telemetry::GuestTelemetry`, prefixed
     /// `NUCLEUS-HOST-DECIDE-TELEMETRY`): its own tally, every
@@ -379,6 +375,62 @@ pub enum GuestCapability {
     /// no proxy leaf, so every TLS handshake through the proxy is refused
     /// (`client_rejected_interception`), never tunnelled.
     EgressProxyTrust,
+    /// The tool-proxy signs its Article 12 decision log with the audit log's
+    /// Ed25519 key and names it in every record (#3309). An older proxy MACs
+    /// the log, under a key derived from the public session id when no operator
+    /// secret was set. [`Demand::Optional`]: the node reads only a record's
+    /// hash and authority binding, which both forms carry; `nucleus-audit
+    /// verify-art12` refuses an older guest's keyless log by name rather than
+    /// report it verified.
+    SignedArt12Log,
+    /// The tool-proxy reaches the host credential broker over a Unix socket the
+    /// node bind-mounts into a container pod (`NUCLEUS_TOOL_PROXY_BROKER_SOCKET`,
+    /// #2906), so the container driver's credentialed egress is performed by the
+    /// host (CB4A Model A) as Firecracker's is. An older tool-proxy dials only
+    /// vsock, finds none in a container, and refuses every credentialed call.
+    /// [`Demand::Optional`]: the node depends on it only for a container pod that
+    /// declares `credentialed_egress`, and `container_broker::admit_image` reads
+    /// it to refuse such a pod on an image known to lack it, by name.
+    ContainerBrokerSocket,
+    /// The tool-proxy binds a signed approval bundle to the spec's canonical
+    /// manifest hash ([`PodSpec::manifest_hash`](crate::PodSpec::manifest_hash):
+    /// SHA-256 of `nucleus.pod-manifest.v3\0` and the spec's RFC 8785 JSON, the
+    /// hash a v3 receipt carries, #3393), and refuses by name a bundle bound to
+    /// the spec file's bytes (#3395). An older proxy hashes the bytes of the
+    /// `pod.yaml` the node wrote, so a bundle minted for it has to reproduce the
+    /// node's YAML writer byte for byte. [`Demand::Optional`]: the node delivers
+    /// no approval bundle and depends on neither binding; whoever mints a bundle
+    /// for a pod picks the hash from the guest's release
+    /// ([`crate::approval_binding::ApprovalBinding::for_guest_release`]), and a
+    /// bundle bound the other way is refused by the guest, never accepted.
+    CanonicalManifestApproval,
+    /// guest-init places the node's decision material (`decision_gate::DecisionMaterial`, carried
+    /// in the `FETCH_POD_SPEC` reply) under `decision_gate::GUEST_DIR` for the tool-proxy, and the
+    /// tool-proxy refuses an effect the spec lists in `requires_decision` unless the call cites a
+    /// verified, in-scope owner decision, printing `decision_gate::ARMED_PREFIX` once armed.
+    /// An older guest-init ignores the material, and an older tool-proxy refuses a spec that
+    /// carries `requires_decision` as an unknown field, so such a pod fails closed there.
+    /// [`Demand::Optional`]: the node depends on it only for a pod that requires a decision, and
+    /// `decision_provisioning` reads it to refuse that pod on a guest known to lack it, by name.
+    DecisionGatedSinks,
+    /// The tool-proxy stamps every memory record it writes with its session's floating
+    /// confidentiality (what the session had read, captured under the flow-graph lock that
+    /// decided the write) and re-derives a record's label against the floor it records
+    /// (Program C, C1). An older tool-proxy writes unstamped records, whose labels say nothing
+    /// of what their writer had read, and refuses a delivered record that is not Public.
+    /// [`Demand::Optional`]: the node serves a guest without it and learns less — it treats that
+    /// guest's records as unstamped (Secret wherever they are delivered), refuses them into a
+    /// space whose records are all stamped, and delivers it only stamped Public records.
+    MemoryDependencyStamp,
+    /// The tool-proxy starts a guest workload in a PID namespace of its own,
+    /// as the only child of that namespace's init, with a `/proc` mounted for
+    /// it (`hidepid=invisible`), and refuses the workload if it cannot (#3344).
+    /// The launch receipt records it (`pids=own`). [`Demand::Optional`] while
+    /// no release carries it: defence in depth under ADR 0013, and an older
+    /// guest's workload shares the runtime's PID namespace, held by its uid and
+    /// procfs access checks as before. An eval cell demands it once the pin
+    /// carries it.
+    WorkloadPidNamespace,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -434,7 +486,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 23] = [
+    pub const ALL: [GuestCapability; 28] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -453,11 +505,16 @@ impl GuestCapability {
         GuestCapability::WorkloadSyscallPolicy,
         GuestCapability::HostVerifiedProxySocket,
         GuestCapability::SignedAuditLog,
-        GuestCapability::SharedSecretTierRetired,
         GuestCapability::HostDecideTelemetry,
         GuestCapability::HostApprovalRedeem,
         GuestCapability::PodLinkRelay,
         GuestCapability::EgressProxyTrust,
+        GuestCapability::SignedArt12Log,
+        GuestCapability::ContainerBrokerSocket,
+        GuestCapability::CanonicalManifestApproval,
+        GuestCapability::DecisionGatedSinks,
+        GuestCapability::MemoryDependencyStamp,
+        GuestCapability::WorkloadPidNamespace,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -492,14 +549,29 @@ impl GuestCapability {
             // Read by a verifier, never by the node: an older guest's log is
             // refused by `nucleus-audit verify`, by name, not by the node.
             GuestCapability::SignedAuditLog => Demand::Optional,
-            // The node needs nothing from it; `container_transport::admit_image`
-            // reads it to refuse `tcp-hmac`, not to admit a guest.
-            GuestCapability::SharedSecretTierRetired => Demand::Optional,
             // Read by `cargo xtask host-decide-agreement`, never by the node.
             GuestCapability::HostDecideTelemetry => Demand::Optional,
             GuestCapability::HostApprovalRedeem => Demand::Optional,
             GuestCapability::PodLinkRelay => Demand::Optional,
             GuestCapability::EgressProxyTrust => Demand::Optional,
+            // Read by a verifier, never by the node: the collector reads a
+            // record's hash and authority, which both forms carry.
+            GuestCapability::SignedArt12Log => Demand::Optional,
+            // The node needs it only for a container pod with credentialed egress,
+            // and `container_broker::admit_image` reads it for that pod alone.
+            GuestCapability::ContainerBrokerSocket => Demand::Optional,
+            // The node delivers no approval bundle: the binding is between the
+            // bundle's minter and the guest, and a mismatch is refused in the
+            // guest (fail closed), never granted.
+            GuestCapability::CanonicalManifestApproval => Demand::Optional,
+            // Only a pod whose spec requires a decision depends on it, and
+            // `decision_provisioning` judges that pod alone, by name.
+            GuestCapability::DecisionGatedSinks => Demand::Optional,
+            // The node withholds and refuses for a guest without it; it never needs it to run
+            // one (`memory_provisioning::writer_of`).
+            GuestCapability::MemoryDependencyStamp => Demand::Optional,
+            // Defence in depth; an eval cell demands it once a release has it.
+            GuestCapability::WorkloadPidNamespace => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -564,12 +636,23 @@ impl GuestCapability {
             // published 2.6.0 tool-proxy MACs its audit log and still grants
             // authority on the shared-secret tier.
             GuestCapability::SignedAuditLog => FirstShipped::Release("2.7.0"),
-            GuestCapability::SharedSecretTierRetired => FirstShipped::Release("2.7.0"),
             // ADR 0014 S1: in this tree and in no release yet.
             GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
             GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
             GuestCapability::PodLinkRelay => FirstShipped::NotYet,
             GuestCapability::EgressProxyTrust => FirstShipped::NotYet,
+            // #3309: in this tree and in no release yet.
+            GuestCapability::SignedArt12Log => FirstShipped::NotYet,
+            // #2906: in this tree and in no release yet.
+            GuestCapability::ContainerBrokerSocket => FirstShipped::NotYet,
+            // #3395: in this tree and in no release yet.
+            GuestCapability::CanonicalManifestApproval => FirstShipped::NotYet,
+            // Signed-decision node wiring: in this tree and in no release yet.
+            GuestCapability::DecisionGatedSinks => FirstShipped::NotYet,
+            // Program C, C1: in this tree and in no release yet.
+            GuestCapability::MemoryDependencyStamp => FirstShipped::NotYet,
+            // #3344: in this tree and in no release yet.
+            GuestCapability::WorkloadPidNamespace => FirstShipped::NotYet,
         }
     }
 
@@ -677,12 +760,6 @@ impl GuestCapability {
                  secret, empty on vsock and on the peer-verified socket, so `nucleus-audit \
                  verify` refuses that log by name (the node does not require it)"
             }
-            GuestCapability::SharedSecretTierRetired => {
-                "#2446 (step 2) left the tool-proxy's shared-secret tier no authority: it \
-                 admits only /v1/health. An older proxy still serves HMAC-signed requests, \
-                 which is all the deprecated tcp-hmac container transport speaks (the node \
-                 does not require it, and refuses tcp-hmac for an image that has it)"
-            }
             GuestCapability::HostDecideTelemetry => {
                 "ADR 0014 (S1) has the tool-proxy print its shadow tally, every HostUnavailable \
                  by kind and its Decide round-trip p50/p99 on the guest console; an older guest \
@@ -704,6 +781,45 @@ impl GuestCapability {
                 "ADR 0015 E3 has guest-init install the pod egress CA certificate into a trust \
                  bundle for the workload; an older guest trusts no proxy leaf, so its TLS through \
                  the proxy is refused, never tunnelled (the node does not require it)"
+            }
+            GuestCapability::SignedArt12Log => {
+                "#3309 has the tool-proxy sign its Article 12 log with its audit signer and name \
+                 the key in every record; an older proxy MACs the log, so `nucleus-audit \
+                 verify-art12` refuses that log by name unless given its non-empty secret (the \
+                 node does not require it)"
+            }
+            GuestCapability::ContainerBrokerSocket => {
+                "#2906 has the tool-proxy reach the host credential broker over a Unix socket \
+                 the node bind-mounts into a container pod; an older tool-proxy dials only \
+                 vsock, so a container pod's credentialed egress could never be performed and \
+                 the node refuses that pod on such an image"
+            }
+            GuestCapability::CanonicalManifestApproval => {
+                "#3395 has the tool-proxy bind a signed approval bundle to the spec's canonical \
+                 v3 manifest hash (the receipt's, #3393) and refuse a bundle bound to the spec \
+                 file's bytes by name; an older proxy binds the bytes of the pod.yaml the node \
+                 wrote, so a bundle for it must carry that hash instead (the node does not \
+                 require it)"
+            }
+            GuestCapability::DecisionGatedSinks => {
+                "signed-decision wiring has guest-init place the node's decision trust roots and \
+                 bundles for the tool-proxy, which refuses an effect the spec lists in \
+                 requires_decision unless the call cites a verified, in-scope owner decision; an \
+                 older tool-proxy refuses a spec carrying requires_decision, so the node refuses \
+                 such a pod on a guest known to predate it"
+            }
+            GuestCapability::MemoryDependencyStamp => {
+                "Program C, C1 has the tool-proxy stamp each memory record with what its session \
+                 had read and re-derive labels against the recorded floor; an older tool-proxy \
+                 writes unstamped records and refuses a delivered record that is not Public, so \
+                 the node treats its records as Secret, refuses them into a stamped space, and \
+                 delivers it only stamped Public records"
+            }
+            GuestCapability::WorkloadPidNamespace => {
+                "#3344 has the tool-proxy start a guest workload in a PID namespace of its own \
+                 with its own /proc, so the workload has no pid for the tool-proxy or guest-init; \
+                 an older guest's workload shares the runtime's PID namespace, held by its uid \
+                 and procfs access checks (the node does not require it)"
             }
         }
     }
@@ -857,9 +973,7 @@ fn skew_against(
 /// filter from the pod's lattice (#2907, #3285), signs its audit log with a key
 /// the workload cannot reach (#3293), and grants no authority on the
 /// shared-secret tier (#2446 step 2). The node requires none of them, so it
-/// still serves a 2.6.0 guest; only a container pod on the deprecated
-/// `tcp-hmac` transport refuses a 2.7.0 image, because that transport speaks
-/// nothing else. `2.6.0` is the first release whose tool-proxy decides a push's bodiless ref
+/// still serves a 2.6.0 guest. `2.6.0` is the first release whose tool-proxy decides a push's bodiless ref
 /// advertisement as a read (#3266), and confines the workload's and every
 /// command's filesystem with Landlock (#2696 P3c), which the guest kernel
 /// pinned since #3270 supports. The node requires neither, so it still serves
@@ -1128,6 +1242,12 @@ mod tests {
             GuestCapability::HostApprovalRedeem,
             GuestCapability::PodLinkRelay,
             GuestCapability::EgressProxyTrust,
+            GuestCapability::SignedArt12Log,
+            GuestCapability::ContainerBrokerSocket,
+            GuestCapability::CanonicalManifestApproval,
+            GuestCapability::DecisionGatedSinks,
+            GuestCapability::MemoryDependencyStamp,
+            GuestCapability::WorkloadPidNamespace,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1302,12 +1422,20 @@ mod tests {
                 GuestCapability::PushAdvertisementIsRead => GuestCapability::WorkloadSyscallPolicy,
                 GuestCapability::WorkloadSyscallPolicy => GuestCapability::HostVerifiedProxySocket,
                 GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
-                GuestCapability::SignedAuditLog => GuestCapability::SharedSecretTierRetired,
-                GuestCapability::SharedSecretTierRetired => GuestCapability::HostDecideTelemetry,
+                GuestCapability::SignedAuditLog => GuestCapability::HostDecideTelemetry,
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
                 GuestCapability::HostApprovalRedeem => GuestCapability::PodLinkRelay,
                 GuestCapability::PodLinkRelay => GuestCapability::EgressProxyTrust,
                 GuestCapability::EgressProxyTrust => GuestCapability::CaBundle,
+                GuestCapability::HostApprovalRedeem => GuestCapability::SignedArt12Log,
+                GuestCapability::SignedArt12Log => GuestCapability::ContainerBrokerSocket,
+                GuestCapability::ContainerBrokerSocket => {
+                    GuestCapability::CanonicalManifestApproval
+                }
+                GuestCapability::CanonicalManifestApproval => GuestCapability::DecisionGatedSinks,
+                GuestCapability::DecisionGatedSinks => GuestCapability::MemoryDependencyStamp,
+                GuestCapability::MemoryDependencyStamp => GuestCapability::WorkloadPidNamespace,
+                GuestCapability::WorkloadPidNamespace => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

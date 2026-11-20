@@ -44,6 +44,7 @@ fn uninhabitable_bypass_via_deserialization_rejected() {
             "create_pr": "low_risk"
         },
         "obligations": {"approvals": []},
+        "autonomous": ["read_files", "write_files", "edit_files", "glob_search", "grep_search", "web_search", "web_fetch", "git_commit", "create_pr"],
         "paths": {"allowed": [], "blocked": [], "work_dir": null},
         "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
         "commands": {"allowed": [], "blocked": []},
@@ -69,13 +70,13 @@ fn uninhabitable_cannot_be_disabled_through_meet() {
     use portcullis::{CapabilityLevel, Operation};
 
     // Create permission set with uninhabitable_state constraint enabled
-    let mut enabled = PermissionLattice::default();
+    let mut enabled = PermissionLattice::supervised();
     enabled.capabilities.read_files = CapabilityLevel::Always;
     enabled.capabilities.web_fetch = CapabilityLevel::LowRisk;
     enabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be uninhabitable_state
 
     // Create permission set with uninhabitable_state constraint disabled
-    let mut disabled = PermissionLattice::default().with_uninhabitable_disabled();
+    let mut disabled = PermissionLattice::supervised().with_uninhabitable_disabled();
     disabled.capabilities.read_files = CapabilityLevel::Always;
     disabled.capabilities.web_fetch = CapabilityLevel::LowRisk;
     disabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be uninhabitable_state if enabled
@@ -382,7 +383,7 @@ fn command_null_byte_handling() {
 fn delegation_cannot_escalate_capabilities() {
     let parent = PermissionLattice::restrictive();
     let requested = {
-        let mut p = PermissionLattice::default();
+        let mut p = PermissionLattice::supervised();
         p.capabilities = portcullis::CapabilityLattice::permissive();
         p
     };
@@ -407,13 +408,13 @@ fn delegation_cannot_escalate_capabilities() {
 fn delegation_chain_monotonicity() {
     let root = PermissionLattice::permissive();
     let level1 = root
-        .delegate_to(&PermissionLattice::default(), "level 1")
+        .delegate_to(&PermissionLattice::supervised(), "level 1")
         .unwrap();
     let level2 = level1
-        .delegate_to(&PermissionLattice::default(), "level 2")
+        .delegate_to(&PermissionLattice::supervised(), "level 2")
         .unwrap();
     let level3 = level2
-        .delegate_to(&PermissionLattice::default(), "level 3")
+        .delegate_to(&PermissionLattice::supervised(), "level 3")
         .unwrap();
 
     // Each level should be ≤ its parent
@@ -428,14 +429,14 @@ fn delegation_chain_monotonicity() {
 #[test]
 fn delegation_budget_cannot_exceed_remaining() {
     let mut parent = {
-        let mut p = PermissionLattice::default();
+        let mut p = PermissionLattice::supervised();
         p.budget = BudgetLattice::with_cost_limit(10.0);
         p
     };
     parent.budget.charge_f64(8.0); // Use up most of the budget
 
     let requested = {
-        let mut p = PermissionLattice::default();
+        let mut p = PermissionLattice::supervised();
         p.budget = BudgetLattice::with_cost_limit(5.0); // Requests more than remaining
         p
     };
@@ -457,7 +458,7 @@ fn delegation_budget_cannot_exceed_remaining() {
 fn effective_permissions_detect_tampering() {
     use portcullis::EffectivePermissions;
 
-    let original = PermissionLattice::default();
+    let original = PermissionLattice::supervised();
     let effective = EffectivePermissions::new(original);
     let _original_checksum = effective.checksum.clone();
 

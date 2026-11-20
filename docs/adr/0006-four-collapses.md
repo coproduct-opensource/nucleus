@@ -359,6 +359,7 @@ of their stack rather than the end.
 | C2.3 | `GuardedAction<Act>` replaces `GuardedAction<Operation>` / `<String>`; delete `Authorized<A>` | lowers `DEAD_COUNT` from C0.2 | proposed |
 | C2.4 | `Authority::spend(act)`; `EffectCall` stops being `(&'static str, String)` | the `gate()` helper's `Ok(Authority::new(bundle))` re-wrap, which reopens the affine seam it just closed | **partial** — `spend_on(self, &Act)` exists beside a transitional `spend(self, Operation, SinkClass)` |
 | C2.5 | Effect traits take the witness by value, one trait per PR | `run_args`'s `compile_fail` doctest fails on **arity**, so it pins nothing; `DecisionToken` is inert outside `debug_assert` (item 25) | proposed |
+| C2.6 | `CanonicalEffectKind` / `CanonicalAct` partition the 13 operations into 5 primitives; `CanonicalEffectHandler::perform` dispatches by value | grep ran as glob, a payload-less write truncated, open-PR returned an unchecked `Ok`, observe/teardown ran as spawn, argv was space-joined — each now refused or quoted, and pinned by a test | **API landed, unwired** — zero production callers; it delivers nothing until a call site migrates |
 | C3.1 | The `Ceiling` / `Permit` / `Voucher` split; `Action = Act` | — | proposed |
 | C3.2 | One burn ledger for the five that exist | `SessionCleanseToken` is taken by `&` and never consumed | proposed |
 | C4.1 | `PermissionLattice` through `ProductLattice`; `Kernel::attenuate` through `MeetCap` | deletes the defensive `leq` re-check of a law the trait guarantees | proposed |

@@ -17,6 +17,12 @@
 //! these measurements.* Do not label this "hardware attestation" or "DICE measured
 //! boot."
 //!
+//! A node with a TPM also quotes each launch, and the leaf names the quote (OID
+//! `.1.7`, ADR 0016 D2). [`VerifiedLaunch::verify_tpm`] checks that quote, and
+//! only a launch verified that way is rooted in the TPM
+//! ([`crate::launch_quote::LaunchRoot::Tpm`]); the rest of this module is the
+//! CA-signed claim alone.
+//!
 //! # DICE-format-compatible encoding
 //!
 //! The DER encoding borrows the TCG DICE `DiceTcbInfo` *format* (FWID hash
@@ -785,20 +791,37 @@ pub fn extract_mediation_key_binding(cert_der: &[u8]) -> Option<[u8; 32]> {
 /// anyone, passed `nucleus verify-attestation`. The tool-proxy had fixed the same
 /// defect for itself on 2026-09-29 with a private `VerifiedLaunch`, so a weak
 /// public check and a strong private one decided the same fact (ADR 0007 G-1).
-/// [`issued_launch`] is now the one decider, and both call it.
+/// This is now the only `VerifiedLaunch`: the tool-proxy's `SandboxProof::Attested`
+/// holds this type, and `verify_attested_svid` (so `SelfMeasuredBackend` and the
+/// CLI) reads a measured launch only out of one (ADR 0016 D1).
 ///
-/// The fields are private and [`VerifiedLaunch::verify`] is the only constructor
-/// (C-1, C-2). Both halves are required, in this order: a launch claim on a
-/// certificate the trusted CA did not sign is a forgery, not a weaker form of
-/// the real thing.
+/// The fields are private, and the struct is built in exactly one place, the
+/// measured arm of [`issued_launch`], after the chain check (C-1, C-2).
+/// [`VerifiedLaunch::verify`] is the public way to mint one. Both halves are
+/// required, in this order: a launch claim on a certificate the trusted CA did not
+/// sign is a forgery, not a weaker form of the real thing.
+///
+/// # Roots (ADR 0016 D2)
+///
+/// [`Self::verify`] roots the launch in the node CA's signature alone
+/// ([`LaunchRoot::NodeCa`]). [`Self::verify_tpm`] also requires the TPM launch
+/// quote the leaf names (OID `.1.7`) to have been taken over this leaf's key and
+/// this measurement, and to appraise `Attested` under the relying party's
+/// reference and anchors ([`LaunchRoot::Tpm`]).
+///
+/// [`LaunchRoot::NodeCa`]: crate::launch_quote::LaunchRoot::NodeCa
+/// [`LaunchRoot::Tpm`]: crate::launch_quote::LaunchRoot::Tpm
 #[derive(Debug)]
 pub struct VerifiedLaunch {
     spiffe_id: String,
     launch: LaunchAttestation,
+    root: crate::launch_quote::LaunchRoot,
 }
 
 impl VerifiedLaunch {
     /// Verify `leaf_der` against `trust_bundle`, then read its launch claim.
+    /// The launch is rooted in the node CA alone (`LaunchRoot::NodeCa`),
+    /// whether or not the leaf names a launch quote.
     ///
     /// # Errors
     ///
@@ -806,17 +829,50 @@ impl VerifiedLaunch {
     /// parseable launch attestation.
     pub fn verify(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<Self> {
         match issued_launch(leaf_der, trust_bundle)? {
-            IssuedLaunch::Measured(launch) => {
-                let spiffe_id = crate::spiffe_uri_from_svid(leaf_der).map_err(|e| {
-                    Error::VerificationFailed(format!("verified leaf has no SPIFFE ID: {e}"))
-                })?;
-                Ok(Self { spiffe_id, launch })
-            }
+            IssuedLaunch::Measured(verified) => Ok(verified),
             IssuedLaunch::Unmeasured(tier) => Err(Error::VerificationFailed(unmeasured(tier))),
             IssuedLaunch::Unstated => Err(Error::VerificationFailed(
                 "verified leaf carries no parseable launch attestation".to_string(),
             )),
         }
+    }
+
+    /// [`Self::verify`], then the TPM root: `quote_document` is the document
+    /// the leaf names (OID `.1.7`), its quote was taken over the nonce
+    /// recomputed from this leaf's `SubjectPublicKeyInfo` and measurement, and
+    /// it appraises `Attested` under `policy` (`LaunchRoot::Tpm`).
+    ///
+    /// The caller fetches the document (the node serves it on its anonymous
+    /// evidence listener, by the digest the leaf names); nothing here does I/O.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::verify`]'s, or any check of [`crate::launch_quote`]: no quote
+    /// named, a different document, a quote over another key or measurement, a
+    /// refused quote, or a tier other than `Attested`.
+    pub fn verify_tpm(
+        leaf_der: &[u8],
+        trust_bundle: &crate::TrustBundle,
+        quote_document: &[u8],
+        policy: &crate::launch_quote::LaunchQuotePolicy<'_>,
+    ) -> Result<Self> {
+        let Self {
+            spiffe_id,
+            launch,
+            root: _,
+        } = Self::verify(leaf_der, trust_bundle)?;
+        let appraised =
+            crate::launch_quote::appraise_launch_quote(leaf_der, &launch, quote_document, policy)?;
+        Ok(Self {
+            spiffe_id,
+            launch,
+            root: crate::launch_quote::LaunchRoot::Tpm(Box::new(appraised)),
+        })
+    }
+
+    /// What the launch is rooted in.
+    pub fn root(&self) -> &crate::launch_quote::LaunchRoot {
+        &self.root
     }
 
     /// The workload identity the verified leaf names.
@@ -834,15 +890,41 @@ impl VerifiedLaunch {
 /// launch claim, if it carries one. The issuer is checked first and always, so
 /// "carries no attestation" is said only of a leaf a trusted CA signed.
 fn issued_launch(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<IssuedLaunch> {
+    issued_launch_through(leaf_der, &[], trust_bundle)
+}
+
+/// [`issued_launch`] for a leaf the peer sent with `intermediates` (a TLS
+/// handshake), so a chain through an intermediate is checked as the handshake
+/// checked it.
+fn issued_launch_through(
+    leaf_der: &[u8],
+    intermediates: &[&[u8]],
+    trust_bundle: &crate::TrustBundle,
+) -> Result<IssuedLaunch> {
     let leaf = crate::certificate::Certificate::from_der(leaf_der.to_vec());
-    crate::verify_svid_chain(&leaf, trust_bundle).map_err(|e| {
-        Error::VerificationFailed(format!("leaf is not issued by a trusted CA: {e}"))
-    })?;
-    match (
-        extract_launch_attestation(leaf_der),
-        extract_unmeasured_launch(leaf_der)?,
-    ) {
-        (Some(launch), None) => Ok(IssuedLaunch::Measured(launch)),
+    crate::did_builder::verify_svid_chain_through(&leaf, intermediates, trust_bundle).map_err(
+        |e| Error::VerificationFailed(format!("leaf is not issued by a trusted CA: {e}")),
+    )?;
+    let launch = extract_launch_attestation(leaf_der);
+    // A launch extension that does not parse is not an absent one (A-2): read
+    // as absent, it would make a launch claim nobody can check look like a leaf
+    // that made none.
+    if launch.is_none() && carries_extension(leaf_der, crate::oid::OID_NUCLEUS_ATTESTATION_BYTES) {
+        return Err(Error::VerificationFailed(
+            "leaf carries an unreadable launch-attestation extension".into(),
+        ));
+    }
+    match (launch, extract_unmeasured_launch(leaf_der)?) {
+        (Some(launch), None) => {
+            let spiffe_id = crate::spiffe_uri_from_svid(leaf_der).map_err(|e| {
+                Error::VerificationFailed(format!("verified leaf has no SPIFFE ID: {e}"))
+            })?;
+            Ok(IssuedLaunch::Measured(VerifiedLaunch {
+                spiffe_id,
+                launch,
+                root: crate::launch_quote::LaunchRoot::NodeCa,
+            }))
+        }
         (None, Some(tier)) => Ok(IssuedLaunch::Unmeasured(tier)),
         (None, None) => Ok(IssuedLaunch::Unstated),
         // Two answers to one question is not a launch claim of either kind.
@@ -853,10 +935,22 @@ fn issued_launch(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<I
     }
 }
 
+/// Whether the certificate carries an extension with OID `oid_bytes`. A leaf
+/// that does not parse carries none: every caller has already chain-checked it.
+fn carries_extension(cert_der: &[u8], oid_bytes: &[u8]) -> bool {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+    X509Certificate::from_der(cert_der).is_ok_and(|(_, cert)| {
+        cert.extensions()
+            .iter()
+            .any(|e| e.oid.as_bytes() == oid_bytes)
+    })
+}
+
 /// What a leaf a trusted CA signed says about the launch it identifies.
 enum IssuedLaunch {
-    /// The node's measurement of the kernel, rootfs and config it launched.
-    Measured(LaunchAttestation),
+    /// The node's measurement of the kernel, rootfs and config it launched, on a
+    /// leaf that chains: the only arm that builds a [`VerifiedLaunch`].
+    Measured(VerifiedLaunch),
     /// The tier that launched it cannot measure a launch, and the leaf says so.
     Unmeasured(UnmeasuredTier),
     /// Neither: an identity that is not a pod launch (a node, a client).
@@ -952,6 +1046,156 @@ pub fn extract_unmeasured_launch(cert_der: &[u8]) -> Result<Option<UnmeasuredTie
     })
 }
 
+/// The isolation profile a measured launch was admitted under, named in the
+/// leaf (OID `.1.8`) so a relying party with no node state knows the peer is an
+/// eval cell (ADR 0016 D4).
+///
+/// It mirrors `nucleus_spec::isolation_profile::IsolationProfile`, which this
+/// crate does not depend on; the node maps one to the other in one exhaustive
+/// `match`. No `Default` (ADR 0007 B-1); every match over it is exhaustive (E-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvidProfile {
+    /// The node's ordinary admission.
+    Standard,
+    /// ADR 0013's eval cell: its handshake requires a verified launch.
+    EvalCell,
+}
+
+impl SvidProfile {
+    /// Every profile, for tests and censuses.
+    pub const ALL: [SvidProfile; 2] = [Self::Standard, Self::EvalCell];
+
+    /// The name the extension carries: the spelling of the spec's profile label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::EvalCell => "eval-cell",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.as_str() == name)
+    }
+
+    /// The extension value: the DER `UTF8String` of [`Self::as_str`].
+    ///
+    /// # Errors
+    ///
+    /// A name too long for a short-form DER length (none of today's).
+    pub fn extension_value(self) -> Result<Vec<u8>> {
+        let name = self.as_str().as_bytes();
+        let len = u8::try_from(name.len())
+            .ok()
+            .filter(|l| *l < 0x80)
+            .ok_or_else(|| Error::Internal(format!("profile `{}` is too long", self.as_str())))?;
+        let mut der = vec![0x0c, len];
+        der.extend_from_slice(name);
+        Ok(der)
+    }
+}
+
+/// The isolation profile a leaf names, if it carries the extension (OID `.1.8`).
+///
+/// # Errors
+///
+/// The leaf does not parse, or it carries the extension with a value that is
+/// not one known profile: a statement nobody can read is refused, never read as
+/// absent, and never as standard (ADR 0007 A-2, B-3).
+pub fn extract_isolation_profile(cert_der: &[u8]) -> Result<Option<SvidProfile>> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+    let (_, cert) = X509Certificate::from_der(cert_der)
+        .map_err(|e| Error::Certificate(format!("leaf does not parse: {e}")))?;
+    let Some(ext) = cert
+        .extensions()
+        .iter()
+        .find(|e| e.oid.as_bytes() == crate::oid::OID_NUCLEUS_ISOLATION_PROFILE_BYTES)
+    else {
+        return Ok(None);
+    };
+    let profile = match ext.value {
+        [0x0c, len, name @ ..] if usize::from(*len) == name.len() => {
+            std::str::from_utf8(name).ok().and_then(SvidProfile::parse)
+        }
+        _ => None,
+    };
+    profile.map(Some).ok_or_else(|| {
+        Error::VerificationFailed("leaf carries an unreadable isolation-profile extension".into())
+    })
+}
+
+/// What a TLS handshake admitted a client certificate as (ADR 0016 D4).
+///
+/// Built only by [`admit_peer_launch`], which every mTLS acceptor runs at the
+/// handshake (`tls::LaunchCheckingClientVerifier`). Closed (E-2).
+#[derive(Debug)]
+pub enum PeerLaunch {
+    /// An eval cell whose measured launch verified against the bundle.
+    EvalCell(VerifiedLaunch),
+    /// A standard pod whose measured launch verified against the bundle.
+    Standard(VerifiedLaunch),
+    /// A standard pod on a tier that cannot measure a launch, which says so.
+    Unmeasured(UnmeasuredTier),
+    /// A leaf that states no launch at all: a node, an operator, a client.
+    NoLaunch,
+}
+
+/// The handshake's launch decision for a client certificate (ADR 0016 D4).
+///
+/// The chain is checked first, always, by the one decider [`VerifiedLaunch`]
+/// uses. Then:
+///
+/// - an **eval-cell** leaf (OID `.1.8` = `eval-cell`) is admitted only with a
+///   measured launch that verifies; an unmeasured or absent launch is refused;
+/// - a **standard** leaf that carries a launch must verify, and one that carries
+///   none is tolerated (a node, an operator, a pre-profile pod);
+/// - an unreadable profile, launch, unmeasured-tier or launch-quote extension is
+///   refused, never read as absent (A-2);
+/// - a profile on a leaf with no measured launch is two answers to one question
+///   (the node states a profile only on a measured launch), and is refused.
+///
+/// `intermediates` are the DER certificates the peer sent after its leaf.
+///
+/// # Errors
+///
+/// Each refusal above, by name.
+pub fn admit_peer_launch(
+    leaf_der: &[u8],
+    intermediates: &[&[u8]],
+    trust_bundle: &crate::TrustBundle,
+) -> Result<PeerLaunch> {
+    let issued = issued_launch_through(leaf_der, intermediates, trust_bundle)?;
+    let profile = extract_isolation_profile(leaf_der)?;
+    // Read for its refusal only: an unreadable `.1.7` is not an absent one.
+    crate::launch_quote::extract_launch_quote_digest(leaf_der)?;
+    let refused = |why: String| Err(Error::VerificationFailed(why));
+    // Exhaustive over both, no `_` arm (E-2).
+    match (profile, issued) {
+        (Some(SvidProfile::EvalCell), IssuedLaunch::Measured(v)) => Ok(PeerLaunch::EvalCell(v)),
+        (Some(SvidProfile::EvalCell), IssuedLaunch::Unmeasured(tier)) => refused(format!(
+            "an eval-cell SVID with an unmeasured `{}` launch: an eval cell is admitted only \
+             with a verified launch",
+            tier.as_str()
+        )),
+        (Some(SvidProfile::EvalCell), IssuedLaunch::Unstated) => refused(
+            "an eval-cell SVID that carries no launch: an eval cell is admitted only with a \
+             verified launch"
+                .into(),
+        ),
+        (Some(SvidProfile::Standard) | None, IssuedLaunch::Measured(v)) => {
+            Ok(PeerLaunch::Standard(v))
+        }
+        (None, IssuedLaunch::Unmeasured(tier)) => Ok(PeerLaunch::Unmeasured(tier)),
+        (None, IssuedLaunch::Unstated) => Ok(PeerLaunch::NoLaunch),
+        (Some(SvidProfile::Standard), IssuedLaunch::Unmeasured(_) | IssuedLaunch::Unstated) => {
+            refused(
+                "a leaf names an isolation profile but no measured launch: a profile is \
+                 stated only on a measured launch"
+                    .into(),
+            )
+        }
+    }
+}
+
 /// Relying-party verification of an attested SVID served over `FETCH_SVID`.
 ///
 /// This is the *outside* verifier for the North Star C9 leg: given the PEM cert
@@ -989,9 +1233,9 @@ pub fn verify_attested_svid(
     let leaf = pem::parse(chain_pem)
         .map_err(|e| Error::VerificationFailed(format!("cert PEM parse failed: {e}")))?;
     match issued_launch(leaf.contents(), trust_bundle)? {
-        IssuedLaunch::Measured(att) => {
-            requirements.verify(&att)?;
-            Ok(Some(att))
+        IssuedLaunch::Measured(verified) => {
+            requirements.verify(verified.launch())?;
+            Ok(Some(verified.launch))
         }
         IssuedLaunch::Unmeasured(tier) if require_attestation => {
             Err(Error::VerificationFailed(unmeasured(tier)))

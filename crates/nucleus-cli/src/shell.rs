@@ -163,7 +163,7 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
     // Build PodSpec
     let spec_path = tmp_dir.join("pod.yaml");
     let pod_spec = build_shell_pod_spec(&args, &policy, &work_dir)?;
-    let yaml = serde_yaml::to_string(&pod_spec)?;
+    let yaml = nucleus_yaml::to_string(&pod_spec)?;
     fs::write(&spec_path, &yaml)?;
 
     let announce_path = tmp_dir.join("proxy.addr");
@@ -185,8 +185,13 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
 
     // Spawn tool-proxy as subprocess
     let mut proxy_child = transport
-        .command(&proxy_bin, &spec_path, &announce_path, &audit_path)
-        .args(crate::session_token::proxy_args(&task_token))
+        .command(
+            &proxy_bin,
+            &spec_path,
+            &announce_path,
+            &audit_path,
+            &task_token,
+        )
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -382,6 +387,7 @@ fn build_shell_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials,
+        requires_decision: Vec::new(),
     }))
 }
 

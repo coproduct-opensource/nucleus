@@ -784,7 +784,7 @@ fn upstreams(ups: u8) -> Vec<nucleus_spec::CredentialedEgressSpec> {
 
 fn spec_yaml(work: &std::path::Path, policy: PermissionLattice, ups: u8) -> String {
     let mut spec: nucleus_spec::PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     spec.spec.work_dir = work.to_path_buf();
     spec.spec.timeout_seconds = 600;
@@ -792,7 +792,7 @@ fn spec_yaml(work: &std::path::Path, policy: PermissionLattice, ups: u8) -> Stri
     spec.spec.policy = nucleus_spec::PolicySpec::Inline {
         lattice: Box::new(policy),
     };
-    serde_yaml::to_string(&spec).expect("spec serializes")
+    nucleus_yaml::to_string(&spec).expect("spec serializes")
 }
 
 fn key() -> Ed25519KeyPair {
@@ -811,6 +811,7 @@ fn node(dir: &tempfile::TempDir) -> Node {
         cert_trust_anchors: vec![hex::encode(ext_root.public_key().as_ref())],
         max_children_per_pod: FAN_OUT,
         upstreams: Some(registry),
+        upstreams_poll_secs: 0,
         federation_issuer: None,
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,

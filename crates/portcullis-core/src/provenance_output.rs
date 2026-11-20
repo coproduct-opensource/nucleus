@@ -5,7 +5,8 @@
 //! content hashes, parser ID, and receipt chain reference.
 //!
 //! Aligned with [AI Provenance Protocol (APP)](https://github.com/AI-Provenance-Protocol/ai-provenance-protocol)
-//! and EU AI Act Article 50 requirements for machine-readable AI output marking.
+//! and intended as provenance evidence toward EU AI Act Article 50's
+//! machine-readable marking — not, by itself, a marking of the output.
 
 use serde::Serialize;
 use std::collections::BTreeMap;

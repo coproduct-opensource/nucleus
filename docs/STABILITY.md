@@ -17,7 +17,7 @@ and invalidates Verus verification conditions.
 | **PodSpec** | `apiVersion: nucleus/v1`, field names, policy profile names | Integration tests |
 | **MCP Tools** | `read`, `write`, `run`, `glob`, `grep`, `web_fetch` | Tool-proxy tests |
 | **gRPC** | `nucleus.node.v1.NodeService` RPCs and message field numbers 1-8 | Proto compatibility |
-| **HMAC Protocol** | Header names (`x-nucleus-signature`, etc.), SHA-256 algorithm | Auth tests |
+| **Approval signature headers** | Header names (`x-nucleus-signature`, etc.); Ed25519, or HMAC-SHA256 for a legacy approval secret | Auth tests |
 | **Audit v1** | Entry fields (sequence through prev_hash), SHA-256 hash chain | Chain verification tests |
 | **Receipt v1** | Field set (pod_id through spiffe_id), `v1_content_hash` algorithm | Receipt verification |
 
@@ -62,9 +62,55 @@ When adding a new `UninhabitableState`, the implementor must demonstrate:
 
 No Verus re-verification is needed for extensions that follow these rules.
 
+## Breaking Changes
+
+### Explicit consent on `PermissionLattice` (after v2.7.0)
+
+Every operation whose capability level is above `never` must now be declared
+`Autonomous` or `RequiresApproval`:
+
+- A serialized `PermissionLattice` (an inline pod policy, a certificate's
+  lattice, a task grant's lattice) has a required `autonomous` field: the list
+  of operations that run without approval, beside the existing `obligations`
+  (the operations that require it). There is no default. A lattice without the
+  field, with a permitted operation in neither list, or with one in both, is
+  refused when it is read, and the error names each operation.
+- A profile (`ProfileSpec`, YAML or TOML) gains an `autonomous:` list with the
+  same rule, checked when the profile is loaded or built. A profile on disk
+  that relied on implicit autonomy is refused (a user profile directory reports
+  it and is ignored) until its autonomous operations are listed.
+- `PermissionLattice::default()`, `PermissionLattice::new(..)` and
+  `EffectivePermissions::default()` are gone (ADR 0007 B-1): the old default is
+  `PermissionLattice::supervised()`. `PermissionLatticeBuilder::build()` and
+  `build_unnormalized()` return `Result<_, ConsentError>`.
+- `PermissionLattice::requires_approval(op)` is now true for a permitted
+  operation that is not declared autonomous, and false for a forbidden one.
+
+**Migration.** List, under `autonomous`, each permitted operation that ran
+without approval before — every one at `low_risk` or `always` not already in
+`obligations`. The built-in profiles were migrated this way and decide exactly
+as they did (pinned per profile by `portcullis/tests/consent_preserved.rs`).
+
+**Compatibility with an older guest.** A node at this version still runs a
+pinned v2.7.0 guest: that guest ignores the `autonomous` key, and the bytes it
+hashes — `canonical_permissions_hash` (certificate signatures) and
+`program_checksum` (`program_digest`) — are unchanged. A node persists its pods'
+certificates; records written by a node before this change have no
+`autonomous` field and are refused on restore, so drain pods before upgrading
+a node.
+
+**Release note.** *Breaking: consent is explicit. Every permitted operation in
+a policy must be listed under `obligations` (requires approval) or `autonomous`
+(runs without approval); a policy that leaves one undeclared, or lists one
+twice, is refused by name. Inline pod policies and on-disk profiles that relied
+on implicit autonomy must add an `autonomous:` list. Built-in profiles are
+unchanged in behaviour. Drain pods before upgrading a node.*
+
 ## Serde Compatibility
 
-All extension fields use `#[serde(default)]` and `#[serde(skip_serializing_if = "...")]]`:
+All extension fields use `#[serde(default)]` and `#[serde(skip_serializing_if = "...")]]`
+(the consent declaration, above, is deliberately not an extension field: it
+has no default):
 
 - Old YAML/JSON without extension fields deserializes correctly (defaults to empty)
 - New YAML/JSON with extension fields is ignored by old consumers
@@ -75,5 +121,14 @@ All extension fields use `#[serde(default)]` and `#[serde(skip_serializing_if = 
 
 - `ExecutionReceipt.version`: Schema version (1 for v1.0). Verifiers that don't
   understand version N fall back to verifying `v1_content_hash` over fields 1-8.
+- `ExecutionReceipt.manifest_hash` changed rule at **version 3**: it is the hex
+  SHA-256 of `nucleus.pod-manifest.v3\0` followed by the RFC 8785 JSON of the
+  PodSpec (`nucleus_spec::PodSpec::manifest_hash`). Versions 1 and 2 hashed the
+  node's serde_yaml rendering of the spec; those receipts stay valid as issued
+  (the node signature covers the version and the hash) but their hash cannot be
+  recomputed from a spec. `nucleus_sdk::ExecutionReceipt::check_manifest` picks
+  the rule by version and refuses a version it does not know. Anyone comparing
+  `manifest_hash` across a node upgrade, or holding a pre-computed hash, sees
+  every value change at v3.
 - `AuditEntry.schema_version`: Entry schema version (1 for v1.0). The hash chain
   algorithm for v1 fields is frozen. Extension fields are not included in v1 hashes.

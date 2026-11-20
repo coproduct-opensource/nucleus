@@ -15,7 +15,7 @@ downstream machinery that should not be able to bypass it*.
 A reference monitor (Anderson 1972) must be **(1) tamperproof, (2) always
 invoked, (3) small enough to verify**. Property (3) is failing by default: the
 verified decision logic is intermingled with ~33k LOC of transport, storage,
-manifest parsing, enterprise glue, c2pa, zkvm, etc.
+manifest parsing, enterprise glue, zkvm, etc.
 
 ## Goal
 

@@ -417,6 +417,7 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
         }),
         pod_spec_yaml: p.pod_spec.then(|| "kind: Pod".to_string()),
         egress_ca_pem: None,
+        decisions: None,
         at_snapshot_barrier: Arc::default(),
         personalized: Arc::default(),
         receipt_dir: p.receipts.then(|| receipt_dir.to_path_buf()),

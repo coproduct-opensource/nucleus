@@ -143,8 +143,10 @@ struct ToolCall {
     /// `<state_dir>/approval_signing_key.der`.
     ///
     /// Supplying it lets the harness act as the human approver for operations
-    /// the profile rates `LowRisk`. Without it, an approval-gated call is
-    /// reported as refused rather than silently skipped.
+    /// the policy obligates (its obligation set: declared obligations plus any
+    /// the uninhabitable-state rule adds). A `LowRisk` level alone does not
+    /// require approval. Without it, an approval-gated call is reported as
+    /// refused rather than silently skipped.
     #[arg(long)]
     approval_key: Option<String>,
 }
@@ -215,7 +217,7 @@ fn agency_run(a: AgencyArgs) -> Result<()> {
     let mut spec: serde_json::Value = {
         let raw = std::fs::read_to_string(spec_path)
             .with_context(|| format!("reading spec {spec_path}"))?;
-        serde_yaml::from_str(&raw).with_context(|| format!("parsing spec {spec_path}"))?
+        nucleus_yaml::from_str(&raw).with_context(|| format!("parsing spec {spec_path}"))?
     };
 
     // The lattice the report divides by is the one the POD resolved, read from
@@ -348,7 +350,7 @@ fn podburst(b: Burst) -> Result<()> {
     let template: serde_json::Value = {
         let raw = std::fs::read_to_string(&b.spec)
             .with_context(|| format!("reading spec {}", &b.spec))?;
-        serde_yaml::from_str(&raw).with_context(|| format!("parsing spec {}", &b.spec))?
+        nucleus_yaml::from_str(&raw).with_context(|| format!("parsing spec {}", &b.spec))?
     };
 
     let counts: Vec<usize> = b
@@ -847,7 +849,7 @@ fn toolcall(t: ToolCall) -> Result<()> {
     let mut spec: serde_json::Value = {
         let raw = std::fs::read_to_string(&t.spec)
             .with_context(|| format!("reading spec {}", &t.spec))?;
-        serde_yaml::from_str(&raw).with_context(|| format!("parsing spec {}", &t.spec))?
+        nucleus_yaml::from_str(&raw).with_context(|| format!("parsing spec {}", &t.spec))?
     };
 
     // Credential ONLY what the scenarios invoke. `web_fetch` is deliberately

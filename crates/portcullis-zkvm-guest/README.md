@@ -2,9 +2,8 @@
 
 RISC-V zkVM guest program for proof-carrying WASM parser execution.
 
-This binary is compiled to a RISC-V ELF by `risc0-build` and embedded in
-[`portcullis-core`](../portcullis-core) (behind the `zkvm` feature). The host
-invokes the prover with this ELF and receives a `risc0_zkvm::Receipt` proving:
+This binary is compiled to a RISC-V ELF by `risc0-build`. A host that builds
+it invokes the prover with this ELF and receives a `risc0_zkvm::Receipt` proving:
 
 > "Parser with hash H, when executed on input I, produced output O."
 
@@ -35,6 +34,21 @@ let journal: [u8; 96] = receipt.journal.decode()?;
 // journal[0..32] = parser_hash, [32..64] = input_hash, [64..96] = output_hash
 ```
 
+## Status: outside the main build
+
+This is opt-in research (#1102/#1105/#3325). Since 2026-10-12 nothing in the
+root nucleus workspace depends on risc0: `portcullis-core` no longer has a
+`zkvm` feature (asking for it is a cargo error), and no crate builds or embeds
+this guest's ELF. The host-side receipt container that used to sit behind that
+feature, `ZkvmReceipt`, now lives in this crate's
+[`receipt`](src/receipt.rs) module. It compares journal hashes but does **not**
+verify the RISC Zero proof; no code in this repository does.
+
+This crate's own `Cargo.lock` carries risc0's dependency tree, including
+advisories (RUSTSEC-2025-0055, RUSTSEC-2025-0141, RUSTSEC-2024-0388) that the
+required `audit` gate does not see, because that gate scans only the root
+lockfile. That was accepted when the crate was moved out.
+
 ## Building & testing
 
 This crate declares its **own `[workspace]`** so it can be compiled
@@ -49,8 +63,8 @@ the main nucleus workspace.
 
 - The **binary** target links only for the zkVM target (it uses the risc0
   `guest::entry!` macro); building the bin on the host is expected to fail at
-  link time. It is produced via `risc0-build` during a `zkvm`-feature build of
-  `portcullis-core`.
+  link time. Producing the ELF needs `risc0-build`, which nothing in this
+  repository currently runs.
 
 ## License
 

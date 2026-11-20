@@ -91,12 +91,8 @@ impl TlsServerConfig {
         // Install ring as the crypto provider
         let _ = default_provider().install_default();
 
-        let roots = root_store_from_trust_bundle(&self.trust_bundle)?;
-
-        // Create client verifier that requires client certs
-        let client_verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(|e| Error::Certificate(format!("failed to build client verifier: {}", e)))?;
+        // Require client certs, and admit each one's launch at the handshake.
+        let client_verifier = LaunchCheckingClientVerifier::new(&self.trust_bundle)?;
 
         // Parse server certificate chain
         let cert_chain = parse_cert_chain(&self.server_cert.chain_pem())?;
@@ -132,13 +128,101 @@ impl TlsServerConfig {
         resolver: Arc<dyn rustls::server::ResolvesServerCert>,
     ) -> Result<ServerConfig> {
         let _ = default_provider().install_default();
-        let roots = root_store_from_trust_bundle(&self.trust_bundle)?;
-        let client_verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(|e| Error::Certificate(format!("failed to build client verifier: {}", e)))?;
+        let client_verifier = LaunchCheckingClientVerifier::new(&self.trust_bundle)?;
         Ok(ServerConfig::builder()
             .with_client_cert_verifier(client_verifier)
             .with_cert_resolver(resolver))
+    }
+}
+
+/// The client-certificate verifier of every mTLS acceptor [`TlsServerConfig`]
+/// builds: the chain to the trust bundle, then the peer's launch
+/// ([`crate::admit_peer_launch`], ADR 0016 D4), both inside the handshake.
+///
+/// # Why at the handshake
+///
+/// A per-request check runs after the connection exists and after routing, and
+/// puts one decider in each router (D4's runner-up). Here a peer whose launch
+/// does not verify never completes the handshake, so no route of any listener
+/// built through [`TlsServerConfig`] sees it: an eval-cell SVID with no verified
+/// launch, a standard SVID whose launch does not verify, or a leaf whose launch
+/// statements cannot be read. A leaf that states no launch (a node, an
+/// operator) is admitted, as the chain alone admitted it before.
+///
+/// The census `nucleus-node/src/acceptor_census_tests.rs` holds every acceptor in the workspace
+/// to this verifier, or to a named exception.
+#[derive(Debug)]
+pub struct LaunchCheckingClientVerifier {
+    chain: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+    trust_bundle: TrustBundle,
+}
+
+impl LaunchCheckingClientVerifier {
+    /// The verifier for clients issued under `trust_bundle`.
+    ///
+    /// # Errors
+    ///
+    /// A root in the bundle does not load, or rustls refuses the verifier.
+    pub fn new(trust_bundle: &TrustBundle) -> Result<Arc<Self>> {
+        let roots = root_store_from_trust_bundle(trust_bundle)?;
+        let chain = WebPkiClientVerifier::builder(Arc::new(roots))
+            .build()
+            .map_err(|e| Error::Certificate(format!("failed to build client verifier: {}", e)))?;
+        Ok(Arc::new(Self {
+            chain,
+            trust_bundle: trust_bundle.clone(),
+        }))
+    }
+}
+
+impl rustls::server::danger::ClientCertVerifier for LaunchCheckingClientVerifier {
+    fn offer_client_auth(&self) -> bool {
+        self.chain.offer_client_auth()
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        self.chain.client_auth_mandatory()
+    }
+
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        self.chain.root_hint_subjects()
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: UnixTime,
+    ) -> std::result::Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        let verified = self
+            .chain
+            .verify_client_cert(end_entity, intermediates, now)?;
+        let intermediates: Vec<&[u8]> = intermediates.iter().map(|c| c.as_ref()).collect();
+        crate::admit_peer_launch(end_entity.as_ref(), &intermediates, &self.trust_bundle)
+            .map_err(|e| rustls::Error::General(format!("peer launch refused: {e}")))?;
+        Ok(verified)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.chain.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.chain.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.chain.supported_verify_schemes()
     }
 }
 
@@ -591,3 +675,7 @@ mod tests {
         assert!(key.is_ok());
     }
 }
+
+#[cfg(test)]
+#[path = "handshake_launch_tests.rs"]
+mod handshake_launch_tests;

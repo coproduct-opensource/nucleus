@@ -292,6 +292,18 @@ pub fn landlock_waiver_flag(cmdline: &str) -> Option<&'static str> {
         .then_some("--workload-without-landlock")
 }
 
+/// The tool-proxy flag that carries the node's confirmation that this VM has no
+/// network interface, no egress proxy and no credentialed upstream (#3493):
+/// `Some` only when the command line holds exactly
+/// `guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG`. Any other spelling confirms
+/// nothing, so a typo keeps today's labelling rather than lowering it.
+pub fn workload_network_isolated_flag(cmdline: &str) -> Option<&'static str> {
+    cmdline
+        .split_whitespace()
+        .any(|arg| arg == nucleus_spec::guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG)
+        .then_some("--workload-network-isolated")
+}
+
 /// Enforcing guests take only the host's spec. Legacy guests keep their baked
 /// spec precedence, including the host fallback for generic snapshot bases.
 pub fn resolve_launch_spec(
@@ -469,6 +481,25 @@ mod host_spec_tests {
             "xnucleus.workload_landlock=waived",
         ] {
             assert_eq!(landlock_waiver_flag(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn only_the_exact_isolation_token_confirms_the_network() {
+        assert_eq!(
+            workload_network_isolated_flag(
+                "console=ttyS0 nucleus.workload_network=isolated panic=1"
+            ),
+            Some("--workload-network-isolated")
+        );
+        for line in [
+            "console=ttyS0",
+            "nucleus.workload_network=yes",
+            "nucleus.workload_network=isolated2",
+            "xnucleus.workload_network=isolated",
+            "nucleus.net=10.0.0.2/30,gw=10.0.0.1",
+        ] {
+            assert_eq!(workload_network_isolated_flag(line), None, "{line}");
         }
     }
 

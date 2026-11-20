@@ -136,7 +136,7 @@ async fn the_keys_document_names_the_executor_key() {
 }
 
 /// Every route the node's API mounts (`main.rs`, `node_evidence::routes`,
-/// `workload_result::routes`, `pod_api::effect_approvals::routes`) and the
+/// `workload_result::routes`, `pod_api::routes`) and the
 /// federation listener's one route, each with the method that serves it.
 /// Mounting any of them here turns this red (A-19).
 const API_ROUTES: &[(&str, &str)] = &[
@@ -146,6 +146,7 @@ const API_ROUTES: &[(&str, &str)] = &[
     ("POST", "/v1/pods/p1/cancel"),
     ("POST", "/v1/pods/p1/snapshot"),
     ("GET", "/v1/pods/p1/receipt"),
+    ("GET", "/v1/pods/p1/ended"),
     ("GET", "/v1/pods/p1/workload-admission"),
     ("GET", "/v1/pods/p1/workload-result"),
     ("GET", "/v1/pods/p1/workload-logs/stdout"),

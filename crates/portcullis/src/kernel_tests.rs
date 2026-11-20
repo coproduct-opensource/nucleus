@@ -1,7 +1,17 @@
 #![allow(deprecated)] // Tests exercise both decide() and decide_term(); migration tracked in #1194
 
 use super::*;
+use crate::flow_graph::ActionParents;
 use crate::{CapabilityLevel, PermissionLattice};
+// Borrow one node id as a parent slice (a `let`-bound `&[id]` would be a dropped temporary).
+use std::slice::from_ref as one;
+
+/// The user's instruction: the control parent of a prompted action (#3459).
+fn user_prompt(kernel: &mut Kernel) -> u64 {
+    kernel
+        .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
+        .unwrap()
+}
 
 fn trusted_term_input(name: &str) -> crate::ActionInput {
     crate::ActionInput::new(
@@ -9,6 +19,20 @@ fn trusted_term_input(name: &str) -> crate::ActionInput {
         "sha256:abc123",
         portcullis_core::DerivationClass::Deterministic,
     )
+}
+
+/// Every permitted operation declared autonomous: what these fixtures meant,
+/// before consent was explicit, by listing no obligations.
+fn autonomous_builder(
+    caps: crate::capability::CapabilityLattice,
+) -> crate::PermissionLatticeBuilder {
+    PermissionLattice::builder().capabilities_with(caps, crate::ConsentMode::Autonomous)
+}
+
+/// [`autonomous_builder`], built.
+fn autonomous_lattice(caps: crate::capability::CapabilityLattice) -> PermissionLattice {
+    let b = autonomous_builder(caps);
+    b.build().expect("every permitted op is declared")
 }
 
 #[test]
@@ -161,7 +185,7 @@ fn test_path_blocked() {
 
 #[test]
 fn test_session_id_stable() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let kernel = Kernel::new(perms);
 
     let id1 = kernel.session_id();
@@ -524,7 +548,7 @@ fn test_decision_with_action_term_serializes() {
 
 #[test]
 fn test_decision_count() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     assert_eq!(kernel.decision_count(), 0);
@@ -536,7 +560,7 @@ fn test_decision_count() {
 
 #[test]
 fn test_zero_charge_is_noop() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     let remaining = kernel.remaining_usd();
@@ -547,7 +571,7 @@ fn test_zero_charge_is_noop() {
 
 #[test]
 fn test_negative_charge_is_noop() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     let remaining = kernel.remaining_usd();
@@ -596,7 +620,7 @@ fn test_complete_mediation_coverage() {
 
 #[test]
 fn test_pre_post_permission_hashes_stable() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let mut kernel = Kernel::new(perms);
 
     let (d1, _token) = kernel.decide(Operation::ReadFiles, "/a");
@@ -611,25 +635,23 @@ fn test_pre_post_permission_hashes_stable() {
 fn test_doc_editor_kernel_session() {
     // doc-editor: read all, write docs, no network, no bash, no push
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("doc-editor-like")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::LowRisk,
-            edit_files: CapabilityLevel::LowRisk,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Never,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::LowRisk,
+        edit_files: CapabilityLevel::LowRisk,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Never,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("doc-editor-like");
 
     let mut kernel = Kernel::new(perms);
 
@@ -699,7 +721,7 @@ fn test_monotone_sequence_property() {
 
 #[test]
 fn test_exposure_starts_empty() {
-    let perms = PermissionLattice::default();
+    let perms = PermissionLattice::supervised();
     let kernel = Kernel::new(perms);
 
     assert_eq!(kernel.exposure().count(), 0);
@@ -710,25 +732,23 @@ fn test_exposure_starts_empty() {
 fn test_exposure_accumulates_on_allow() {
     // Use a profile that allows reads and web_fetch without uninhabitable_state obligations
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("read-and-fetch")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("read-and-fetch");
 
     let mut kernel = Kernel::new(perms);
 
@@ -768,25 +788,23 @@ fn test_exposure_does_not_accumulate_on_deny() {
 #[test]
 fn test_exposure_monotone_never_decreases() {
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("all-read")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("all-read");
 
     let mut kernel = Kernel::new(perms);
 
@@ -809,28 +827,26 @@ fn test_dynamic_exposure_gate_blocks_exfil() {
     // No uninhabitable_state obligations in the lattice because we construct one
     // without running normalize().
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
     // Clear any obligations the builder might have added
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem
     // from flow control (which would deny earlier via FlowViolation).
@@ -861,27 +877,25 @@ fn test_dynamic_exposure_gate_blocks_exfil() {
 #[test]
 fn test_dynamic_exposure_gate_with_pre_approval() {
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem.
     let mut kernel = Kernel::capability_only(perms);
@@ -908,27 +922,25 @@ fn test_dynamic_exposure_gate_with_pre_approval() {
 #[test]
 fn test_dynamic_exposure_gate_now_gates_local_sinks() {
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem.
     let mut kernel = Kernel::capability_only(perms);
@@ -953,25 +965,23 @@ fn test_dynamic_exposure_gate_now_gates_local_sinks() {
 #[test]
 fn test_exposure_transition_in_decision_trace() {
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("read-only")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Never,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Never,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("read-only");
 
     let mut kernel = Kernel::new(perms);
 
@@ -1006,28 +1016,28 @@ fn test_runbash_dynamic_gate_omnibus() {
     // complete the uninhabitable_state (it projects PrivateData too).
     use crate::capability::CapabilityLattice;
     use crate::CommandLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("bash-and-web")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Never,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .commands(CommandLattice::permissive())
-        .build();
+    let mut perms = autonomous_builder(CapabilityLattice {
+        read_files: CapabilityLevel::Never,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .description("bash-and-web")
+    .commands(CommandLattice::permissive())
+    .build()
+    .expect("consent is declared");
 
-    perms.obligations.approvals.clear();
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate the exposure gating subsystem.
     let mut kernel = Kernel::capability_only(perms);
@@ -1314,7 +1324,7 @@ fn test_from_certificate_enforces_restrictions() {
 
 #[test]
 fn test_kernel_without_certificate_has_no_provenance() {
-    let kernel = Kernel::new(PermissionLattice::default());
+    let kernel = Kernel::new(PermissionLattice::supervised());
     assert!(kernel.provenance().is_none());
 }
 
@@ -1359,12 +1369,14 @@ fn flow_enabled_by_default() {
     // Flow graph is always on. Flat decide() no longer gates — use
     // decide_with_parents() for flow enforcement via the causal DAG.
     //
+    let user = user_prompt(&mut kernel);
     // Observe web content (this is the data source, not an action).
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
     // Write depending on web content is blocked by DAG flow check
-    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", p);
     assert!(
         matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
         "Flow control should enforce via DAG, got {:?}",
@@ -1389,13 +1401,15 @@ fn flow_web_then_write_blocked() {
     let mut kernel = Kernel::new(perms);
     kernel.enable_flow_control();
 
+    let user = user_prompt(&mut kernel);
     // Observe web content — this is the data source node
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
 
     // WriteFiles depending on web content is blocked by DAG flow check
-    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", p);
     assert!(
         matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
         "Expected FlowViolation, got {:?}",
@@ -1454,6 +1468,7 @@ fn flow_check_runs_before_approvals() {
     // Pre-grant approval for GitPush
     kernel.grant_approval(Operation::GitPush, 1);
 
+    let user = user_prompt(&mut kernel);
     // Observe web content (data source)
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1461,7 +1476,8 @@ fn flow_check_runs_before_approvals() {
 
     // GitPush depending on web node should be DENIED by DAG flow check
     // even with pre-granted approval
-    let (d2, _) = kernel.decide_with_parents(Operation::GitPush, "origin main", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d2, _) = kernel.decide_with_parents(Operation::GitPush, "origin main", p);
     assert!(
         matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
         "Flow check must run before approval path! Got {:?}",
@@ -1476,6 +1492,7 @@ fn dag_independent_branches_no_overtaint() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     // Task A: web content (adversarial)
     let web_id = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1486,7 +1503,8 @@ fn dag_independent_branches_no_overtaint() {
         .unwrap();
 
     // Task B write depends ONLY on file — ALLOWED
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[file_id]);
+    let p = ActionParents::control(one(&user)).data(one(&file_id));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", p);
     assert!(
         d.verdict.is_allowed(),
         "File-only write should be allowed, got {:?}",
@@ -1495,7 +1513,8 @@ fn dag_independent_branches_no_overtaint() {
     assert!(d.flow_node_id.is_some());
 
     // Task A write depends on web — DENIED
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/web.txt", &[web_id]);
+    let p = ActionParents::control(one(&user)).data(one(&web_id));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/web.txt", p);
     assert!(
         d.verdict.is_denied(),
         "Web-tainted write should be denied, got {:?}",
@@ -1512,16 +1531,18 @@ fn dag_transitive_taint_propagation() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
-    // Model plan derived from web content
+    // Model plan derived from web content, rooted in the user's prompt
     let plan = kernel
-        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[web])
+        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[user, web])
         .unwrap();
 
-    // Write depending on plan (transitively depends on web) — DENIED
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/derived.txt", &[plan]);
+    // Write directed by the plan (transitively depends on web) — DENIED
+    let p = ActionParents::control(one(&plan));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/derived.txt", p);
     assert!(
         d.verdict.is_denied(),
         "Transitive web taint should propagate, got {:?}",
@@ -1534,18 +1555,17 @@ fn dag_clean_chain_allowed() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
-    let user = kernel
-        .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
-        .unwrap();
+    let user = user_prompt(&mut kernel);
     let file = kernel
         .observe(portcullis_core::flow::NodeKind::FileRead, &[user])
         .unwrap();
     let plan = kernel
-        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[file])
+        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[user, file])
         .unwrap();
 
-    // Write depending on clean chain: user → file → plan — ALLOWED
-    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[plan]);
+    // Write directed by a clean chain: user → (file) → plan — ALLOWED
+    let p = ActionParents::control(one(&plan));
+    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", p);
     assert!(d.verdict.is_allowed());
     assert!(token.is_some());
     assert!(d.flow_node_id.is_some());
@@ -1556,11 +1576,13 @@ fn dag_denied_action_produces_receipt() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
 
-    let (d, _) = kernel.decide_with_parents(Operation::CreatePr, "my-pr", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d, _) = kernel.decide_with_parents(Operation::CreatePr, "my-pr", p);
     assert!(d.verdict.is_denied());
     match &d.verdict {
         Verdict::Deny(DenyReason::FlowViolation { receipt, .. }) => {
@@ -1583,7 +1605,8 @@ fn dag_always_on_even_capability_only() {
     let mut kernel = Kernel::capability_only(perms);
     // capability_only() still has a flow graph — decide_with_parents uses the DAG
 
-    let (d, _) = kernel.decide_with_parents(Operation::ReadFiles, "/workspace/main.rs", &[]);
+    let p = ActionParents::control(&[]);
+    let (d, _) = kernel.decide_with_parents(Operation::ReadFiles, "/workspace/main.rs", p);
     assert!(d.verdict.is_allowed());
     assert!(
         d.flow_node_id.is_some(),
@@ -1596,12 +1619,11 @@ fn dag_capability_check_still_applies() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
-    let user = kernel
-        .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
-        .unwrap();
+    let user = user_prompt(&mut kernel);
 
     // DAG says allow (clean parents), but capability lattice says never for GitPush
-    let (d, _) = kernel.decide_with_parents(Operation::GitPush, "origin/main", &[user]);
+    let p = ActionParents::control(one(&user));
+    let (d, _) = kernel.decide_with_parents(Operation::GitPush, "origin/main", p);
     assert!(
         d.verdict.is_denied(),
         "Capability check should still apply even when DAG allows, got {:?}",
@@ -1621,6 +1643,7 @@ fn dag_bypasses_flat_flow_label() {
     let mut kernel = Kernel::new(perms);
     kernel.enable_flow_control(); // flat label
 
+    let user = user_prompt(&mut kernel);
     // Read web content — taints the flat session label
     let _web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1634,7 +1657,8 @@ fn dag_bypasses_flat_flow_label() {
     let file = kernel
         .observe(portcullis_core::flow::NodeKind::FileRead, &[])
         .unwrap();
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[file]);
+    let p = ActionParents::control(one(&user)).data(one(&file));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", p);
     assert!(
         d.verdict.is_allowed(),
         "DAG clean parents should override flat taint, got {:?}",
@@ -1671,6 +1695,7 @@ fn dag_declassification_allows_validated_tool() {
         justification: "Search API returns curated content".to_string(),
     });
 
+    let user = user_prompt(&mut kernel);
     // Observe web content — normally Adversarial/NoAuthority
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1682,7 +1707,8 @@ fn dag_declassification_allows_validated_tool() {
     // Authority is still NoAuthority, so writes are still denied by
     // the authority check. This verifies declassification fires but
     // doesn't grant more than it should.
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", p);
     assert!(
         d.verdict.is_denied(),
         "Authority is still NoAuthority — write should be denied even with raised integrity"
@@ -1690,47 +1716,56 @@ fn dag_declassification_allows_validated_tool() {
 }
 
 #[test]
-fn dag_declassification_authority_upgrade() {
+fn dag_declassification_authority_upgrade_lifts_no_authority_cap() {
+    // #3459: data caps authority only when NoAuthority (or adversarial). An HTTP
+    // response is Untrusted/NoAuthority until a declassification raises it.
     use portcullis_core::declassify::{DeclassificationRule, DeclassifyAction};
     use portcullis_core::AuthorityLevel;
 
-    let perms = PermissionLattice::safe_pr_fixer();
-    let mut kernel = Kernel::new(perms);
+    let write_from_http = |kernel: &mut Kernel| {
+        let user = kernel
+            .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
+            .unwrap();
+        let http = kernel
+            .observe(portcullis_core::flow::NodeKind::HTTPResponse, &[])
+            .unwrap();
+        kernel
+            .decide_with_parents(
+                Operation::WriteFiles,
+                "/out.txt",
+                ActionParents {
+                    control: &[user],
+                    data: &[http],
+                },
+            )
+            .0
+    };
 
-    // Raise authority: Informational → Suggestive (for curated tool output)
-    // ToolResponse starts at Informational authority
+    // Without the upgrade: NoAuthority data caps the user's authority.
+    let mut strict = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let d = write_from_http(&mut strict);
+    assert!(
+        d.verdict.is_denied(),
+        "NoAuthority data must cap a write even under the user's prompt, got {:?}",
+        d.verdict
+    );
+
+    // With the upgrade (NoAuthority ≤ Informational → Suggestive): allowed.
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
     kernel.add_declassification_rule(DeclassificationRule {
         action: DeclassifyAction::RaiseAuthority {
             from: AuthorityLevel::Informational,
             to: AuthorityLevel::Suggestive,
         },
-        justification: "Tool output from validated API".to_string(),
-    });
-
-    // Also raise integrity so both checks pass
-    kernel.add_declassification_rule(DeclassificationRule {
-        action: DeclassifyAction::RaiseIntegrity {
-            from: portcullis_core::IntegLevel::Adversarial,
-            to: portcullis_core::IntegLevel::Untrusted,
-        },
         justification: "Validated API output".to_string(),
     });
-
-    let tool = kernel
-        .observe(portcullis_core::flow::NodeKind::ToolResponse, &[])
-        .unwrap();
-
-    // ToolResponse starts with Untrusted/Informational.
-    // Declassification raises authority to Suggestive.
-    // Write requires Suggestive authority — should now be allowed.
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[tool]);
+    let d = write_from_http(&mut kernel);
     assert!(
         d.verdict.is_allowed(),
-        "Declassified tool response should allow write, got {:?}",
+        "Declassified HTTP response should allow write, got {:?}",
         d.verdict
     );
 }
-
 /// #C-2: Under the SECURE posture (trusted keys configured), an UNSIGNED
 /// declassification rule must NOT endorse attacker-tainted data on the live
 /// `observe()` path. Before the fail-closed fix this REDs (integrity becomes
@@ -1890,6 +1925,7 @@ fn causal_decide_key_test_adversarial_read_clean_write_allowed() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     // Adversarial content observed
     let _web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1901,7 +1937,8 @@ fn causal_decide_key_test_adversarial_read_clean_write_allowed() {
         .unwrap();
 
     // Clean write depending only on the file — ALLOWED
-    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[file]);
+    let p = ActionParents::control(one(&user)).data(one(&file));
+    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", p);
     assert!(
         d.verdict.is_allowed(),
         "#654 key test: independent clean write must be ALLOWED. Got {:?}",
@@ -1917,13 +1954,15 @@ fn causal_decide_key_test_write_depending_on_adversarial_denied() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     // Adversarial content observed
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
 
     // Write depending on adversarial content — DENIED
-    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/tainted.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/tainted.txt", p);
     assert!(
         d.verdict.is_denied(),
         "#654 key test: write depending on adversarial content must be DENIED. Got {:?}",
@@ -1940,26 +1979,24 @@ fn causal_decide_key_test_write_depending_on_adversarial_denied() {
 fn causal_decide_exposure_still_tracked_for_audit() {
     // #654: ExposureTracker is still updated for audit/reporting.
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Always,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Always,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Always,
-            extensions: std::collections::BTreeMap::new(),
-        })
-        .build();
-    perms.obligations.approvals.clear();
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
+    perms.declare_all(crate::ConsentMode::Autonomous);
 
     let mut kernel = Kernel::new(perms);
     kernel.enable_flow_control();
@@ -2126,4 +2163,333 @@ fn scope_is_checked_before_currency() {
         token.redeem(&elsewhere, Operation::ReadFiles),
         Err(RedeemError::ScopeMismatch { .. })
     ));
+}
+
+// ── #2701 / #2575: the four deciders agree ──────────────────────────────────
+//
+// `Kernel::decide`, `Kernel::decide_term`, `Kernel::decide_term_with_flow`
+// (no tracker) and `portcullis_core::decide_pure` are four statements of one
+// decision. `decide_pure` is the proof target; the three kernel paths are what
+// ships. This drives all four over generated policies and generated action
+// sequences across every one of the 13 operations, and requires the same
+// verdict from each at every step.
+//
+// The correspondence between their inputs, stated once:
+//
+// * `decide_pure` reads the capability LEVEL; the kernel reads the level for
+//   denial and the policy's approval OBLIGATIONS for static approval. A
+//   policy here carries an obligation for every `LowRisk` operation, plus the
+//   ones `normalize` adds when the capabilities form the uninhabitable state,
+//   and an `Always` operation under an obligation is `LowRisk` to
+//   `decide_pure`. (A `LowRisk` operation WITHOUT an obligation is allowed by
+//   the kernel and held by `decide_pure`; that divergence is real and outside
+//   this input space, reported on #2701.)
+// * `decide_pure` takes the exposure as an argument; each kernel accumulates
+//   its own. The pure decision is taken on `decide`'s pre-decision exposure,
+//   and the three kernels' exposures are required equal after every step.
+// * Everything else the kernel checks (time, budget, isolation, paths,
+//   commands, egress, sink scope, rules) is held passing: a denial for any
+//   reason but capability fails the test as outside the modelled space, not
+//   as a parity failure.
+//
+// One divergence is real, and pinned rather than modelled away: the kernel's
+// exposure gate projects `RunBash` as OMNIBUS (`exposure_core::project_exposure`:
+// a shell can read private data as well as send it), while `decide_pure`
+// projects only its `ExfilVector`. So after untrusted content and with no
+// private read yet, the kernel holds `RunBash` and `decide_pure` allows it —
+// the shipping decider is the stricter one, and the proof target does not
+// state its rule. For `RunBash` the kernel must equal `decide_pure` on the
+// omnibus exposure; the divergence is required to be REACHED, so a change
+// that makes the two agree (either side) reds here and this pin is revisited.
+mod decider_parity {
+    use super::*;
+    use crate::guard::ExposureLabel as GuardLabel;
+    use portcullis_core::{
+        decide_pure, ExposureLabel as CoreLabel, ExposureSet as CoreExposure, PureVerdict,
+    };
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    /// `decide_pure`'s verdict space, which each kernel decider is read into.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Class {
+        Allow,
+        DenyCapability,
+        RequiresApproval,
+        GateExfil,
+    }
+
+    /// What the runs reached: every (operation, verdict) pair, and how often
+    /// the pinned `RunBash` divergence was the deciding difference.
+    #[derive(Default)]
+    struct Reached {
+        pairs: BTreeSet<(Operation, Class)>,
+        omnibus_divergences: usize,
+    }
+
+    fn pure_class(v: PureVerdict) -> Class {
+        match v {
+            PureVerdict::Allow => Class::Allow,
+            PureVerdict::DenyCapability => Class::DenyCapability,
+            PureVerdict::RequiresApproval => Class::RequiresApproval,
+            PureVerdict::GateExfil => Class::GateExfil,
+        }
+    }
+
+    /// A kernel decision in `decide_pure`'s terms. The kernel reports both
+    /// approval kinds as `RequiresApproval`; `dynamic_gate_applied` is what
+    /// tells the exposure gate from a static obligation.
+    fn kernel_class(d: &Decision) -> Class {
+        match &d.verdict {
+            Verdict::Allow => Class::Allow,
+            Verdict::RequiresApproval if d.exposure_transition.dynamic_gate_applied => {
+                Class::GateExfil
+            }
+            Verdict::RequiresApproval => Class::RequiresApproval,
+            Verdict::Deny(DenyReason::InsufficientCapability) => Class::DenyCapability,
+            // The term paths refuse a `Never` operation at preflight, by the
+            // ceiling obligation, before the lattice step is reached.
+            Verdict::Deny(DenyReason::ActionTermRejected { detail })
+                if detail.contains("WithinDelegationCeiling") =>
+            {
+                Class::DenyCapability
+            }
+            Verdict::Deny(other) => {
+                panic!(
+                    "{:?} denied outside the modelled space: {other:?}",
+                    d.operation
+                )
+            }
+        }
+    }
+
+    fn core_exposure(s: &crate::guard::ExposureSet) -> CoreExposure {
+        let mut out = CoreExposure::empty();
+        for label in [
+            GuardLabel::PrivateData,
+            GuardLabel::UntrustedContent,
+            GuardLabel::ExfilVector,
+        ] {
+            if s.contains(label) {
+                out.set(match label {
+                    GuardLabel::PrivateData => CoreLabel::PrivateData,
+                    GuardLabel::UntrustedContent => CoreLabel::UntrustedContent,
+                    GuardLabel::ExfilVector => CoreLabel::ExfilVector,
+                });
+            }
+        }
+        out
+    }
+
+    /// A subject every non-capability check passes, per operation.
+    fn subject_for(op: Operation) -> &'static str {
+        match op {
+            Operation::ReadFiles | Operation::WriteFiles | Operation::EditFiles => "src/lib.rs",
+            Operation::RunBash => "cargo test",
+            Operation::GlobSearch | Operation::GrepSearch => "src",
+            Operation::WebSearch => "lattice decision procedures",
+            Operation::WebFetch => "https://example.com/doc",
+            Operation::GitCommit => "fix: parity",
+            Operation::GitPush => "origin",
+            Operation::CreatePr => "fix: parity",
+            Operation::ManagePods => "pod-1",
+            Operation::SpawnAgent => "agent-1",
+        }
+    }
+
+    fn set_level(caps: &mut crate::CapabilityLattice, op: Operation, level: CapabilityLevel) {
+        let field = match op {
+            Operation::ReadFiles => &mut caps.read_files,
+            Operation::WriteFiles => &mut caps.write_files,
+            Operation::EditFiles => &mut caps.edit_files,
+            Operation::RunBash => &mut caps.run_bash,
+            Operation::GlobSearch => &mut caps.glob_search,
+            Operation::GrepSearch => &mut caps.grep_search,
+            Operation::WebSearch => &mut caps.web_search,
+            Operation::WebFetch => &mut caps.web_fetch,
+            Operation::GitCommit => &mut caps.git_commit,
+            Operation::GitPush => &mut caps.git_push,
+            Operation::CreatePr => &mut caps.create_pr,
+            Operation::ManagePods => &mut caps.manage_pods,
+            Operation::SpawnAgent => &mut caps.spawn_agent,
+        };
+        *field = level;
+    }
+
+    fn policy(levels: &[CapabilityLevel; 13]) -> PermissionLattice {
+        let mut policy = PermissionLattice::permissive();
+        policy.commands = crate::CommandLattice::permissive();
+        // `permissive()` is itself normalized, so it arrives holding the
+        // uninhabitable-state obligations for ITS all-`Always` capabilities.
+        // They are recomputed below for the generated ones.
+        policy.declare_all(crate::ConsentMode::Autonomous);
+        for (op, level) in Operation::ALL.into_iter().zip(levels.iter().copied()) {
+            set_level(&mut policy.capabilities, op, level);
+            if level == CapabilityLevel::LowRisk {
+                policy.declare(op, crate::ConsentMode::RequiresApproval);
+            }
+        }
+        policy.normalize()
+    }
+
+    /// The level `decide_pure` sees: an obligation on an `Always` operation
+    /// is the static approval `decide_pure` spells `LowRisk`.
+    fn pure_level(policy: &PermissionLattice, op: Operation) -> CapabilityLevel {
+        match policy.capabilities.level_for(op) {
+            CapabilityLevel::Always if policy.requires_approval(op) => CapabilityLevel::LowRisk,
+            level => level,
+        }
+    }
+
+    /// What the kernel must answer, from `decide_pure`: on the exposure as it
+    /// stands, except `RunBash`, which is decided on the omnibus exposure (see
+    /// the module comment). Returns the verdict and whether the omnibus
+    /// projection is what made the difference.
+    fn expected(level: CapabilityLevel, exposure: CoreExposure, op: Operation) -> (Class, bool) {
+        let plain = pure_class(decide_pure(level, &exposure, op));
+        match op {
+            Operation::RunBash => {
+                let mut omnibus = exposure;
+                omnibus.set(CoreLabel::PrivateData);
+                let omnibus = pure_class(decide_pure(level, &omnibus, op));
+                (omnibus, omnibus != plain)
+            }
+            Operation::ReadFiles
+            | Operation::WriteFiles
+            | Operation::EditFiles
+            | Operation::GlobSearch
+            | Operation::GrepSearch
+            | Operation::WebSearch
+            | Operation::WebFetch
+            | Operation::GitCommit
+            | Operation::GitPush
+            | Operation::CreatePr
+            | Operation::ManagePods
+            | Operation::SpawnAgent => (plain, false),
+        }
+    }
+
+    /// Run one policy and one sequence through all four deciders.
+    fn run(levels: &[CapabilityLevel; 13], sequence: &[Operation], reached: &mut Reached) {
+        let policy = policy(levels);
+        let mut by_op = Kernel::new(policy.clone());
+        let mut by_term = Kernel::new(policy.clone());
+        let mut by_flow = Kernel::new(policy.clone());
+        for &op in sequence {
+            let subject = subject_for(op);
+            let (want, omnibus) =
+                expected(pure_level(&policy, op), core_exposure(by_op.exposure()), op);
+            let (d_op, _) = by_op.decide(op, subject);
+            let (d_term, _) = by_term.decide_term(crate::ActionTerm::from_operation(op, subject));
+            let (d_flow, _) = by_flow
+                .decide_term_with_flow::<portcullis_core::ifc_api::FlowTracker>(
+                    crate::ActionTerm::from_operation(op, subject),
+                    None,
+                );
+            let got = [
+                kernel_class(&d_op),
+                kernel_class(&d_term),
+                kernel_class(&d_flow),
+            ];
+            assert_eq!(
+                got,
+                [want; 3],
+                "{op:?} at {:?} after {sequence:?}: decide / decide_term / \
+                 decide_term_with_flow against decide_pure",
+                policy.capabilities.level_for(op)
+            );
+            assert_eq!(
+                by_op.exposure(),
+                by_term.exposure(),
+                "{op:?}: exposure drift"
+            );
+            assert_eq!(
+                by_op.exposure(),
+                by_flow.exposure(),
+                "{op:?}: exposure drift"
+            );
+            reached.pairs.insert((op, want));
+            reached.omnibus_divergences += usize::from(omnibus);
+        }
+    }
+
+    fn level() -> impl Strategy<Value = CapabilityLevel> {
+        prop_oneof![
+            Just(CapabilityLevel::Never),
+            Just(CapabilityLevel::LowRisk),
+            Just(CapabilityLevel::Always),
+        ]
+    }
+
+    /// Generated policies and sequences; every case ends with a sweep of all
+    /// 13 operations, so each is decided under every generated policy. The
+    /// runner is seeded, so the cases (and the coverage asserted below) are
+    /// the same on every run.
+    #[test]
+    fn decide_decide_term_decide_term_with_flow_and_decide_pure_agree() {
+        let reached = RefCell::new(Reached::default());
+
+        // The divergence, at the minimal case the generator first shrank to:
+        // `RunBash` and `WebSearch` granted, nothing else; search, then shell.
+        let mut minimal = [CapabilityLevel::Never; 13];
+        for (slot, op) in minimal.iter_mut().zip(Operation::ALL) {
+            if matches!(op, Operation::RunBash | Operation::WebSearch) {
+                *slot = CapabilityLevel::Always;
+            }
+        }
+        run(
+            &minimal,
+            &[Operation::WebSearch, Operation::RunBash],
+            &mut reached.borrow_mut(),
+        );
+        assert_eq!(
+            reached.borrow().omnibus_divergences,
+            1,
+            "after untrusted content, decide_pure allows RunBash and the kernel holds it"
+        );
+
+        let mut runner = TestRunner::new_with_rng(
+            Config {
+                cases: 512,
+                ..Config::default()
+            },
+            proptest::test_runner::TestRng::deterministic_rng(
+                proptest::test_runner::RngAlgorithm::ChaCha,
+            ),
+        );
+        let ops = proptest::sample::select(Operation::ALL.to_vec());
+        runner
+            .run(
+                &(
+                    proptest::array::uniform13(level()),
+                    proptest::collection::vec(ops, 0..12),
+                ),
+                |(levels, prefix)| {
+                    let sequence: Vec<Operation> =
+                        prefix.into_iter().chain(Operation::ALL).collect();
+                    run(&levels, &sequence, &mut reached.borrow_mut());
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        // Non-vacuity: every operation reached allow, capability denial and
+        // static approval, and the exposure gate fired on some operation. A
+        // parity check over a space where everything is denied agrees too.
+        let reached = reached.into_inner();
+        for op in Operation::ALL {
+            for class in [Class::Allow, Class::DenyCapability, Class::RequiresApproval] {
+                assert!(
+                    reached.pairs.contains(&(op, class)),
+                    "{op:?} never reached {class:?}"
+                );
+            }
+        }
+        assert!(
+            reached.pairs.iter().any(|(_, c)| *c == Class::GateExfil),
+            "the exposure gate never fired"
+        );
+    }
 }

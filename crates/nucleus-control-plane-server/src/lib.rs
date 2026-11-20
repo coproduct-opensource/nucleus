@@ -3,12 +3,13 @@
 //!
 //! Surface is intentionally minimal for the MVP:
 //!
-//! | Endpoint                     | Purpose                              |
-//! |------------------------------|--------------------------------------|
-//! | `POST /v1/jobs`              | Submit a `JobSpec` (returns 202)     |
-//! | `GET  /v1/jobs/{id}`         | Status snapshot                      |
-//! | `GET  /v1/jobs/{id}/bundle`  | Fetch the verified bundle on success |
-//! | `GET  /healthz`              | Liveness                             |
+//! | Endpoint                                     | Purpose                                         |
+//! |----------------------------------------------|-------------------------------------------------|
+//! | `POST /v1/jobs`                              | Submit a `JobSpec` (returns 202)                |
+//! | `GET  /v1/jobs/{id}`                         | Status snapshot                                 |
+//! | `GET  /v1/jobs/{id}/bundle`                  | Fetch the verified bundle on success            |
+//! | `GET  /v1/jobs/{id}/attestation?format=…`    | The bundle as an in-toto/SLSA/Sigstore attestation, platform-signed |
+//! | `GET  /healthz`                              | Liveness                                        |
 //!
 //! `Idempotency-Key` (request header) collapses repeat submissions of the
 //! same logical job within a configurable retention window.

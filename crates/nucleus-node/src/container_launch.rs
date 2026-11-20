@@ -3,9 +3,8 @@
 /// Admitted services and the original lifetime carried into container launch.
 /// Waiting for a driver slot must not start a fresh execution timeout.
 pub(crate) struct Inputs<'a> {
-    pub raw_yaml: Option<&'a str>,
     pub audit: Option<&'a crate::audit_sink::credentials::AuditGrant>,
-    pub memory: Option<&'a crate::memory_provisioning::Grant>,
+    pub memory: Option<&'a crate::memory_provisioning::Attachment>,
     pub deadline: tokio::time::Instant,
 }
 
@@ -77,7 +76,7 @@ mod tests {
         let work = dir.path().join("workspaces/project");
         std::fs::create_dir_all(&work).unwrap();
         let spec = serde_json::from_value(serde_json::json!({
-            "apiVersion":"nucleus/v1", "kind":"Pod", "spec":{"work_dir":work}
+            "apiVersion":"nucleus/v1", "kind":"Pod", "spec":{"policy":{"type":"profile","name":"default"},"work_dir":work}
         }))
         .unwrap();
         let admission = pod_authority::Admission {
@@ -219,11 +218,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        for needle in [
-            "HostVerifiedProxySocket",
-            "2.2.0",
-            "--container-proxy-transport tcp-hmac",
-        ] {
+        for needle in ["HostVerifiedProxySocket", "2.2.0", "that release or later"] {
             assert!(error.contains(needle), "missing {needle:?} in: {error}");
         }
         assert!(

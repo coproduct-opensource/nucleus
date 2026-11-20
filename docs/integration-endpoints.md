@@ -63,15 +63,18 @@ Resolve a SPIFFE identity to a DID document + permission-fingerprint binding
 
 Model Context Protocol endpoints so an LLM/agent can call nucleus directly.
 
-- The Vault CTF MCP: `https://nucleus-ctf.fly.dev/mcp` — 🟢 LIVE
+- The Vault CTF MCP: `/mcp` on `ctf-server` (`cargo run -p ctf-server`) — 🟡 SELF-HOST
 - Verifier MCP: `/mcp` on `nucleus-verifier-service` — 🟡 SELF-HOST
 - `nucleus-mcp-server` (stdio MCP tool) — 🔵 OFFLINE
 
-## The Vault (try it / point an agent at it) — 🟢 LIVE
+## The Vault (try it / point an agent at it)
 
 A formally-verified permission lattice you (or an LLM) try to exfiltrate past.
 
-- Play: `https://nucleus-ctf.fly.dev/` (also published at `/nucleus/vault/` on these docs)
+- Play in the browser: published at `/nucleus/vault/` on these docs, or `just
+  vault` locally — 🔵 OFFLINE (the game logic is client-side WASM)
+- Agent API: run `ctf-server` locally (`cargo run -p ctf-server`, port 8080;
+  set `CTF_PUBLIC_URL` if you expose it) — 🟡 SELF-HOST
 - `GET /api/v1/levels` · `GET /api/v1/levels/{level}`
 - `POST /api/v1/attack` · `POST /api/v1/challenge`
 - `GET /openapi.json` · `GET /api` (docs)
@@ -80,8 +83,10 @@ A formally-verified permission lattice you (or an LLM) try to exfiltrate past.
 
 ## Honest deployment status (2026-06)
 
-Live today: **The Vault** (`nucleus-ctf.fly.dev`), the **offline npm verifier**
-(`@coproduct_inc/verify`), and the **in-browser `/verify` WASM demo**. The
+Live today: the **offline npm verifier** (`@coproduct_inc/verify`), the
+**in-browser `/verify` WASM demo**, and **The Vault** in-browser game on these
+docs. The Vault's agent API (`ctf-server`) is no longer hosted (its public
+instance was taken down 2026-10-06); run it locally. The
 `nucleus-verifier-service` and `nucleus-oidc-provider` are **built and
 deploy-ready** (`fly.toml` in each crate) but are **not currently on a public
 URL** — `fly deploy` to expose them, or wire your own host. The **agent card** is

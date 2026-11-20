@@ -82,7 +82,10 @@ fn scenario_web_injection() {
     println!("  ✗ Write DENIED — adversarial ancestry detected");
 
     if let SafetyCheck::AdversarialAncestry { tainted_node } = check {
-        println!("    Tainted by node {tainted_node} (WebContent)");
+        assert_eq!(tainted_node, plan);
+        println!(
+            "    Node {tainted_node} (ModelPlan) is tainted, inherited from node {web} (WebContent)"
+        );
     }
     println!();
 }

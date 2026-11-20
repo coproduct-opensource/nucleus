@@ -79,7 +79,8 @@ use rust_decimal::Decimal;
 
 /// Human approver — broad permissions, the trust anchor.
 fn human_alice() -> PermissionLattice {
-    let mut perms = PermissionLattice::new("Human: Alice (senior engineer)");
+    let mut perms =
+        PermissionLattice::supervised().with_description("Human: Alice (senior engineer)");
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.write_files = CapabilityLevel::Always;
     perms.capabilities.edit_files = CapabilityLevel::Always;
@@ -97,7 +98,8 @@ fn human_alice() -> PermissionLattice {
 
 /// Orchestrator — coordinates sub-agents, no direct code modification.
 fn orchestrator_requested() -> PermissionLattice {
-    let mut perms = PermissionLattice::new("Orchestrator: coordinate sub-agents");
+    let mut perms =
+        PermissionLattice::supervised().with_description("Orchestrator: coordinate sub-agents");
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.write_files = CapabilityLevel::Never;
     perms.capabilities.edit_files = CapabilityLevel::Never;
@@ -116,7 +118,7 @@ fn orchestrator_requested() -> PermissionLattice {
 
 /// Scout — browses the web for research, no code access.
 fn scout_requested() -> PermissionLattice {
-    let mut perms = PermissionLattice::new("Scout: web research agent");
+    let mut perms = PermissionLattice::supervised().with_description("Scout: web research agent");
     perms.capabilities.read_files = CapabilityLevel::LowRisk; // read docs
     perms.capabilities.write_files = CapabilityLevel::Never;
     perms.capabilities.edit_files = CapabilityLevel::Never;
@@ -135,7 +137,7 @@ fn scout_requested() -> PermissionLattice {
 
 /// Coder — reads and writes code, pushes to git. No web access.
 fn coder_requested() -> PermissionLattice {
-    let mut perms = PermissionLattice::new("Coder: implementation agent");
+    let mut perms = PermissionLattice::supervised().with_description("Coder: implementation agent");
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.write_files = CapabilityLevel::Always;
     perms.capabilities.edit_files = CapabilityLevel::Always;
@@ -407,7 +409,7 @@ fn scenario_1d_full_chain_auditable() {
 #[test]
 fn scenario_2_uninhabitable_blocks_combined_capabilities() {
     // Hypothetical: what if Scout somehow had web_fetch AND Coder had read + push?
-    let mut scout_like = PermissionLattice::new("synthetic scout-like");
+    let mut scout_like = PermissionLattice::supervised().with_description("synthetic scout-like");
     scout_like.capabilities.read_files = CapabilityLevel::Always;
     scout_like.capabilities.web_fetch = CapabilityLevel::Always;
     scout_like.capabilities.web_search = CapabilityLevel::Always;
@@ -442,11 +444,12 @@ fn scenario_2_uninhabitable_blocks_combined_capabilities() {
 /// that callers must request within bounds — preventing budget laundering.
 #[test]
 fn scenario_3a_budget_cannot_exceed_parent() {
-    let mut parent = PermissionLattice::new("parent with $5 budget");
+    let mut parent = PermissionLattice::supervised().with_description("parent with $5 budget");
     parent.budget = BudgetLattice::with_cost_limit(5.0);
 
     // Greedy child requests $100 — delegate_to rejects this
-    let mut greedy_child = PermissionLattice::new("child requesting $100");
+    let mut greedy_child =
+        PermissionLattice::supervised().with_description("child requesting $100");
     greedy_child.budget = BudgetLattice::with_cost_limit(100.0);
 
     let err = parent
@@ -458,7 +461,7 @@ fn scenario_3a_budget_cannot_exceed_parent() {
     );
 
     // Honest child requests within parent's remaining — succeeds
-    let mut honest_child = PermissionLattice::new("child requesting $3");
+    let mut honest_child = PermissionLattice::supervised().with_description("child requesting $3");
     honest_child.budget = BudgetLattice::with_cost_limit(3.0);
 
     let effective = parent.delegate_to(&honest_child, "budget test").unwrap();
@@ -473,7 +476,7 @@ fn scenario_3a_budget_cannot_exceed_parent() {
 /// Budget consumption tracking: charges are atomic and irreversible.
 #[test]
 fn scenario_3b_budget_charges_are_atomic() {
-    let mut parent = PermissionLattice::new("parent");
+    let mut parent = PermissionLattice::supervised().with_description("parent");
     parent.budget = BudgetLattice::with_cost_limit(5.0);
     let mut effective = parent.delegate_to(&coder_requested(), "coder").unwrap();
 
@@ -509,7 +512,7 @@ fn scenario_4_confused_deputy_leaves_forensic_trail() {
         .unwrap();
 
     // Orchestrator (compromised) tries to delegate deployment-level access
-    let mut deploy_request = PermissionLattice::new("deploy agent");
+    let mut deploy_request = PermissionLattice::supervised().with_description("deploy agent");
     deploy_request.capabilities.run_bash = CapabilityLevel::Always;
     deploy_request.capabilities.write_files = CapabilityLevel::Always;
     deploy_request.capabilities.git_push = CapabilityLevel::Always;
@@ -581,7 +584,7 @@ fn scenario_5a_ceiling_theorem_holds_across_chain() {
 
     // Create a further sub-delegation: Coder → Test Runner
     // Test runner must request within coder's budget (which is ≤ orch's ≤ alice's)
-    let mut test_runner_req = PermissionLattice::new("test runner");
+    let mut test_runner_req = PermissionLattice::supervised().with_description("test runner");
     test_runner_req.capabilities.read_files = CapabilityLevel::Always;
     test_runner_req.capabilities.write_files = CapabilityLevel::Never;
     test_runner_req.capabilities.edit_files = CapabilityLevel::Never;
@@ -620,7 +623,7 @@ fn scenario_5b_kiro_attack_blocked_by_ceiling() {
     assert_eq!(alice.capabilities.manage_pods, CapabilityLevel::Never);
 
     // No matter what any downstream agent requests...
-    let mut infra_destroyer = PermissionLattice::new("infra destroyer");
+    let mut infra_destroyer = PermissionLattice::supervised().with_description("infra destroyer");
     infra_destroyer.capabilities.manage_pods = CapabilityLevel::Always;
     infra_destroyer.capabilities.run_bash = CapabilityLevel::Always;
 

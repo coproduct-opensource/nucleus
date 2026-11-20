@@ -39,9 +39,8 @@ use nucleus_federation::custody::KEY_ATTESTATION_STATE_FILE;
 use nucleus_federation::keyring::{Held, KeyDir};
 use nucleus_federation::{FileCustody, KeyCustody, TpmCustody, TpmEndpoint};
 use nucleus_federation::{NodeAttestation, SelfAppraisal};
-use nucleus_node_evidence::attester::{
-    AkTemplate, Attester, DeviceTransport, LogSources, Tpm, default_pcrs,
-};
+use nucleus_node_evidence::attester::{AkTemplate, Attester, LogSources, default_pcrs};
+use nucleus_node_evidence::tpm_key::AnyTransport;
 use nucleus_node_evidence::{
     AkAnchorClaim, AnchorPolicy, AttestedKey, CustodyStatement, ExecutorKey, Federation,
     FederationKeyAttestation, Freshness, KEY_ATTESTATION_PROFILE, KeyBinding, Nonce, OperatorPin,
@@ -60,6 +59,15 @@ pub(crate) struct NodeEvidenceArgs {
     /// a startup error, never a silent downgrade.
     #[arg(long, env = "NUCLEUS_NODE_EVIDENCE_TPM")]
     node_evidence_tpm: Option<PathBuf>,
+    /// Attest with a SOFTWARE TPM's data socket (`HOST:PORT`, `swtpm socket`)
+    /// instead of a device. Only with `--node-evidence-anchor
+    /// software-tpm:<source>`, so every result says what it is. A software
+    /// TPM holds no node key: its state is a file beside the keys, so sealing
+    /// to it would protect nothing a copied disk does not already hold, and
+    /// the keys stay files, as on a node with no TPM. A flag only, never an
+    /// env var.
+    #[arg(long, conflicts_with = "node_evidence_tpm")]
+    node_evidence_software_tpm: Option<String>,
     /// Where the attestation key's template comes from: `default-ecc`, or
     /// `nv:<index>` for a template a cloud provider publishes in NV (e.g.
     /// `nv:0x01c10003`), whose key the provider's API then vouches for.
@@ -69,8 +77,10 @@ pub(crate) struct NodeEvidenceArgs {
         default_value = "default-ecc"
     )]
     node_evidence_ak_template: String,
-    /// The anchor this node claims for its AK: `none`, or `operator:<source>`
-    /// naming where the operator fetched the AK from. A claim only; the
+    /// The anchor this node claims for its AK: `none`; `operator:<source>`
+    /// naming where the operator fetched the AK from; or
+    /// `software-tpm:<source>` for a SOFTWARE TPM (swtpm) the operator runs,
+    /// which no hardware roots and every result labels so. A claim only; the
     /// relying party's own pin decides whether it anchors anything.
     #[arg(long, env = "NUCLEUS_NODE_EVIDENCE_ANCHOR", default_value = "none")]
     node_evidence_anchor: String,
@@ -85,12 +95,23 @@ pub(crate) struct NodeEvidenceArgs {
     #[arg(long)]
     node_evidence_reference: Option<PathBuf>,
     /// SHA-256 (hex) of this node's AK SubjectPublicKeyInfo, as the operator
-    /// fetched it from the source `--node-evidence-anchor operator:<source>`
-    /// names. The node's own appraisal anchors its AK only under this pin, as
-    /// a relying party's would; without it the tier is `unattested`. A flag
-    /// only, never an env var.
+    /// fetched it from the source `--node-evidence-anchor` names
+    /// (`operator:<source>` or `software-tpm:<source>`). The node's own
+    /// appraisal anchors its AK only under this pin, as a relying party's
+    /// would, and under the same kind: a software TPM's pin anchors only as a
+    /// software TPM. Without it the tier is `unattested`. A flag only, never
+    /// an env var.
     #[arg(long, requires = "node_evidence_reference")]
     node_evidence_ak_pin: Option<String>,
+    /// Read the boot and IMA logs from this directory, laid out as
+    /// securityfs is (`tpm0/binary_bios_measurements`,
+    /// `ima/binary_runtime_measurements_sha256`), instead of
+    /// `/sys/kernel/security`. Only with `--node-evidence-anchor
+    /// software-tpm:<source>`: the kernel's logs record what the kernel's TPM
+    /// measured, and a software TPM's measurements are the operator's, which
+    /// is what its anchor says. A flag only, never an env var.
+    #[arg(long)]
+    node_evidence_logs: Option<PathBuf>,
     /// Keep the federation issuer key in a file although this node has a TPM
     /// (ADR 0012). Without it, a node with `--node-evidence-tpm` creates its
     /// federation key in the TPM, bound to the boot PCRs, so a copied disk
@@ -150,6 +171,42 @@ fn decide<'a>(
 }
 
 impl NodeEvidenceArgs {
+    /// The trusted authorities these flags configure, for the insecure-mode
+    /// refusal (`insecure_mode`, Program C C0). Destructured without `..`
+    /// (ADR 0007 E-1): a new flag here does not compile until classified.
+    pub(crate) fn trusted_authorities(&self) -> Vec<crate::insecure_mode::TrustedAuthority> {
+        use crate::insecure_mode::TrustedAuthority as T;
+        let Self {
+            node_evidence_tpm,
+            node_evidence_software_tpm,
+            // How an AK is made and what it claims: nothing without a TPM.
+            node_evidence_ak_template: _,
+            node_evidence_anchor: _,
+            node_evidence_epoch_secs: _,
+            node_evidence_reference,
+            node_evidence_ak_pin,
+            // Only with a software TPM, which is refused by its own flag.
+            node_evidence_logs: _,
+            // Waivers weaken custody; they configure no authority.
+            allow_federation_key_in_file: _,
+            allow_node_keys_in_file: _,
+            // Classified by the caller, field by field.
+            public: _,
+        } = self;
+        [
+            (node_evidence_tpm.is_some(), T::NodeEvidenceTpm),
+            (
+                node_evidence_software_tpm.is_some(),
+                T::NodeEvidenceSoftwareTpm,
+            ),
+            (node_evidence_reference.is_some(), T::NodeEvidenceReference),
+            (node_evidence_ak_pin.is_some(), T::NodeEvidenceAkPin),
+        ]
+        .into_iter()
+        .filter_map(|(set, authority)| set.then_some(authority))
+        .collect()
+    }
+
     /// Where the federation issuer key lives, decided from the TPM flag and
     /// its waiver (ADR 0012).
     ///
@@ -229,15 +286,74 @@ fn parse_template(s: &str) -> Result<AkTemplate, String> {
 }
 
 fn parse_anchor(s: &str) -> Result<AkAnchorClaim, String> {
-    match s.strip_prefix("operator:") {
-        Some(source) if !source.is_empty() => Ok(AkAnchorClaim::OperatorFetched {
-            source: source.to_string(),
+    let source = |kind: &str, source: &str| {
+        if source.is_empty() {
+            Err(format!("--node-evidence-anchor {kind}: needs a source"))
+        } else {
+            Ok(source.to_string())
+        }
+    };
+    match (s.strip_prefix("operator:"), s.strip_prefix("software-tpm:")) {
+        (Some(rest), _) => Ok(AkAnchorClaim::OperatorFetched {
+            source: source("operator:", rest)?,
         }),
-        Some(_) => Err("--node-evidence-anchor operator: needs a source".into()),
-        None if s == "none" => Ok(AkAnchorClaim::None),
-        None => Err(format!(
-            "--node-evidence-anchor {s:?}: expected `none` or `operator:<source>`"
+        (None, Some(rest)) => Ok(AkAnchorClaim::SoftwareTpm {
+            source: source("software-tpm:", rest)?,
+        }),
+        (None, None) if s == "none" => Ok(AkAnchorClaim::None),
+        (None, None) => Err(format!(
+            "--node-evidence-anchor {s:?}: expected `none`, `operator:<source>` or \
+             `software-tpm:<source>`"
         )),
+    }
+}
+
+/// The TPM this node quotes with: the kernel's device, or a software TPM's
+/// socket, which only a software-TPM anchor may name (B-5).
+fn tpm_endpoint(args: &NodeEvidenceArgs, anchor: &AkAnchorClaim) -> Result<TpmEndpoint, String> {
+    match (
+        &args.node_evidence_tpm,
+        &args.node_evidence_software_tpm,
+        anchor,
+    ) {
+        (Some(device), None, _) => Ok(TpmEndpoint::Device(device.clone())),
+        (None, Some(addr), AkAnchorClaim::SoftwareTpm { .. }) => {
+            Ok(TpmEndpoint::Socket(addr.clone()))
+        }
+        (
+            None,
+            Some(_),
+            AkAnchorClaim::None
+            | AkAnchorClaim::OperatorFetched { .. }
+            | AkAnchorClaim::CertificateChain { .. },
+        ) => Err(
+            "--node-evidence-software-tpm needs --node-evidence-anchor software-tpm:<source>: \
+             a software TPM is never presented as anything else"
+                .into(),
+        ),
+        (Some(_), Some(_), _) | (None, None, _) => {
+            Err("exactly one of --node-evidence-tpm and --node-evidence-software-tpm".into())
+        }
+    }
+}
+
+/// Where this node reads its boot and IMA logs: securityfs, or the directory
+/// a software TPM's measurer wrote, which only a software-TPM anchor may name
+/// (a hardware TPM's logs are the kernel's, B-5).
+fn log_sources(logs: Option<&PathBuf>, anchor: &AkAnchorClaim) -> Result<LogSources, String> {
+    match (logs, anchor) {
+        (None, _) => Ok(LogSources::linux()),
+        (Some(root), AkAnchorClaim::SoftwareTpm { .. }) => Ok(LogSources::under(root)),
+        (
+            Some(_),
+            AkAnchorClaim::None
+            | AkAnchorClaim::OperatorFetched { .. }
+            | AkAnchorClaim::CertificateChain { .. },
+        ) => Err(
+            "--node-evidence-logs needs --node-evidence-anchor software-tpm:<source>: \
+             a log the operator wrote speaks only for a software TPM"
+                .into(),
+        ),
     }
 }
 
@@ -263,23 +379,29 @@ impl OwnAppraisal {
             .map_err(|e| format!("--node-evidence-reference {}: {e}", path.display()))?;
         let reference: ReferenceManifest = serde_json::from_slice(&bytes)
             .map_err(|e| format!("--node-evidence-reference {}: {e}", path.display()))?;
-        let operator_pins = match (&args.node_evidence_ak_pin, anchor) {
-            (None, _) => Vec::new(),
-            (Some(pin), AkAnchorClaim::OperatorFetched { source }) => {
-                if !is_digest(&pin.to_ascii_lowercase()) {
-                    return Err(format!(
-                        "--node-evidence-ak-pin {pin:?}: expected SHA-256 hex of the AK's SubjectPublicKeyInfo"
-                    ));
-                }
-                vec![OperatorPin {
+        let pin = |pin: &String, source: &String| {
+            if is_digest(&pin.to_ascii_lowercase()) {
+                Ok(vec![OperatorPin {
                     source: source.clone(),
                     ak_spki_sha256: pin.to_ascii_lowercase(),
-                }]
+                }])
+            } else {
+                Err(format!(
+                    "--node-evidence-ak-pin {pin:?}: expected SHA-256 hex of the AK's SubjectPublicKeyInfo"
+                ))
             }
-            (Some(_), _) => {
+        };
+        // The pin goes in the list of the kind the anchor claims, so the node
+        // labels its own AK exactly as a relying party holding the same pin
+        // would (G-1): a software TPM never self-appraises as operator-fetched.
+        let (operator_pins, software_tpm_pins) = match (&args.node_evidence_ak_pin, anchor) {
+            (None, _) => (Vec::new(), Vec::new()),
+            (Some(p), AkAnchorClaim::OperatorFetched { source }) => (pin(p, source)?, Vec::new()),
+            (Some(p), AkAnchorClaim::SoftwareTpm { source }) => (Vec::new(), pin(p, source)?),
+            (Some(_), AkAnchorClaim::None | AkAnchorClaim::CertificateChain { .. }) => {
                 return Err(
-                    "--node-evidence-ak-pin needs --node-evidence-anchor operator:<source>: \
-                     a pin names the source the operator fetched the AK from"
+                    "--node-evidence-ak-pin needs --node-evidence-anchor operator:<source> or \
+                     software-tpm:<source>: a pin names the source the operator fetched the AK from"
                         .into(),
                 );
             }
@@ -289,6 +411,7 @@ impl OwnAppraisal {
             anchors: AnchorPolicy {
                 trust_roots: Vec::new(),
                 operator_pins,
+                software_tpm_pins,
             },
         }))
     }
@@ -303,7 +426,7 @@ struct Epoch {
 
 /// A node with a TPM.
 pub(crate) struct TpmNode {
-    attester: Mutex<Attester<DeviceTransport>>,
+    attester: Mutex<Attester<AnyTransport>>,
     executor_key: [u8; 32],
     /// The state dir holding the federation keyring and the key's custody,
     /// when federation is on.
@@ -377,6 +500,39 @@ impl TpmNode {
             .attest(&binding, freshness)
             .map_err(|e| format!("TPM quote: {e}"))?;
         serde_json::to_vec_pretty(&evidence).map_err(|e| e.to_string())
+    }
+
+    /// Take a launch quote over `nonce` (ADR 0016 D2), store it by digest beside
+    /// the epoch evidence, and return the digest the pod's SVID names (OID
+    /// `.1.7`). The anonymous evidence listener serves it by that digest.
+    ///
+    /// Serialized with every other quote on the attester mutex; the time it
+    /// took is logged, so the per-launch cost is measured where it is paid, and
+    /// a quote over [`LAUNCH_QUOTE_BUDGET`] is a warning.
+    fn quote_launch(&self, nonce: [u8; 32]) -> Result<[u8; 32], String> {
+        let started = std::time::Instant::now();
+        let bytes = self.quote(Freshness::Challenge {
+            eat_nonce: Nonce::new(nonce.to_vec())?,
+        })?;
+        let digest = evidence_digest(&bytes);
+        write_atomic(
+            &self.store.join(format!("{}.json", hex::encode(digest))),
+            &bytes,
+        )?;
+        let elapsed = started.elapsed();
+        info!(
+            launch_quote_sha256 = %hex::encode(digest),
+            elapsed_ms = elapsed.as_millis(),
+            "launch quote taken"
+        );
+        if elapsed > LAUNCH_QUOTE_BUDGET {
+            warn!(
+                elapsed_ms = elapsed.as_millis(),
+                budget_ms = LAUNCH_QUOTE_BUDGET.as_millis(),
+                "launch quote over its budget: every launch on this node waits for it"
+            );
+        }
+        Ok(digest)
     }
 
     /// Take the next epoch quote, store it, and make it the one in force.
@@ -516,7 +672,44 @@ impl TpmNode {
     }
 }
 
+/// What one launch quote may cost (ADR 0016 D2). Measured 2026-10-13 on the
+/// agent builder, quote + store + SVID issue together: p50 2.0 ms / max 2.3 ms on
+/// swtpm 0.7.3, and p50 75.6 ms / max 77.3 ms on a GCE Shielded VM's vTPM
+/// (`/dev/tpmrm0`), 20 launches each. The budget is about three times the
+/// vTPM's: a discrete TPM's ECC primary is slower than a virtual one's.
+const LAUNCH_QUOTE_BUDGET: Duration = Duration::from_millis(250);
+
+/// The node's TPM as the quoter of each launch it measures (ADR 0016 D2).
+struct TpmLaunchQuoter(Arc<TpmNode>);
+
+impl nucleus_identity::LaunchQuoter for TpmLaunchQuoter {
+    fn quote_launch(&self, nonce: [u8; 32]) -> nucleus_identity::launch_quote::QuoteFuture<'_> {
+        let node = Arc::clone(&self.0);
+        Box::pin(async move {
+            let quoted = tokio::task::spawn_blocking(move || node.quote_launch(nonce))
+                .await
+                .map_err(|e| {
+                    nucleus_identity::Error::Internal(format!("launch quote task: {e}"))
+                })?;
+            quoted.map_err(|e| nucleus_identity::Error::Internal(format!("launch quote: {e}")))
+        })
+    }
+}
+
 impl NodePlatformSource {
+    /// How this node roots the launches it measures: with a TPM, every issue of
+    /// a measured launch is also quoted by it and names the quote (`.1.7`); a
+    /// TPM quote that fails then issues nothing. Without one, the node CA's
+    /// signature is the only root, and the leaf says no more than that.
+    pub(crate) fn launch_rooting(&self) -> nucleus_identity::LaunchRooting {
+        match self {
+            Self::Unattested(_) => nucleus_identity::LaunchRooting::NodeCa,
+            Self::Tpm(node) => {
+                nucleus_identity::LaunchRooting::Tpm(Arc::new(TpmLaunchQuoter(Arc::clone(node))))
+            }
+        }
+    }
+
     /// Decide the source at startup. With a TPM configured, the first epoch
     /// quote is taken here, so a node that serves has evidence in force.
     pub(crate) fn start(
@@ -525,20 +718,23 @@ impl NodePlatformSource {
         executor_key: [u8; 32],
         federated: bool,
     ) -> Result<Self, String> {
-        let Some(device) = &args.node_evidence_tpm else {
+        if args.node_evidence_tpm.is_none() && args.node_evidence_software_tpm.is_none() {
             // A reference with no evidence to appraise configures nothing
             // (B-5); the pin `requires` the reference, so this covers both.
-            if args.node_evidence_reference.is_some() {
-                return Err("--node-evidence-reference needs --node-evidence-tpm: \
-                     there is no evidence to appraise without a TPM attester"
+            // Nor does a log directory with no TPM to replay it against.
+            if args.node_evidence_reference.is_some() || args.node_evidence_logs.is_some() {
+                return Err("--node-evidence-reference and --node-evidence-logs need \
+                     --node-evidence-tpm: there is no evidence to appraise without a TPM attester"
                     .into());
             }
             return Ok(Self::Unattested(
                 "no TPM attester configured (--node-evidence-tpm is unset)".into(),
             ));
-        };
+        }
         let template = parse_template(&args.node_evidence_ak_template)?;
         let anchor = parse_anchor(&args.node_evidence_anchor)?;
+        let endpoint = tpm_endpoint(args, &anchor)?;
+        let logs = log_sources(args.node_evidence_logs.as_ref(), &anchor)?;
         let own_appraisal = OwnAppraisal::from_args(args, &anchor)?;
         if federated && own_appraisal.is_none() {
             warn!(
@@ -549,8 +745,9 @@ impl NodePlatformSource {
         if args.node_evidence_epoch_secs == 0 {
             return Err("--node-evidence-epoch-secs must be positive".into());
         }
-        let transport = DeviceTransport::open(device)
-            .map_err(|e| format!("--node-evidence-tpm {}: {e}", device.display()))?;
+        let tpm = endpoint
+            .connect()
+            .map_err(|e| format!("node evidence TPM {endpoint}: {e}"))?;
         let federation = if federated {
             let custody = args.federation_key_custody()?;
             if custody == KeyCustody::File(FileCustody::Waived) {
@@ -574,13 +771,7 @@ impl NodePlatformSource {
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
         let node = Arc::new(TpmNode {
-            attester: Mutex::new(Attester::new(
-                Tpm::new(transport),
-                template,
-                default_pcrs(),
-                LogSources::linux(),
-                anchor,
-            )),
+            attester: Mutex::new(Attester::new(tpm, template, default_pcrs(), logs, anchor)),
             executor_key,
             federation,
             certified: Mutex::new(BTreeMap::new()),
@@ -660,6 +851,41 @@ impl crate::federated_credential::PlatformAttestation for NodePlatformSource {
         match self {
             Self::Unattested(reason) => NodeAttestation::without_evidence(reason.clone()),
             Self::Tpm(node) => node.self_appraise(now),
+        }
+    }
+}
+
+/// The node's TPM as the root of each eval cell's launch (ADR 0016 S3): the
+/// launch quotes it stored, appraised against the same reference, anchors and
+/// binding its epoch evidence is (`OwnAppraisal`, `TpmNode::binding`).
+impl crate::eval_cell::OwnLaunchQuotes for NodePlatformSource {
+    fn appraisal(&self) -> Result<crate::eval_cell::OwnQuoteAppraisal<'_>, String> {
+        match self {
+            Self::Unattested(reason) => Err(format!("this node has no TPM: {reason}")),
+            Self::Tpm(node) => {
+                let own = node.own_appraisal.as_ref().ok_or_else(|| {
+                    "this node's TPM has no reference to appraise its launch quotes against \
+                     (--node-evidence-reference is unset)"
+                        .to_string()
+                })?;
+                Ok(crate::eval_cell::OwnQuoteAppraisal {
+                    binding: node.binding()?,
+                    reference: &own.reference,
+                    anchors: &own.anchors,
+                    now: unix_now()?,
+                })
+            }
+        }
+    }
+
+    fn document(&self, digest: &[u8; 32]) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Unattested(reason) => Err(format!("this node has no TPM: {reason}")),
+            Self::Tpm(node) => {
+                let digest = hex::encode(digest);
+                node.stored(&digest)
+                    .ok_or_else(|| format!("this node holds no launch quote {digest}"))
+            }
         }
     }
 }
@@ -781,6 +1007,78 @@ pub(crate) fn routes() -> axum::Router<NodeState> {
         .route("/v1/node/evidence/{digest}", get(by_digest))
 }
 
+/// A node started on the TPM the composition tests name: swtpm at
+/// `NUCLEUS_SWTPM_ADDR`, or the device at `NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE`.
+/// Its own appraisal is configured (an empty-PCR reference, its AK pinned as
+/// the operator would pin it), its executor key is `executor`, and its state
+/// is under `dir`. Shared by every test that needs a real TPM node.
+#[cfg(test)]
+pub(crate) fn tpm_node_for_tests(dir: &Path, executor: [u8; 32]) -> NodePlatformSource {
+    use nucleus_node_evidence::attester::Attester;
+    use nucleus_node_evidence::tpm::AkPublic;
+    use nucleus_node_evidence::{Expect, REFERENCE_PROFILE, ReferenceValues};
+
+    let device = std::env::var("NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE").ok();
+    let endpoint = match &device {
+        Some(path) => TpmEndpoint::Device(path.into()),
+        None => {
+            TpmEndpoint::Socket(std::env::var("NUCLEUS_SWTPM_ADDR").expect("NUCLEUS_SWTPM_ADDR"))
+        }
+    };
+    // The AK the node will quote with, pinned as an operator would. swtpm
+    // serves one connection at a time, so this one is closed first.
+    let pin = {
+        let mut a = Attester::new(
+            endpoint.connect().unwrap(),
+            AkTemplate::DefaultEccP256,
+            default_pcrs(),
+            LogSources::linux(),
+            AkAnchorClaim::None,
+        );
+        let ak = AkPublic::from_tpm2b_public(&a.ak_public().unwrap()).unwrap();
+        hex::encode(ak.spki_sha256())
+    };
+    fn none<T>() -> Expect<T> {
+        Expect::NotChecked("software TPM: no firmware, no IMA".into())
+    }
+    let reference = ReferenceManifest {
+        profile: REFERENCE_PROFILE.into(),
+        tag_id: "swtpm-node".into(),
+        reference_values: ReferenceValues {
+            pcrs: Default::default(),
+            secure_boot: none(),
+            efi_applications: none(),
+            boot_files: none(),
+            kernel_cmdline: none(),
+            ima: none(),
+        },
+    };
+    let reference_path = dir.join("reference.json");
+    std::fs::write(&reference_path, serde_json::to_vec(&reference).unwrap()).unwrap();
+    // A software TPM gets no logs: the host's own event log speaks for the
+    // host's TPM, not this one. A device gets the kernel's.
+    let logs = dir.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let (tpm, software_tpm, anchor, logs) = match endpoint {
+        TpmEndpoint::Device(path) => (Some(path), None, "operator:test-device", None),
+        TpmEndpoint::Socket(addr) => (None, Some(addr), "software-tpm:swtpm-node", Some(logs)),
+    };
+    let args = NodeEvidenceArgs {
+        node_evidence_tpm: tpm,
+        node_evidence_software_tpm: software_tpm,
+        node_evidence_ak_template: "default-ecc".into(),
+        node_evidence_anchor: anchor.into(),
+        node_evidence_epoch_secs: 300,
+        node_evidence_reference: Some(reference_path),
+        node_evidence_ak_pin: Some(pin),
+        node_evidence_logs: logs,
+        allow_federation_key_in_file: false,
+        allow_node_keys_in_file: false,
+        public: Default::default(),
+    };
+    NodePlatformSource::start(&args, dir, executor, false).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,17 +1103,26 @@ mod tests {
         );
         assert!(parse_anchor("operator:").is_err());
         assert!(parse_anchor("certificate").is_err());
+        assert_eq!(
+            parse_anchor("software-tpm:ci-swtpm"),
+            Ok(AkAnchorClaim::SoftwareTpm {
+                source: "ci-swtpm".into()
+            })
+        );
+        assert!(parse_anchor("software-tpm:").is_err());
     }
 
     #[test]
     fn no_tpm_is_unattested_with_its_reason() {
         let args = NodeEvidenceArgs {
             node_evidence_tpm: None,
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
             node_evidence_reference: None,
             node_evidence_ak_pin: None,
+            node_evidence_logs: None,
             allow_federation_key_in_file: false,
             allow_node_keys_in_file: false,
             public: Default::default(),
@@ -833,11 +1140,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = NodeEvidenceArgs {
             node_evidence_tpm: Some(dir.path().join("no-such-tpm")),
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
             node_evidence_reference: None,
             node_evidence_ak_pin: None,
+            node_evidence_logs: None,
             allow_federation_key_in_file: false,
             allow_node_keys_in_file: false,
             public: Default::default(),
@@ -849,11 +1158,13 @@ mod tests {
     fn a_tpm_holds_the_federation_key_unless_waived_by_name() {
         let args = |tpm: Option<&str>, waived: bool| NodeEvidenceArgs {
             node_evidence_tpm: tpm.map(PathBuf::from),
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
             node_evidence_reference: None,
             node_evidence_ak_pin: None,
+            node_evidence_logs: None,
             allow_federation_key_in_file: waived,
             allow_node_keys_in_file: false,
             public: Default::default(),
@@ -900,11 +1211,13 @@ mod tests {
     fn a_tpm_seals_the_node_keys_unless_waived_by_their_own_name() {
         let args = |tpm: Option<&str>, fed_waived: bool, keys_waived: bool| NodeEvidenceArgs {
             node_evidence_tpm: tpm.map(PathBuf::from),
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
             node_evidence_reference: None,
             node_evidence_ak_pin: None,
+            node_evidence_logs: None,
             allow_federation_key_in_file: fed_waived,
             allow_node_keys_in_file: keys_waived,
             public: Default::default(),
@@ -960,11 +1273,13 @@ mod tests {
         let args =
             |tpm: Option<&str>, reference: Option<&PathBuf>, pin: Option<&str>| NodeEvidenceArgs {
                 node_evidence_tpm: tpm.map(PathBuf::from),
+                node_evidence_software_tpm: None,
                 node_evidence_ak_template: "default-ecc".into(),
                 node_evidence_anchor: "none".into(),
                 node_evidence_epoch_secs: 300,
                 node_evidence_reference: reference.cloned(),
                 node_evidence_ak_pin: pin.map(String::from),
+                node_evidence_logs: None,
                 allow_federation_key_in_file: false,
                 allow_node_keys_in_file: false,
                 public: Default::default(),
@@ -1025,8 +1340,30 @@ mod tests {
             #[command(flatten)]
             a: NodeEvidenceArgs,
         }
+        // A software TPM's pin anchors only as a software TPM: the node never
+        // labels its own swtpm AK operator-fetched.
+        let software = AkAnchorClaim::SoftwareTpm {
+            source: "ci-swtpm".into(),
+        };
+        let own = OwnAppraisal::from_args(&args(None, Some(&reference), Some(pin)), &software)
+            .unwrap()
+            .expect("configured");
+        assert!(own.anchors.operator_pins.is_empty());
+        assert_eq!(
+            own.anchors.software_tpm_pins,
+            vec![OperatorPin {
+                source: "ci-swtpm".into(),
+                ak_spki_sha256: pin.to_ascii_lowercase(),
+            }]
+        );
+
         let cmd = Cli::command();
-        for flag in ["node-evidence-reference", "node-evidence-ak-pin"] {
+        for flag in [
+            "node-evidence-reference",
+            "node-evidence-ak-pin",
+            "node-evidence-logs",
+            "node-evidence-software-tpm",
+        ] {
             let a = cmd
                 .get_arguments()
                 .find(|a| a.get_long() == Some(flag))
@@ -1039,6 +1376,79 @@ mod tests {
         }
     }
 
+    /// A software TPM's socket is accepted only under a software-TPM anchor,
+    /// so a node never presents an emulator as anything else.
+    #[test]
+    fn a_software_tpm_socket_is_accepted_only_under_its_own_anchor() {
+        let args = NodeEvidenceArgs {
+            node_evidence_tpm: None,
+            node_evidence_software_tpm: Some("127.0.0.1:2321".into()),
+            node_evidence_ak_template: "default-ecc".into(),
+            node_evidence_anchor: "none".into(),
+            node_evidence_epoch_secs: 300,
+            node_evidence_reference: None,
+            node_evidence_ak_pin: None,
+            node_evidence_logs: None,
+            allow_federation_key_in_file: false,
+            allow_node_keys_in_file: false,
+            public: Default::default(),
+        };
+        let software = AkAnchorClaim::SoftwareTpm {
+            source: "ci-swtpm".into(),
+        };
+        assert_eq!(
+            tpm_endpoint(&args, &software),
+            Ok(TpmEndpoint::Socket("127.0.0.1:2321".into()))
+        );
+        for hardware in [
+            AkAnchorClaim::None,
+            AkAnchorClaim::OperatorFetched {
+                source: "cloud-api".into(),
+            },
+            AkAnchorClaim::CertificateChain { chain: vec![] },
+        ] {
+            let err = tpm_endpoint(&args, &hardware).unwrap_err();
+            assert!(err.contains("software-tpm:"), "{err}");
+        }
+        // Startup refuses it before touching the socket.
+        let dir = tempfile::tempdir().unwrap();
+        let err = NodePlatformSource::start(&args, dir.path(), [1; 32], false)
+            .err()
+            .expect("an emulator under a hardware anchor is refused");
+        assert!(err.contains("software-tpm:"), "{err}");
+    }
+
+    /// An operator-written log directory speaks only for a software TPM; on
+    /// any other anchor it is a start-up error, never a log the node quotes.
+    #[test]
+    fn a_log_directory_is_accepted_only_for_a_software_tpm() {
+        let root = PathBuf::from("/var/tmp/swtpm-logs");
+        assert_eq!(
+            log_sources(
+                Some(&root),
+                &AkAnchorClaim::SoftwareTpm {
+                    source: "ci-swtpm".into()
+                }
+            )
+            .map(|l| l.ima_sha256),
+            Ok(root.join("ima/binary_runtime_measurements_sha256"))
+        );
+        for hardware in [
+            AkAnchorClaim::None,
+            AkAnchorClaim::OperatorFetched {
+                source: "cloud-api".into(),
+            },
+            AkAnchorClaim::CertificateChain { chain: vec![] },
+        ] {
+            let err = log_sources(Some(&root), &hardware).unwrap_err();
+            assert!(err.contains("software-tpm:"), "{err}");
+        }
+        assert_eq!(
+            log_sources(None, &AkAnchorClaim::None).map(|l| l.ima_sha256),
+            Ok(LogSources::linux().ima_sha256)
+        );
+    }
+
     /// A node with no TPM states `unattested`, naming no evidence, on every
     /// assertion it mints.
     #[test]
@@ -1048,6 +1458,152 @@ mod tests {
         let att = source.attestation_now(1_791_247_262);
         assert_eq!(att.tier(), nucleus_federation::ClaimedTier::Unattested);
         assert_eq!(att.evidence(), &nucleus_federation::EvidenceRef::NoEvidence);
+    }
+
+    /// ADR 0016 D2 in composition, against a TPM: a node started with a TPM
+    /// issues each measured launch an SVID naming a launch quote (`.1.7`); the
+    /// anonymous evidence listener serves that quote by the digest; and the
+    /// quote roots the leaf (`LaunchRoot::Tpm`, Attested) under the node's own
+    /// reference and pin. The issue latency of a quoted launch is printed: the
+    /// per-launch cost D2 budgets.
+    ///
+    /// Against swtpm:
+    /// `swtpm socket --tpm2 --tpmstate dir=$D --server type=tcp,port=2321
+    ///  --ctrl type=tcp,port=2322 --flags not-need-init,startup-clear &`
+    /// then `NUCLEUS_SWTPM_ADDR=127.0.0.1:2321 cargo nextest run -p nucleus-node
+    /// --run-ignored only a_tpm_node_quotes_each_launch --no-capture`. Against
+    /// a device instead, `NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE=/dev/tpmrm0` (as a
+    /// user that may open it and read securityfs).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs a running swtpm at NUCLEUS_SWTPM_ADDR, or NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE"]
+    async fn a_tpm_node_quotes_each_launch_and_the_quote_roots_it() {
+        use std::io::Write as _;
+        use tower::ServiceExt as _;
+
+        let device = std::env::var("NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE").ok();
+        let dir = tempfile::tempdir().unwrap();
+        let executor = [0x5e; 32];
+        let source = tpm_node_for_tests(dir.path(), executor);
+        let NodePlatformSource::Tpm(node) = &source else {
+            panic!("a software TPM node is a TPM node");
+        };
+        let manager =
+            crate::identity::IdentityManager::new("test.local", Duration::from_secs(3600))
+                .unwrap()
+                .with_launch_rooting(source.launch_rooting());
+        let public = crate::public_evidence::router(crate::public_evidence::PublicState::new(
+            source.evidence_store().into(),
+            executor,
+            1000,
+        ));
+
+        let mut kernel = tempfile::NamedTempFile::new().unwrap();
+        kernel.write_all(b"kernel").unwrap();
+        let mut rootfs = tempfile::NamedTempFile::new().unwrap();
+        rootfs.write_all(b"rootfs").unwrap();
+
+        let mut issue_ms = Vec::new();
+        for _ in 0..20 {
+            let pod = uuid::Uuid::new_v4();
+            let id = manager.identity_for_pod(pod, "default", "quoted");
+            let measured = manager
+                .compute_attestation(
+                    &pod.to_string(),
+                    kernel.path(),
+                    rootfs.path(),
+                    b"config",
+                    crate::image_identity::Measured::default(),
+                )
+                .await
+                .unwrap();
+            let started = std::time::Instant::now();
+            let cert = manager
+                .fetch_attested_certificate(
+                    &id,
+                    &pod.to_string(),
+                    nucleus_identity::SvidProfile::Standard,
+                )
+                .await
+                .expect("a quoted launch is issued");
+            issue_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            let leaf = cert.leaf().der();
+
+            let digest = nucleus_identity::extract_launch_quote_digest(leaf)
+                .unwrap()
+                .expect("a TPM node's SVID names its launch quote");
+            let resp = public
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/v1/evidence/{}", hex::encode(digest)))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "the quote is served publicly"
+            );
+            let document = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+
+            let own = node.own_appraisal.as_ref().expect("configured");
+            let binding = node.binding().unwrap();
+            let verified = nucleus_identity::VerifiedLaunch::verify_tpm(
+                leaf,
+                manager.trust_bundle(),
+                &document,
+                &nucleus_identity::LaunchQuotePolicy {
+                    expected_binding: &binding,
+                    reference: &own.reference,
+                    anchors: &own.anchors,
+                    now: unix_now().unwrap(),
+                },
+            )
+            .expect("the served quote roots the served SVID");
+            assert!(matches!(
+                verified.root(),
+                nucleus_identity::LaunchRoot::Tpm(_)
+            ));
+            nucleus_identity::AttestationRequirements::exact(
+                *measured.kernel_hash(),
+                *measured.rootfs_hash(),
+                *measured.config_hash(),
+            )
+            .verify(verified.launch())
+            .unwrap();
+            // And the eval-cell boot gate, through this node's own store and appraisal
+            // inputs (ADR 0016 S3).
+            crate::eval_cell::require_verified_launch(
+                nucleus_spec::isolation_profile::IsolationProfile::EvalCell,
+                crate::eval_cell::LaunchIdentity::Issued {
+                    measured: &measured,
+                    leaf_der: leaf,
+                    trust_bundle: manager.trust_bundle(),
+                    quotes: &source,
+                },
+            )
+            .expect("the node's TPM roots the eval cell's launch");
+        }
+        issue_ms.sort_by(f64::total_cmp);
+        eprintln!(
+            "quoted launch issue latency ({}) over {} launches: p50 {:.1} ms, p90 {:.1} ms, \
+             max {:.1} ms",
+            device.as_deref().unwrap_or("swtpm"),
+            issue_ms.len(),
+            issue_ms[issue_ms.len() / 2],
+            issue_ms[issue_ms.len() * 9 / 10],
+            issue_ms[issue_ms.len() - 1],
+        );
+        let p90 = issue_ms[issue_ms.len() * 9 / 10];
+        assert!(
+            p90 < LAUNCH_QUOTE_BUDGET.as_secs_f64() * 1000.0,
+            "p90 {p90:.1} ms is over the {} ms launch-quote budget",
+            LAUNCH_QUOTE_BUDGET.as_millis()
+        );
     }
 
     #[test]

@@ -88,7 +88,7 @@ impl AkPublic {
                 let exponent = r.be_u32()?;
                 let n = r.tpm2b()?;
                 PublicKey::rsa_from_parts(n, exponent)
-                    .ok_or_else(|| field(S, "RSA modulus/exponent do not form a key"))?
+                    .map_err(|e| field(S, format!("RSA key not admitted: {e}")))?
             }
             TPM_ALG_ECC => {
                 let curve = r.be_u16()?;
@@ -301,7 +301,7 @@ pub(crate) mod build {
 
     /// `TPM2B_PUBLIC` for a P-256 ECDSA/SHA-256 key with `attributes`.
     pub(crate) fn p256_public(vk: &p256::ecdsa::VerifyingKey, attributes: u32) -> Vec<u8> {
-        let point = vk.to_encoded_point(false);
+        let point = vk.to_sec1_point(false);
         let mut t = Vec::new();
         t.extend_from_slice(&TPM_ALG_ECC.to_be_bytes());
         t.extend_from_slice(&HashAlg::TPM_SHA256.to_be_bytes());

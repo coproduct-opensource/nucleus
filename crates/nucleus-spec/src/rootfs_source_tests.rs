@@ -10,7 +10,7 @@ const D_ROOTFS: &str = "sha-256:222222222222222222222222222222222222222222222222
 /// the old type serialized absent options as `null`, and the wire must keep doing so.
 const OLD_JSON: &str = r#"{"kernel_path":"/k","rootfs_path":"/r","boot_args":"console=ttyS0","read_only":true,"scratch_path":null,"kernel_digest":"sha-256:1111111111111111111111111111111111111111111111111111111111111111","rootfs_digest":"sha-256:2222222222222222222222222222222222222222222222222222222222222222","scratch_digest":null,"data_path":null,"data_digest":null}"#;
 
-/// The same capture, through `serde_yaml`.
+/// The same capture, through `serde_yaml` 0.9. `nucleus_yaml` writes the same bytes for it.
 const OLD_YAML: &str = "kernel_path: /k\nrootfs_path: /r\nboot_args: console=ttyS0\nread_only: true\nscratch_path: null\nkernel_digest: sha-256:1111111111111111111111111111111111111111111111111111111111111111\nrootfs_digest: sha-256:2222222222222222222222222222222222222222222222222222222222222222\nscratch_digest: null\ndata_path: null\ndata_digest: null\n";
 
 fn image(json: &str) -> Result<ImageSpec, String> {
@@ -40,8 +40,8 @@ fn an_existing_path_spec_serializes_byte_identically() {
     );
     assert_eq!(serde_json::to_string(&from_json).unwrap(), OLD_JSON);
 
-    let from_yaml: ImageSpec = serde_yaml::from_str(OLD_YAML).expect("old YAML parses");
-    assert_eq!(serde_yaml::to_string(&from_yaml).unwrap(), OLD_YAML);
+    let from_yaml: ImageSpec = nucleus_yaml::from_str(OLD_YAML).expect("old YAML parses");
+    assert_eq!(nucleus_yaml::to_string(&from_yaml).unwrap(), OLD_YAML);
 }
 
 #[test]

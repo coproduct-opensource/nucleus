@@ -36,7 +36,6 @@ PORT="${NUCLEUS_LINEAGE_TEST_PORT:-8097}"
 # the health-check poll below needs a client cert to complete the handshake.
 URL="https://127.0.0.1:$PORT"
 TRUST_DOMAIN="nucleus.local"   # the node's own --identity-trust-domain default
-SECRET="$(printf 'a%.0s' {1..64})"   # 64 hex chars → a usable (non-empty, non-world-known) 32-byte key; still required for --proxy-auth-secret/--proxy-approval-secret (tool-proxy's own tier, untouched by Move B)
 WORK="$(mktemp -d)"
 NODE_PID=""
 
@@ -75,7 +74,7 @@ fi
 [[ -x "$MINT" ]] || { echo "ERROR: missing binary $MINT"; exit 1; }
 
 # ── Boot the real node (local driver, no KVM) ───────────────────────────────
-"$NODE" --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
+"$NODE" \
     --listen "127.0.0.1:$PORT" --state-dir "$WORK/state" --driver local --allow-local-driver \
     --root-minter-spiffe-id "spiffe://$TRUST_DOMAIN/ns/default/sa/test-cli" \
     --tool-proxy-path "$TP" >"$WORK/node.log" 2>&1 &

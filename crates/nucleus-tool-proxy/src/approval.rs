@@ -44,6 +44,9 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use nucleus::portcullis::Operation;
 use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
+use nucleus_spec::PodSpec;
+use nucleus_spec::approval_binding::ApprovalBinding;
+use nucleus_spec::manifest_hash::ManifestHash;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -254,9 +257,14 @@ impl VerifiedApproval {
     /// the header's own JWK would be vacuous — an attacker could sign a bundle
     /// with their own key, embed that key in the header, and self-verify.
     /// Fail-closed: with no trusted approver key configured, nothing mints.
+    ///
+    /// The bundle is bound to `manifest_hash`, the spec's canonical v3 hash
+    /// (`GuestCapability::CanonicalManifestApproval`, #3395). The type is
+    /// minted only by [`PodSpec::manifest_hash`], so no other hash of the spec
+    /// can be handed to the mint (ADR 0007 C-1).
     pub(crate) fn verify_bundle(
         jws: &str,
-        manifest_hash: &str,
+        manifest_hash: &ManifestHash,
         trusted: &[nucleus_identity::did::JsonWebKey],
     ) -> Result<Vec<Self>, ApiError> {
         if trusted.is_empty() {
@@ -269,7 +277,7 @@ impl VerifiedApproval {
         let verifier = ApprovalBundleVerifier::new();
         let claims = trusted
             .iter()
-            .find_map(|tk| verifier.verify(jws, tk, manifest_hash).ok())
+            .find_map(|tk| verifier.verify(jws, tk, manifest_hash.as_str()).ok())
             .ok_or_else(|| {
                 ApiError::Spec(
                     "approval bundle signer is not a trusted approver key (or the signature / \
@@ -338,6 +346,12 @@ struct ApprovalEntry {
 impl ApprovalRegistry {
     /// Register an approval. Takes the witness by value (C-4): one verified
     /// signature is one registration.
+    ///
+    /// A grant for an operation that already has a live one merges with it:
+    /// counts add, and the earlier deadline wins. A grant that has already
+    /// expired is purged first, as [`Self::live`] would at the next check, so
+    /// a lapsed, unspent grant can neither cap a fresh one at a deadline in
+    /// the past nor carry its uses into it.
     pub(crate) fn approve(&self, approval: VerifiedApproval) {
         let VerifiedApproval {
             operation,
@@ -345,76 +359,66 @@ impl ApprovalRegistry {
             expires_at_unix,
             issuer,
         } = approval;
+        let mut guard = self.approvals.lock().unwrap();
+        let merged = Self::live(&mut guard, &operation);
+        let entry = guard
+            .entry(operation.clone())
+            .and_modify(|entry| {
+                entry.count = entry.count.merge(count);
+                entry.expires_at_unix = entry.expires_at_unix.min(expires_at_unix);
+            })
+            .or_insert(ApprovalEntry {
+                count,
+                expires_at_unix,
+            });
+        let (effective_count, effective_expires_at) = (entry.count, entry.expires_at_unix);
+        drop(guard);
+        // Log what is now in force, not only what was asked for: after a
+        // merge the two differ.
         info!(
             operation = %operation,
             count = ?count,
             expires_at = expires_at_unix,
+            effective_count = ?effective_count,
+            effective_expires_at,
+            merged,
             issuer = %issuer,
             event = "approval_granted",
             "approval registered"
         );
-        let mut guard = self.approvals.lock().unwrap();
-        match guard.get_mut(&operation) {
-            Some(entry) => {
-                entry.count = entry.count.merge(count);
-                entry.expires_at_unix = entry.expires_at_unix.min(expires_at_unix);
-            }
-            None => {
-                guard.insert(
-                    operation,
-                    ApprovalEntry {
-                        count,
-                        expires_at_unix,
-                    },
-                );
-            }
-        }
     }
 
+    /// Spend one use of `operation`. Test-only: in production the one spend
+    /// is [`ConsentHold::spend`], at the effect (#3446), so there is no way
+    /// for a handler or an approver to spend a grant beside it.
+    #[cfg(test)]
     pub(crate) fn consume(&self, operation: &str) -> bool {
         let mut guard = self.approvals.lock().unwrap();
-        let Some(entry) = guard.get_mut(operation) else {
-            return false;
-        };
-        if is_expired(entry.expires_at_unix) {
-            guard.remove(operation);
+        if !Self::live(&mut guard, operation) {
             return false;
         }
-        match entry.count {
-            ApprovalCount::UntilExpiry => {}
-            ApprovalCount::Bounded(n) => match NonZeroUsize::new(n.get() - 1) {
-                Some(rest) => entry.count = ApprovalCount::Bounded(rest),
-                None => {
-                    guard.remove(operation);
-                }
-            },
-        }
+        Self::spend_one(&mut guard, operation);
         true
     }
 
-    /// Whether a live grant exists for `operation`, WITHOUT spending it.
-    ///
-    /// One human approval must buy exactly one operation, and an operation
-    /// crosses two independent approval gates on its way through: the kernel's
-    /// `RequiresApproval` verdict at the HTTP chokepoint, and the sandbox's own
-    /// capability guard. Both used to want to `consume`, which is #2406's other
-    /// half — a grant of `count: 1` was spent by whichever gate read it first
-    /// and the next gate found nothing, so the caller had to grant more than
-    /// they meant to approve for the write to land at all.
-    ///
-    /// So the gates split the two questions. Every gate before the last asks
-    /// *is this approved* (here); the sandbox approver, which is the last thing
-    /// between the request and the bytes, is the single site that spends it.
-    /// A peek that reports a live grant is therefore always followed by exactly
-    /// one `consume`, or by a refusal further down that spends nothing.
-    ///
-    /// Expiry is evaluated and purged here exactly as in [`Self::consume`], so
-    /// a peek cannot report a grant that a spend would then reject.
-    pub(crate) fn is_granted(&self, operation: &str) -> bool {
+    /// Spend every key, all or none, under one lock. `Err` names the first
+    /// key that is no longer live; then nothing is spent.
+    fn consume_all(&self, keys: &[String]) -> Result<(), String> {
         let mut guard = self.approvals.lock().unwrap();
-        match guard.get(operation) {
+        if let Some(gone) = keys.iter().find(|k| !Self::live(&mut guard, k)) {
+            return Err(gone.clone());
+        }
+        for key in keys {
+            Self::spend_one(&mut guard, key);
+        }
+        Ok(())
+    }
+
+    /// Whether `key` has a live grant, purging it if it has expired.
+    fn live(guard: &mut HashMap<String, ApprovalEntry>, key: &str) -> bool {
+        match guard.get(key) {
             Some(entry) if is_expired(entry.expires_at_unix) => {
-                guard.remove(operation);
+                guard.remove(key);
                 false
             }
             // Every stored count is non-zero by construction.
@@ -422,6 +426,268 @@ impl ApprovalRegistry {
             None => false,
         }
     }
+
+    /// Spend one use of a grant [`Self::live`] just reported.
+    fn spend_one(guard: &mut HashMap<String, ApprovalEntry>, key: &str) {
+        let Some(entry) = guard.get_mut(key) else {
+            return;
+        };
+        match entry.count {
+            ApprovalCount::UntilExpiry => {}
+            ApprovalCount::Bounded(n) => match NonZeroUsize::new(n.get() - 1) {
+                Some(rest) => entry.count = ApprovalCount::Bounded(rest),
+                None => {
+                    guard.remove(key);
+                }
+            },
+        }
+    }
+
+    /// Whether a live grant exists for `operation`, WITHOUT spending it.
+    ///
+    /// One human approval must buy exactly one operation, and an operation
+    /// can cross several approval gates on its way through: the kernel's
+    /// `RequiresApproval` verdict at the HTTP chokepoint (a static obligation,
+    /// a policy rule, the exposure gate, an action-bound hold), the handler's
+    /// own check, and the sandbox's or executor's capability guard. Each of
+    /// them used to decide for itself whether to `consume`, which is how one
+    /// grant was spent twice (#2406) or not at all (#3446): the monitor peeked,
+    /// and only the sandbox spent, so a hold the sandbox did not share (the
+    /// exposure gate, a policy rule) left the grant live until it expired.
+    ///
+    /// So every gate only asks (here), and collects what it asked for in one
+    /// [`ConsentHold`]. The handler spends that hold, by value, immediately
+    /// before the effect: once per effect, whichever gates asked.
+    ///
+    /// Expiry is evaluated and purged here exactly as in [`Self::consume`], so
+    /// a peek cannot report a grant that a spend would then reject.
+    pub(crate) fn is_granted(&self, operation: &str) -> bool {
+        let mut guard = self.approvals.lock().unwrap();
+        Self::live(&mut guard, operation)
+    }
+}
+
+/// The approvals a handler has checked and will spend only at the effect
+/// (#3443).
+///
+/// A handler checks consent early and performs its effect late, and between
+/// the two sit checks that can refuse: URL parse, host admission, the URL
+/// allowlist, the per-effect gate, the discharge preflight. Spending at the
+/// check meant every one of those refusals left the person's approval spent
+/// and the effect unperformed.
+///
+/// So [`Self::require`] only PEEKS, and [`Self::spend`] — by value (ADR 0007
+/// C-4), all or none — is called immediately before the effect. A handler
+/// that returns early drops the hold, and a dropped hold spends nothing.
+#[derive(Debug)]
+pub(crate) struct ConsentHold {
+    keys: Vec<String>,
+}
+
+impl ConsentHold {
+    /// Nothing required yet.
+    pub(crate) fn empty() -> Self {
+        Self { keys: Vec::new() }
+    }
+
+    /// The approval the reference monitor found live for a hold it then
+    /// released (`mediation`, which peeks through `ApprovalGrants`). Spent
+    /// with everything else the effect needs, at the effect (#3446).
+    pub(crate) fn peeked(key: String) -> Self {
+        Self { keys: vec![key] }
+    }
+
+    /// Require the approval for `operation` on `subject`, under the one name
+    /// the reference monitor also asks for it by (`nucleus::approval_key`).
+    /// Peeks; `Err` is that name, for the caller to approve.
+    pub(crate) fn require(
+        &mut self,
+        registry: &ApprovalRegistry,
+        operation: Operation,
+        subject: &str,
+    ) -> Result<(), String> {
+        self.require_named(registry, nucleus::approval_key(operation, subject))
+    }
+
+    /// Require an approval whose act is not an `(operation, subject)` pair —
+    /// the host-admission grant `web_egress host:port`, which consents to
+    /// reaching an undeclared host rather than to the fetch itself. Peeks.
+    pub(crate) fn require_named(
+        &mut self,
+        registry: &ApprovalRegistry,
+        key: String,
+    ) -> Result<(), String> {
+        if !registry.is_granted(&key) {
+            return Err(key);
+        }
+        // One act, one spend: a name required twice is spent once.
+        if !self.keys.contains(&key) {
+            self.keys.push(key);
+        }
+        Ok(())
+    }
+
+    /// Spend every required approval, all or none, immediately before the
+    /// effect. `Err` names one that is no longer live (it expired, or a
+    /// concurrent call spent it after it was checked); then nothing is spent.
+    pub(crate) fn spend(self, registry: &ApprovalRegistry) -> Result<(), String> {
+        registry.consume_all(&self.keys)
+    }
+}
+
+/// What an effect's own gate (the sandbox or the command executor) will ask
+/// for, joined to what the reference monitor already asked for, and spent
+/// once, all or none, immediately before the effect (#3446).
+///
+/// `asks` is the gate's answer to "which approval will you ask for"
+/// (`Sandbox::write_consent`, `Executor::consent`, ...), asked before anything
+/// is spent. `mint` is that gate's approver, which only checks a grant is
+/// live and issues the token the approved effect presents; it spends nothing.
+/// The spend is [`crate::mediation::Admitted::spend`], so a gate that asks
+/// for the name the monitor already asked for costs no second approval, and
+/// an effect the monitor's approval cleared spends it even when the gate does
+/// not ask.
+pub(crate) fn admit_effect(
+    registry: &ApprovalRegistry,
+    mut admitted: crate::mediation::Admitted,
+    asks: Option<String>,
+    mint: impl FnOnce(&str) -> nucleus::Result<nucleus::ApprovalToken>,
+) -> Result<Consented, ConsentRefused> {
+    let approval = match asks {
+        Some(key) => {
+            admitted
+                .require_named(registry, key.clone())
+                .map_err(ConsentRefused::Required)?;
+            Some(mint(&key).map_err(ConsentRefused::Gate)?)
+        }
+        None => None,
+    };
+    let token = admitted.spend(registry).map_err(ConsentRefused::Required)?;
+    Ok(Consented { token, approval })
+}
+
+/// An effect whose approvals are spent: the decision token it redeems, and the
+/// approval token its gate asked for, when it asked.
+#[must_use = "the approvals are spent; perform the effect they paid for"]
+pub(crate) struct Consented {
+    pub(crate) token: nucleus::portcullis::kernel::DecisionToken,
+    pub(crate) approval: Option<nucleus::ApprovalToken>,
+}
+
+/// Why [`admit_effect`] spent nothing.
+#[derive(Debug)]
+pub(crate) enum ConsentRefused {
+    /// No live grant for this name: approve it and retry. Also a grant that
+    /// was live when checked and lapsed (or was spent concurrently) before
+    /// the spend.
+    Required(String),
+    /// The gate's approver refused to issue its token.
+    Gate(nucleus::NucleusError),
+}
+
+/// The approver the sandbox and the command executor ask. It only ASKS: it
+/// issues the token an approved effect presents while a grant is live, and
+/// spends nothing. Every spend is the handler's, once per effect, immediately
+/// before it ([`admit_effect`], #3446). It used to spend, which made the
+/// sandbox the only gate that ever spent a grant, so a grant that cleared a
+/// hold the sandbox did not share was never spent at all.
+pub(crate) fn effect_approver(
+    approvals: std::sync::Arc<ApprovalRegistry>,
+) -> nucleus::CallbackApprover {
+    nucleus::CallbackApprover::new(move |request: &nucleus::ApprovalRequest| {
+        approvals.is_granted(request.operation())
+    })
+}
+
+/// Spend what the monitor's admission relied on, all or none, for a handler
+/// whose effect takes a discharge rather than the decision token (memory,
+/// owner decisions). Called immediately before the effect. A lapsed approval
+/// is the approval to ask for again.
+pub(crate) fn spend_admission(
+    state: &AppState,
+    admitted: crate::mediation::Admitted,
+) -> Result<(), ApiError> {
+    admitted
+        .into_consent()
+        .spend(&state.approvals)
+        .map_err(|key| {
+            ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation: key })
+        })
+}
+
+/// The act a handler records its verdicts about: operation, subject, actor.
+pub(crate) type Act<'a> = (Operation, &'a str, ActorIdentity);
+
+/// [`admit_effect`] for a handler: `asks` is the effect gate's answer, and a
+/// refusal of either is recorded and returned as the error the caller sees.
+/// Nothing is spent unless this returns `Ok`.
+pub(crate) fn consent_for_effect(
+    state: &AppState,
+    admitted: crate::mediation::Admitted,
+    asks: nucleus::Result<Option<String>>,
+    mint: impl FnOnce(&str) -> nucleus::Result<nucleus::ApprovalToken>,
+    act: Act<'_>,
+) -> Result<Consented, ApiError> {
+    let sink = state.verdict_sink.as_ref();
+    let (operation, subject, actor) = act;
+    let asks = match asks {
+        Ok(asks) => asks,
+        Err(err) => return Err(effect_failed(sink, (operation, subject, actor), err)),
+    };
+    match admit_effect(&state.approvals, admitted, asks, mint) {
+        Ok(consented) => Ok(consented),
+        Err(ConsentRefused::Required(key)) => {
+            Err(approval_lapsed(sink, operation, subject, actor, key))
+        }
+        Err(ConsentRefused::Gate(err)) => {
+            Err(effect_failed(sink, (operation, subject, actor), err))
+        }
+    }
+}
+
+/// A sandbox or executor refusal, recorded as the error it is.
+pub(crate) fn effect_failed(
+    sink: &dyn portcullis::verdict_sink::VerdictSink,
+    (operation, subject, actor): Act<'_>,
+    err: nucleus::NucleusError,
+) -> ApiError {
+    if let Err(e) = sink.record(VerdictContext {
+        operation,
+        subject: subject.to_string(),
+        outcome: VerdictOutcome::Error {
+            error: format!("{err:?}"),
+        },
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
+    ApiError::Nucleus(err)
+}
+
+/// A [`ConsentHold::spend`] that found an approval no longer live, recorded as
+/// the refusal it is and handed back as the approval to ask for again.
+pub(crate) fn approval_lapsed(
+    sink: &dyn portcullis::verdict_sink::VerdictSink,
+    operation: Operation,
+    subject: &str,
+    actor: ActorIdentity,
+    key: String,
+) -> ApiError {
+    if let Err(e) = sink.record(VerdictContext {
+        operation,
+        subject: subject.to_string(),
+        outcome: VerdictOutcome::Deny {
+            reason: "approval_required".to_string(),
+        },
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
+    ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation: key })
 }
 
 impl crate::mediation::ApprovalGrants for ApprovalRegistry {
@@ -596,19 +862,73 @@ fn parse_approval_trusted_keys() -> Vec<nucleus_identity::did::JsonWebKey> {
     }
 }
 
-/// Verify a JWS approval bundle bound to `spec_contents` and register every
-/// approval it carries. See [`VerifiedApproval::verify_bundle`].
+/// Verify a JWS approval bundle bound to the spec in `spec_contents` and
+/// register every approval it carries. See [`VerifiedApproval::verify_bundle`].
+///
+/// The bundle must carry the spec's canonical v3 manifest hash
+/// ([`ApprovalBinding::CanonicalManifest`], the receipt's hash, #3393): an
+/// approval binds what the spec means, not the bytes the node's YAML writer
+/// produced. `spec_contents` is parsed here, from the file as the node wrote
+/// it, so nothing the proxy later does to its own copy of the spec moves the
+/// hash.
+///
+/// A bundle bound to the spec file's bytes — what a guest that predates
+/// [`ApprovalBinding::CAPABILITY`] binds — is refused by name
+/// ([`ApprovalBinding::LegacySpecBytes`]), never accepted as a fallback (#3395).
 fn verify_and_load_approval_bundle(
     jws: &str,
     spec_contents: &str,
     approvals: &ApprovalRegistry,
     trusted_keys: &[nucleus_identity::did::JsonWebKey],
 ) -> Result<(), ApiError> {
-    let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
-    for approval in VerifiedApproval::verify_bundle(jws, &manifest_hash, trusted_keys)? {
+    let spec: PodSpec = nucleus_yaml::from_str(spec_contents).map_err(|e| {
+        ApiError::Spec(format!(
+            "approval bundle cannot be bound: the pod spec does not parse: {e}"
+        ))
+    })?;
+    let manifest_hash = spec
+        .manifest_hash()
+        .map_err(|e| ApiError::Spec(format!("approval bundle cannot be bound: {e}")))?;
+    let minted = match VerifiedApproval::verify_bundle(jws, &manifest_hash, trusted_keys) {
+        Ok(minted) => minted,
+        Err(refused) => {
+            return Err(
+                match bound_to_spec_bytes(jws, spec_contents, trusted_keys) {
+                    Some(binding) => legacy_binding_refused(binding, &manifest_hash),
+                    None => refused,
+                },
+            );
+        }
+    };
+    for approval in minted {
         approvals.approve(approval);
     }
     Ok(())
+}
+
+/// Whether a trusted approver signed `jws` for the spec file's bytes rather
+/// than for the canonical hash. Pure: it verifies and mints nothing, so the
+/// only thing it can change is which refusal is reported.
+fn bound_to_spec_bytes(
+    jws: &str,
+    spec_contents: &str,
+    trusted_keys: &[nucleus_identity::did::JsonWebKey],
+) -> Option<ApprovalBinding> {
+    let spec_bytes_hash = compute_manifest_hash(spec_contents.as_bytes());
+    let verifier = ApprovalBundleVerifier::new();
+    trusted_keys
+        .iter()
+        .any(|tk| verifier.verify(jws, tk, &spec_bytes_hash).is_ok())
+        .then_some(ApprovalBinding::LegacySpecBytes)
+}
+
+fn legacy_binding_refused(binding: ApprovalBinding, canonical: &ManifestHash) -> ApiError {
+    ApiError::Spec(format!(
+        "approval bundle refused: it is bound to the pod spec file's bytes ({binding:?}), the \
+         binding of a guest that predates {capability:?}. This guest binds approvals to the \
+         spec's canonical v3 manifest hash, {canonical}; mint the bundle for that hash (#3395)",
+        capability = ApprovalBinding::CAPABILITY,
+    ))
 }
 
 #[cfg(test)]

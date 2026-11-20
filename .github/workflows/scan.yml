@@ -128,7 +128,7 @@ jobs:
 
       - name: Scan safe PodSpec
         # v1.0.8
-        uses: coproduct-opensource/nucleus/scan@8a452030be0463bb0b7268d617ff65cc8b645d28
+        uses: coproduct-opensource/nucleus/scan@a2955e73c2f83fea66cfa136ddf52ac321d9b06d
         id: safe
         with:
           pod-spec: examples/podspecs/safe-pr-fixer.yaml

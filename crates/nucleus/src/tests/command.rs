@@ -82,12 +82,12 @@ use rust_decimal::Decimal;
 use tempfile::tempdir;
 
 fn test_policy() -> PermissionLattice {
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.read_files = CapabilityLevel::Never;
     policy.capabilities.run_bash = CapabilityLevel::LowRisk;
     policy.capabilities.web_fetch = CapabilityLevel::Never;
     policy.capabilities.web_search = CapabilityLevel::Never;
-    policy.obligations = Obligations::default();
+    policy.declare_all(portcullis::ConsentMode::Autonomous);
     policy.commands = CommandLattice::permissive();
     policy
 }
@@ -191,6 +191,73 @@ fn a_command_that_writes_a_git_hook_is_reverted_and_refused() {
     assert!(tmp.path().join("src.txt").exists());
 }
 
+/// #3322: `spawn_checked` is the choke point every synchronous spawn passes,
+/// so its refusals are injected here directly rather than through `run`
+/// (which refuses an unconfigured executor before it ever gets this far):
+///
+/// 1. no declared containment ⇒ refused BEFORE any child exists — the file
+///    the child would have created is absent;
+/// 2. a child that writes a watched file ⇒ the write is reverted and the spawn
+///    refused, although the child itself exited 0.
+///
+/// The control is the same executor and the same program writing an
+/// unwatched path, which runs and keeps its write.
+#[test]
+fn spawn_checked_refuses_an_unconfined_spawn_and_reverts_a_watched_write() {
+    let tmp = tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git/hooks")).unwrap();
+    // As in `a_command_that_writes_a_git_hook_is_reverted_and_refused`: a root
+    // runtime's child runs as the drop uid, so the hook directory must be its
+    // to write, or the write this test reverts never happens.
+    let confinement = ChildConfinement::for_containment(
+        ContainmentMode::Unsandboxed,
+        crate::UnsandboxedOptIn::Explicit,
+        crate::LandlockWaiver::Absent,
+    )
+    .unwrap();
+    for dir in [".git", ".git/hooks"] {
+        confinement.hand_over(&tmp.path().join(dir)).unwrap();
+    }
+    let policy = test_policy();
+    let budget = AtomicBudget::new(&test_budget());
+    let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+    let touch = |executor: &Executor<'_>, path: &str| {
+        executor.spawn_checked(
+            "touch",
+            &[path.to_string()],
+            sandbox.root_path(),
+            None,
+            Authority::new(allowed_bundle(&format!("touch {path}"))),
+        )
+    };
+
+    // 1. No containment declared: refused, and nothing ran.
+    let unconfigured = Executor::new(&policy, &sandbox, &budget);
+    match touch(&unconfigured, "marker") {
+        Err(NucleusError::IsolationNotConfigured) => {}
+        other => panic!("expected IsolationNotConfigured, got {other:?}"),
+    }
+    assert!(
+        !tmp.path().join("marker").exists(),
+        "an unconfined spawn must be refused before the child exists"
+    );
+
+    // 2. A watched write: reverted and refused.
+    let executor = Executor::new(&policy, &sandbox, &budget).allow_unsandboxed_local();
+    match touch(&executor, ".git/hooks/pre-commit") {
+        Err(NucleusError::CommandDenied { reason, .. }) => {
+            assert!(reason.contains(".git/hooks/pre-commit"), "{reason}")
+        }
+        other => panic!("expected CommandDenied naming the hook, got {other:?}"),
+    }
+    assert!(!tmp.path().join(".git/hooks/pre-commit").exists());
+
+    // Control: the same spawn of an unwatched path runs and keeps its write.
+    let output = touch(&executor, "src.txt").expect("an unwatched write is not refused");
+    assert!(output.status.success());
+    assert!(tmp.path().join("src.txt").exists());
+}
+
 #[test]
 fn test_budget_exhausted_blocks_execution() {
     let tmp = tempdir().unwrap();
@@ -271,7 +338,10 @@ fn test_never_capability() {
 fn test_approval_required_without_callback() {
     let tmp = tempdir().unwrap();
     let mut policy = test_policy();
-    policy.obligations.insert(Operation::RunBash);
+    policy.declare(
+        Operation::RunBash,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     let budget_policy = test_budget();
     let mut kernel = Kernel::new(policy.clone());
 
@@ -296,7 +366,10 @@ fn test_approval_required_without_callback() {
 fn test_approval_with_token() {
     let tmp = tempdir().unwrap();
     let mut policy = test_policy();
-    policy.obligations.insert(Operation::RunBash);
+    policy.declare(
+        Operation::RunBash,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     let budget_policy = test_budget();
     let mut kernel = Kernel::new(policy.clone());
 
@@ -400,11 +473,11 @@ fn a_token_from_this_policy_is_accepted() {
 #[test]
 fn test_uninhabitable_requires_approval_for_exfiltration() {
     let tmp = tempdir().unwrap();
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.read_files = CapabilityLevel::Always; // Private data
     policy.capabilities.web_fetch = CapabilityLevel::LowRisk; // Untrusted content
     policy.capabilities.run_bash = CapabilityLevel::LowRisk; // Allows curl
-    policy.obligations = Obligations::default();
+    policy.declare_all(portcullis::ConsentMode::Autonomous);
     policy.commands = CommandLattice::permissive();
 
     let budget_policy = test_budget();
@@ -431,11 +504,11 @@ fn test_uninhabitable_requires_approval_for_exfiltration() {
 #[test]
 fn test_uninhabitable_requires_approval_for_interpreter_invocation() {
     let tmp = tempdir().unwrap();
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.read_files = CapabilityLevel::Always; // Private data
     policy.capabilities.web_fetch = CapabilityLevel::LowRisk; // Untrusted content
     policy.capabilities.run_bash = CapabilityLevel::LowRisk; // Allows shell
-    policy.obligations = Obligations::default();
+    policy.declare_all(portcullis::ConsentMode::Autonomous);
     policy.commands = CommandLattice::permissive();
     let budget_policy = test_budget();
     let mut kernel = Kernel::new(policy.clone());
@@ -666,16 +739,17 @@ fn a_root_runtimes_child_is_never_root_in_any_mode() {
 
 /// The fd half of the confinement, on a real spawn: a `HostHardened`
 /// child (restricted, or dropped under a root runtime) inherits no
-/// descriptor beyond its own stdio, while the bare tier's child keeps
-/// whatever the runtime leaves open. `ls /proc/self/fd` opens one more fd
-/// for its directory listing, so a confined child lists at most four.
+/// descriptor beyond its own stdio, and since #3461 neither does the bare
+/// tier's, whose one step of the hook is this sweep. `ls /proc/self/fd`
+/// opens one more fd for its directory listing, so a child lists at most
+/// four.
 ///
 /// This is the mechanism the tool-proxy's workload test used to cover
 /// through a non-root harness; since #3120 a non-root workload is either
-/// refused or on the declared bare tier, which closes nothing, so the
-/// close-on-exec sweep is asserted here, where a non-root CI runner still
-/// reaches it. The test harness itself holds high non-CLOEXEC fds (seen in
-/// CI: 149 and 152), which is what the bare row shows.
+/// refused or on the declared bare tier, so the close-on-exec sweep is
+/// asserted here, where a non-root CI runner still reaches it. The test
+/// harness itself holds high non-CLOEXEC fds (seen in CI: 149 and 152): the
+/// bare row listed them before #3461, which is the leak it closed.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_confined_child_inherits_no_fd_beyond_its_stdio() {
@@ -718,11 +792,10 @@ fn a_confined_child_inherits_no_fd_beyond_its_stdio() {
         "a confined child inherited a descriptor beyond its stdio: {confined:?}"
     );
     let bare = list(ContainmentMode::Unsandboxed);
-    if crate::runtime_uid() != 0 {
-        // The contrast, reported rather than required: whether the bare
-        // child sees extra fds depends on what the harness left open.
-        eprintln!("bare-tier child fds (no sweep, by design): {bare:?}");
-    }
+    assert!(
+        (3..=4).contains(&bare.len()),
+        "a bare-tier child inherited a descriptor beyond its stdio: {bare:?}"
+    );
 }
 
 /// #2572: a confined child's resource limits are its pod's policy, not

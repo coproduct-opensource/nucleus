@@ -294,8 +294,31 @@ impl PermissiveExecutor {
     }
 
     /// Create a builder for the executor.
-    pub fn builder() -> PermissiveExecutorBuilder {
-        PermissiveExecutorBuilder::default()
+    ///
+    /// The floor and the ceiling are required: an executor runs its closure
+    /// at the ceiling, so an omitted ceiling cannot be allowed to pick one on
+    /// the caller's behalf (ADR 0007 B-1, B-2; #3400). The builder therefore
+    /// has no `Default`, and there is no way to build one without naming both.
+    ///
+    /// ```compile_fail
+    /// // No ceiling, no executor: the builder has no zero-argument constructor.
+    /// let _ = portcullis::permissive::PermissiveExecutor::builder().build();
+    /// ```
+    ///
+    /// ```compile_fail
+    /// // And no `Default` to reach the same place by another road.
+    /// let _ = <portcullis::permissive::PermissiveExecutorBuilder as Default>::default();
+    /// ```
+    pub fn builder(
+        floor: PermissionLattice,
+        ceiling: PermissionLattice,
+    ) -> PermissiveExecutorBuilder {
+        PermissiveExecutorBuilder {
+            floor,
+            ceiling,
+            isolation_floor: None,
+            cost_config: None,
+        }
     }
 
     /// Get the floor permissions.
@@ -530,27 +553,20 @@ impl PermissiveExecutor {
 }
 
 /// Builder for PermissiveExecutor.
-#[derive(Debug, Clone, Default)]
+///
+/// Built only by [`PermissiveExecutor::builder`], which takes the floor and the
+/// ceiling. No `Default`: a derived one would fill an omitted ceiling with
+/// whatever the field's default is, and the executor runs at its ceiling
+/// (ADR 0007 B-1; #3400).
+#[derive(Debug, Clone)]
 pub struct PermissiveExecutorBuilder {
-    floor: Option<PermissionLattice>,
-    ceiling: Option<PermissionLattice>,
+    floor: PermissionLattice,
+    ceiling: PermissionLattice,
     isolation_floor: Option<IsolationLattice>,
     cost_config: Option<WeakeningCostConfig>,
 }
 
 impl PermissiveExecutorBuilder {
-    /// Set the floor permissions.
-    pub fn floor(mut self, floor: PermissionLattice) -> Self {
-        self.floor = Some(floor);
-        self
-    }
-
-    /// Set the ceiling permissions.
-    pub fn ceiling(mut self, ceiling: PermissionLattice) -> Self {
-        self.ceiling = Some(ceiling);
-        self
-    }
-
     /// Set the isolation floor.
     pub fn isolation_floor(mut self, isolation: IsolationLattice) -> Self {
         self.isolation_floor = Some(isolation);
@@ -566,8 +582,8 @@ impl PermissiveExecutorBuilder {
     /// Build the executor.
     pub fn build(self) -> PermissiveExecutor {
         PermissiveExecutor {
-            floor: self.floor.unwrap_or_else(PermissionLattice::codegen),
-            ceiling: self.ceiling.unwrap_or_else(PermissionLattice::permissive),
+            floor: self.floor,
+            ceiling: self.ceiling,
             isolation_floor: self.isolation_floor.unwrap_or_default(),
             cost_config: self.cost_config.unwrap_or_default(),
         }
@@ -772,14 +788,64 @@ mod tests {
         assert!(gap.is_empty());
     }
 
+    /// #3400 (ADR 0007 B-1): the builder must have no `Default`. With one,
+    /// `build()` on an untouched builder chose a ceiling for the caller, and
+    /// it chose `permissive`. Detected at runtime by autoref specialization:
+    /// the by-value candidate exists only when `T: Default`. Red on a builder
+    /// that derives `Default`.
+    #[test]
+    // The explicit `&` is the probe: autoref specialization needs it.
+    #[allow(clippy::needless_borrow)]
+    fn executor_builder_has_no_default() {
+        use std::marker::PhantomData;
+        struct Probe<T>(PhantomData<T>);
+        trait HasNoDefault {
+            fn has_default(&self) -> bool {
+                false
+            }
+        }
+        impl<T> HasNoDefault for &Probe<T> {}
+        trait HasDefault {
+            fn has_default(&self) -> bool {
+                true
+            }
+        }
+        impl<T: Default> HasDefault for Probe<T> {}
+
+        // The probe is sound: it sees a `Default` where there is one.
+        assert!((&Probe::<String>(PhantomData)).has_default());
+        assert!(
+            !(&Probe::<PermissiveExecutorBuilder>(PhantomData)).has_default(),
+            "PermissiveExecutorBuilder must not implement Default: an omitted \
+             ceiling would be chosen for the caller"
+        );
+    }
+
+    /// The ceiling the caller names is the ceiling the executor runs at.
+    #[test]
+    fn executor_builder_runs_at_the_named_ceiling() {
+        let executor = PermissiveExecutor::builder(
+            PermissionLattice::read_only(),
+            PermissionLattice::codegen(),
+        )
+        .build();
+        assert_eq!(
+            executor.ceiling().description,
+            PermissionLattice::codegen().description
+        );
+        let ran_at = executor.execute(|perms| perms.description.clone()).value;
+        assert_eq!(ran_at, PermissionLattice::codegen().description);
+    }
+
     #[test]
     fn test_executor_builder() {
-        let executor = PermissiveExecutor::builder()
-            .floor(PermissionLattice::read_only())
-            .ceiling(PermissionLattice::permissive())
-            .isolation_floor(IsolationLattice::microvm())
-            .cost_config(WeakeningCostConfig::default())
-            .build();
+        let executor = PermissiveExecutor::builder(
+            PermissionLattice::read_only(),
+            PermissionLattice::permissive(),
+        )
+        .isolation_floor(IsolationLattice::microvm())
+        .cost_config(WeakeningCostConfig::default())
+        .build();
 
         assert_eq!(executor.floor().description, "Read-only permissions");
         assert_eq!(executor.ceiling().description, "Permissive permissions");

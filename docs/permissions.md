@@ -6,11 +6,17 @@
 You have a permission profile. Check it before acting.
 
 - "Never" = blocked, don't try
-- "LowRisk" = allowed for safe operations
-- "Always" = always allowed
+- "LowRisk" = permitted (within path/command/network limits)
+- "Always" = permitted (within the same limits)
 
-If you have read_files + web access + git push all enabled,
-exfiltration actions (git push, create PR, bash) require human approval.
+A level says whether an operation is PERMITTED, not whether a person must
+approve it. Consent is declared per operation: one listed under `obligations`
+needs a human approval first, one listed under `autonomous` does not, and
+every permitted operation is in exactly one of the two.
+
+If you have private-data access (read/glob/grep) + web access + an exfil
+channel (git push, create PR, bash) all enabled, each of those exfil
+operations that is enabled gains an obligation and requires human approval.
 This is the "uninhabitable state protection" - it prevents prompt injection attacks
 from stealing secrets.
 ```
@@ -68,25 +74,91 @@ Each tool capability has one of three levels:
 ```
 Never     →  Blocked entirely
     ↓
-LowRisk   →  Auto-approved for safe operations
+LowRisk   →  Permitted
     ↓
-Always    →  Always auto-approved
+Always    →  Permitted
 ```
+
+The level is **permission**, not **consent**. When the kernel decides an
+operation it reads the level only to tell `Never` from permitted; `LowRisk`
+and `Always` differ in the lattice order (how `meet`, `join` and delegation
+narrow a policy), not in whether a person is asked. Whether a person is asked
+is decided by the operation's declared consent (`obligations` or
+`autonomous`) — see [Permission and consent](#permission-and-consent).
+
+### Permission and consent
+
+Two separate questions are answered for every operation:
+
+1. **Is it permitted?** The capability level. `never` refuses it; `low_risk`
+   and `always` permit it, still subject to the path, command, network and
+   flow (IFC) checks.
+2. **Must a human approve it first?** The operation's **consent**, which the
+   policy declares explicitly for every permitted operation:
+   - `obligations` lists the operations that **require approval**. Each is
+     held until a matching approval exists.
+   - `autonomous` lists the operations that **run without asking**. They are
+     still subject to every dynamic check above, including the exposure
+     (uninhabitable-state) gate; `autonomous` never bypasses those.
+
+**Consent is explicit.** Every operation whose level is above `never` must
+appear in exactly one of the two lists. A policy that leaves one out, or lists
+one in both, is refused when it is loaded — a profile by the profile loader, an
+inline pod policy when the spec is read or resolved — and the error names
+every operation at fault. Nothing is autonomous by omission: the kernel
+decides an operation that is not declared autonomous as requiring approval.
+An operation at `never` needs no declaration.
+
+Obligations can also be added by the uninhabitable-state (trifecta) rule:
+when private-data access (`read_files`, `glob_search` or `grep_search` ≥
+`low_risk`), untrusted content (`web_fetch` or `web_search` ≥ `low_risk`) and
+an exfiltration channel (`git_push`, `create_pr` or `run_bash` ≥ `low_risk`)
+are all present, normalization obligates each of `git_push`, `create_pr` and
+`run_bash` that is permitted, moving it from `autonomous` if it was declared
+there. It only ever adds obligations; it never removes one. The built-in
+profiles declare these obligations directly, so what they say is what they do.
+
+When policies are combined, consent composes per operation:
+
+- **meet** (narrowing, delegation): an operation is obligated if either side
+  obligates it, and autonomous only if both sides declare it autonomous.
+  Narrowing never drops consent.
+- **join**: consent comes from the side or sides that permit the operation; if
+  both do, it is obligated only if both obligate it.
+
+**Breaking change.** Before this, consent was implicit: a permitted operation
+not listed under `obligations` ran without approval. Policies written that way
+— inline pod policies and profiles on disk — must now list those operations
+under `autonomous`; see `docs/STABILITY.md`.
 
 ### Example
 
 ```yaml
 capabilities:
   read_files: always      # Can always read files
-  write_files: low_risk   # Can write to safe locations
-  run_bash: never         # Cannot run shell commands
-  web_fetch: low_risk     # Can fetch approved URLs
-  git_push: low_risk      # Can push (but may need approval)
+  write_files: low_risk   # Can write (within path limits)
+  run_bash: never         # Cannot run shell commands: needs no declaration
+  web_fetch: low_risk     # Can fetch (within host limits)
+  git_push: low_risk      # Can push (the trifecta rule would obligate it anyway)
+obligations:              # Permitted, and held for a human approval
+  - git_push
+autonomous:               # Permitted, and run without asking
+  - read_files
+  - write_files
+  - web_fetch
 ```
+
+(A real profile also states the levels it leaves at their defaults; every one
+above `never` must be declared.)
 
 ---
 
 ## Built-in Profiles
+
+The tables below give each profile's capability **levels**. A `*` marks an
+operation that requires approval (an obligation, declared or added by the
+uninhabitable-state rule); a `low_risk` operation without a `*` runs without
+asking anyone. See [Permission and consent](#permission-and-consent).
 
 ### `filesystem-readonly`
 Read-only with sensitive paths blocked.
@@ -128,9 +200,11 @@ edit_files: never     git_commit: never     run_bash: never
 Read code, search web for context, but no modifications.
 
 ```
-read_files: always    web_search: low_risk  git_push: never
+read_files: always    web_search: low_risk* git_push: never
 write_files: never    web_fetch: never      create_pr: never
 edit_files: never     git_commit: never
+
+* Requires approval (declared obligation)
 ```
 
 ### `edit-only`
@@ -155,12 +229,14 @@ edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
 Full development workflow with uninhabitable state protection.
 
 ```
-read_files: always    web_search: low_risk  git_push: low_risk*
-write_files: low_risk web_fetch: low_risk   create_pr: low_risk*
-edit_files: low_risk  git_commit: low_risk
-run_bash: low_risk
+read_files: always    web_search: low_risk* git_push: low_risk*
+write_files: low_risk web_fetch: low_risk*  create_pr: low_risk*
+edit_files: low_risk  git_commit: low_risk*
+run_bash: low_risk*
 
-* Requires approval due to uninhabitable state detection
+* Requires approval: web_search, web_fetch, git_commit, git_push and
+  create_pr are declared obligations; run_bash is added by the
+  uninhabitable-state rule. Unmarked operations need no approval.
 ```
 
 ### `release`
@@ -169,9 +245,11 @@ Release/publish workflow with approvals on exfiltration.
 ```
 read_files: always    web_search: low_risk  git_push: low_risk*
 write_files: low_risk web_fetch: low_risk   create_pr: low_risk*
-edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
+edit_files: low_risk  git_commit: low_risk  run_bash: low_risk*
 
-* Requires approval
+* Requires approval: git_push and create_pr are declared obligations;
+  run_bash is added by the uninhabitable-state rule (read + web + exfil).
+  Unmarked operations need no approval.
 ```
 
 ### `database-client`
@@ -187,10 +265,13 @@ edit_files: never     git_commit: never     run_bash: low_risk
 For live demos - blocks shell interpreters.
 
 ```
-read_files: always    web_search: low_risk  git_push: low_risk
-write_files: low_risk web_fetch: low_risk   create_pr: low_risk
-edit_files: low_risk  git_commit: low_risk
-run_bash: low_risk    (blocked: python, node, bash, etc.)
+read_files: always    web_search: low_risk  git_push: low_risk*
+write_files: low_risk* web_fetch: low_risk  create_pr: low_risk*
+edit_files: low_risk* git_commit: low_risk
+run_bash: low_risk*   (blocked: python, node, bash, etc.)
+
+* Requires approval: write_files and edit_files are declared obligations;
+  git_push, create_pr and run_bash are added by the uninhabitable-state rule.
 ```
 
 ---
@@ -225,6 +306,10 @@ edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
 
 ** Uninhabitable state status**: NOT vulnerable (no untrusted content exposure)
 
+No obligations: every permitted operation is declared `autonomous`, so
+writes, edits, shell commands and local commits run **without approval**.
+`low_risk` here means permitted, not "asks first".
+
 Use case: Implement features in a Firecracker microVM, run tests, commit locally.
 Network isolation prevents prompt injection attacks from web content.
 
@@ -256,10 +341,9 @@ Your permissions:
   web_fetch: low_risk    ← Untrusted content ✓
   git_push: low_risk     ← Exfiltration vector ✓
 
- Uninhabitable state detected! Adding approval requirement:
+ Uninhabitable state detected! Adding an obligation to each permitted
+exfil operation (git_push, create_pr, run_bash) — here only git_push:
   git_push: requires approval
-  create_pr: requires approval
-  run_bash: requires approval
 ```
 
 This happens automatically. You don't configure it. You can't disable it (even via malicious JSON payloads - the constraint is enforced on deserialization).
@@ -285,12 +369,17 @@ When you receive a permission profile, check:
 
 1. **What level is each capability?**
    - `never` = don't attempt
-   - `low_risk` = safe operations okay
-   - `always` = go ahead
+   - `low_risk` = permitted
+   - `always` = permitted
+   - A level does not tell you whether approval is needed — see step 2.
 
-2. **Is uninhabitable state active?**
-   - If `read_files >= low_risk` AND `web_* >= low_risk` AND `git_push >= low_risk`
-   - Then `git_push`, `create_pr`, `run_bash` need approval
+2. **Which operations need approval?**
+   - Any operation listed in the policy's `obligations` (every other permitted
+     operation is listed under `autonomous`).
+   - Plus, if the uninhabitable state is active — (`read_files` OR `glob_search` OR
+     `grep_search`) `>= low_risk` AND `web_* >= low_risk` AND (`git_push` OR
+     `create_pr` OR `run_bash`) `>= low_risk` — each of `git_push`, `create_pr`,
+     `run_bash` that is permitted needs approval
 
 3. **Check path restrictions**
    - `allowed_paths`: only these directories
@@ -589,6 +678,66 @@ agent that reaches a host with `curl` rather than an MCP tool is bounded by host
 not by method and path. See `docs/adr/0004-delegation-compiler.md` for the
 milestones that close that gap.
 
+## Decisions
+
+An owner decision is a signed answer to a question: "of these options, the owner chose this
+one", with a structured scope and a validity window (`crates/nucleus-signed-decision`). A spec
+can make an effect it is already allowed run only when the call cites one:
+
+```yaml
+spec:
+  credentialed_egress:
+    - name: forge
+      upstream: https://forge.invalid/api
+      # ...
+  requires_decision:
+    - create_pr:forge   # a pull request opened through the upstream named `forge`
+```
+
+Each entry is `<effect>:<upstream>`, and that string is exactly the capability an owner's
+decision must list in `scope.capabilities`. The effects that can be gated are the two the
+credentialed-egress classifier labels: `create_pr` and `git_push`. A requirement only ever
+restricts, and a sub-pod keeps every requirement its parent holds for an upstream it keeps.
+
+The node's operator configures `nucleus-node --decision-trust-roots <file> --decision-tenant
+<tenant> --decision-bundles <dir>`. All three are checked at startup, and a bad value refuses
+the node's start by the flag's name. Each pod's tool-proxy receives the roots and the tenant's
+bundles: the node's files on the local driver, read-only bind mounts on the container driver,
+and the `FETCH_POD_SPEC` reply on Firecracker, which guest-init writes under
+`/run/nucleus/decisions`. The bundles are untrusted until the tool-proxy verifies them.
+
+A gated call cites its decision in the `x-nucleus-decision` header, which is never forwarded
+upstream. The effect runs only when all of these hold. Otherwise it is refused by name:
+
+| Checked | Refused as |
+|---|---|
+| a decision is cited, as 64 hex | none cited, or not an id |
+| a bundle for that id verifies against a pinned root, canonical, for this tenant, its options and question unaltered | the verifier's reason (unknown kid, bad signature, options not the ones shown, ...) |
+| `now` is inside its window | expired, not yet valid |
+| no bundle the pod holds supersedes it | superseded |
+| the capability is in its scope, and every path the effect writes | out of scope |
+| this proxy can read the write set | cannot be shown to cover (a push today: its pack is not read) |
+| a one-shot decision was not spent in this pod | already spent; the first use spends it, by value |
+
+The tool-proxy writes `owner_decision` to its signed audit log, naming the capability and the
+decision id (`cited <id>` or `spent <id>`), before the effect runs. The receipt's audit tail
+hash pins that record.
+
+A spec that requires a decision is refused at create when the node has no trust roots, when a
+requirement names an upstream the spec does not declare, on an unmediated container, and on a
+guest known to predate the capability (`GuestCapability::DecisionGatedSinks`, in no published
+release yet, so the pinned 2.7.0 guest is refused by name). A Firecracker pod whose guest the
+node cannot identify is handed out only after its tool-proxy prints `NUCLEUS_DECISION_GATE:
+ARMED` naming every requirement. Pods that require no decision are unchanged on every guest.
+
+**What is not enforced yet.** Single use is per pod: a one-shot decision cited in two pods is
+spent once in each. Fleet-wide single use is the merge gate's job. Supersession covers the
+bundles a pod was given, so a superseding decision filed after a pod started is unseen there
+until its window closes. No log inclusion proof is checked, and there is no fleet-wide
+revocation: removing a root from the node's file stops new pods from trusting it, not running
+ones. Whether a change is "breaking" or "picks between designs" is semantic, and no proxy
+detects it; that half is a convention.
+
 ## Delegation (Sub-agents)
 
 When delegating to a sub-agent, permissions can only go **down**, never up:
@@ -611,15 +760,15 @@ This is enforced mathematically via lattice meet operation.
 │                    PERMISSION LEVELS                        │
 ├─────────────────────────────────────────────────────────────┤
 │  never     Blocked. Don't attempt.                          │
-│  low_risk  Allowed for safe operations.                     │
-│  always    Always allowed.                                  │
+│  low_risk  Permitted. Approval only if obligated.           │
+│  always    Permitted. Approval only if obligated.           │
 ├─────────────────────────────────────────────────────────────┤
 │                    uninhabitable state RULE                            │
 ├─────────────────────────────────────────────────────────────┤
-│  IF   read_files ≥ low_risk                                 │
+│  IF   (read_files OR glob/grep_search) ≥ low_risk           │
 │  AND  (web_fetch OR web_search) ≥ low_risk                  │
 │  AND  (git_push OR create_pr OR run_bash) ≥ low_risk        │
-│  THEN exfiltration actions require approval                 │
+│  THEN each permitted exfil action gains an obligation       │
 ├─────────────────────────────────────────────────────────────┤
 │                    BUILT-IN PROFILES                        │
 ├─────────────────────────────────────────────────────────────┤

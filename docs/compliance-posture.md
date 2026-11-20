@@ -16,8 +16,8 @@ remediation is in flight, we link to the tracking task.
 
 | Framework | Effective | Penalty | Our posture | Notes |
 |---|---|---|---|---|
-| **EU AI Act Article 50** | 2026-08-02 | €15M or 3% global turnover | **Satisfies** machine-readable marking via bundle + C2PA export | See [eu-ai-act-article-50.md](./eu-ai-act-article-50.md) |
-| **EU AI Act Article 12** | 2026-08-02 | €15M or 3% global turnover | **Substantially satisfies (opt-in)**: automatic, hash-chained + HMAC-signed record-keeping of every kernel decision, fail-degraded, with a node **executor attestation** binding the chain head; retention/rotation are the operator's | See [article-12-record-keeping.md](./article-12-record-keeping.md) |
+| **EU AI Act Article 50** | 2026-08-02 | €15M or 3% global turnover | **Partial — provenance layer only.** Signed, content-bound provenance record (bundle) plus in-toto / SLSA / Sigstore attestations whose subjects are the outputs' digests and whose predicate marks AI origin. Embedding a marking (e.g. a C2PA manifest) into the generated media is the orchestrator's / generating provider's step. | See [eu-ai-act-article-50.md](./eu-ai-act-article-50.md) |
+| **EU AI Act Article 12** | 2026-08-02 | €15M or 3% global turnover | **Substantially satisfies (opt-in)**: automatic, hash-chained + Ed25519-signed record-keeping of every kernel decision, fail-degraded, with a node **executor attestation** binding the chain head; retention/rotation are the operator's | See [article-12-record-keeping.md](./article-12-record-keeping.md) |
 | **NIS2 (EU 2022/2555)** | 2024-10 (transposition deadline 2024); Member-State enforcement underway through 2026 | up to €10M or 2% global turnover | **Largely satisfies** Article 21 risk-management controls; **opt-in** for Article 23 incident reporting | We are an essential supplier to subject entities; mapped below |
 | **SOC 2 Type II** | Customer-driven (80% of Series B+ require) | Sales gate, not regulatory | **Substantially aligned**; formal Type II audit committed for FY26 | Trust Services Criteria mapping below |
 | **GDPR (EU 2016/679)** | 2018-05 | up to €20M or 4% global turnover | **Satisfies** Article 32 (security of processing) + lawful-basis story for the public log | DPO: `security@coproduct.io` |
@@ -33,14 +33,15 @@ the table below is the executive summary.
 
 | Article 50 §2 obligation | nucleus surface |
 |---|---|
-| "marked in a machine-readable format" | `Bundle` JSON or C2PA manifest export |
-| "detectable as artificially generated" | `EdgeKind::PodAdmit` + `EdgeKind::LlmCall` entries identify the agent runtime |
-| effective + interoperable + robust + reliable (§6) | Hand-rolled JWS (no alg=none CVE class); Ed25519 / SHA-256 in pure Rust; C2PA + in-toto + SLSA + Sigstore exports; quarterly skeptical-code audits |
+| "marked in a machine-readable format" | A signed record **beside** each output, found by the output's SHA-256: `nucleus envelope-export` / `GET /v1/jobs/{id}/attestation` (in-toto, SLSA, Sigstore). Nucleus does not embed a mark **in** the output; that — e.g. a C2PA manifest carrying the nucleus attestation as an assertion — is the orchestrator's step |
+| "detectable as artificially generated" | The attestation's typed `aiGeneration` record (`origin`, agent SPIFFE id, model providers from signed lineage), plus `EdgeKind::PodAdmit` / `EdgeKind::LlmCall` in the bundle. A re-encoded copy no longer matches the digest — surviving transformation is a watermark's job, not provided |
+| effective + interoperable + robust + reliable (§6) | Hand-rolled JWS (no alg=none CVE class); Ed25519 / SHA-256 in pure Rust; in-toto + SLSA + Sigstore exports verified with cosign; quarterly skeptical-code audits |
 
 **Penalty exposure.** Article 99 §3 caps Article 50 violations at
-€15M or 3% global annual turnover. A bundle satisfies the
-machine-readable-marking requirement at the **upstream provenance
-layer**; downstream pixel-domain watermarking is the caller's
+€15M or 3% global annual turnover. Nucleus supplies the **upstream
+provenance layer** only: it does not, by itself, satisfy the
+machine-readable-marking requirement. Embedding a marking into the
+generated media (C2PA manifest, watermark) is the caller's
 responsibility (and a complementary market — see the threat-model
 doc's T5 for downgrade detection).
 
@@ -55,9 +56,9 @@ table below is the executive summary.
 
 | Article 12 obligation | nucleus surface |
 |---|---|
-| "automatic recording of events (logs) over the lifetime" (§1) | `--art12-log` — one hash-chained, HMAC-signed record per kernel decision (allows, **refusals and deferrals** alike), emitted by a `VerdictSink` in the decision chain with no call-site bypass |
+| "automatic recording of events (logs) over the lifetime" (§1) | `--art12-log` — one hash-chained, Ed25519-signed record per kernel decision (allows, **refusals and deferrals** alike), emitted by a `VerdictSink` in the decision chain with no call-site bypass |
 | events relevant to identifying risk + traceability (§2) | each record folds the operation + subject, the verdict + machine-stable deny code, the gate class, the permission-lattice checksum, the actor, the verified-admission state, and the causal DAG's independent `flow_cross_check` into the signed preimage |
-| tamper-evident (regulator reading of §1) | hash chaining + HMAC; `nucleus-audit verify-art12` reconstructs each preimage **from the record's own fields** and checks sequence continuity, chaining, and the HMAC. A node **executor attestation** (Ed25519, role-separated from the task key, never seen by the pod) signs `(session_id, chain_head, records, dropped, executor_id)` at pod exit — closing the case where a pod that derived its own signing secret could re-sign its own history |
+| tamper-evident (regulator reading of §1) | hash chaining + an Ed25519 signature by the tool proxy's in-memory audit signer, named in every record (#3309); `nucleus-audit verify-art12` reconstructs each preimage **from the record's own fields**, checks sequence continuity and chaining, and verifies each signature under a pinned signer. Legacy HMAC records verify only against a non-empty secret. A node **executor attestation** (Ed25519, role-separated from the task key, never seen by the pod) signs `(session_id, chain_head, records, dropped, executor_id)` at pod exit — closing the case where root in the pod, which can reach the signing key, re-signs its own history |
 | fail-safe recording | the log latches **degraded** on a write failure, counts what it dropped, and refuses the next operation before it executes — bounding the invisible gap to what was already lost |
 | the record vs. its subject | a log path inside the agent's workspace is **refused at startup** — a session cannot read or edit its own surveillance record |
 
@@ -92,7 +93,7 @@ diligence requirements. Article 21 lists ten control families
 | (e) Security in acquisition, development, maintenance | SDLC | `clippy -D warnings` on every PR; skeptical-code-auditor pass on every major release; commit signing via Sigstore (in flight, task #97) |
 | (f) Effectiveness assessment | test discipline | 65+ envelope tests; 47+ verifier-service tests; 40+ control-plane-server tests; integration tests cover every code path. Tests run on every PR. |
 | (g) Cyber hygiene + training | training | Internal documentation + onboarding playbook (not public). Vendor team's `clippy` discipline + audit pattern is the de-facto control. |
-| (h) Cryptography + encryption | crypto | Ed25519 + SHA-256 + COSE_Sign1 (C2PA); TLS 1.3 at the Fly edge; secrets via Fly secrets (env-injected); STH signing key zeroized on Debug. RSA explicitly not supported for new bundles. |
+| (h) Cryptography + encryption | crypto | Ed25519 + SHA-256 (DSSE for attestations); TLS 1.3 at the Fly edge; secrets via Fly secrets (env-injected); STH signing key zeroized on Debug. RSA explicitly not supported for new bundles. |
 | (i) Human resources security | personnel | Internal — not public. |
 | (j) MFA + zero trust | access | All operator access to Fly via `fly auth` + WebAuthn; SPIFFE JWT-SVID auth on control-plane (#79). |
 

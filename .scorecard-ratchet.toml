@@ -93,9 +93,11 @@
 # 2026-10-08: ADR 0016 D5. CaClient's refusing defaults perform no act, so its row
 # is N, not debt: the one undischarged site is paid. Measured on this tree by the
 # scanner: 198/198 = 100.00%, the population and the floor both pinned to it.
+# 2026-10-13 (signed owner decisions): nucleus-signed-decision and the tool-proxy decision
+# routes add 11 bounded sites; 209/209.
 floor_bp = 10000
 floor_set = "measurement"
-population_floor = 198
+population_floor = 209
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -260,9 +262,20 @@ population_floor = 278
 # 2026-10-08 (ADR 0015 E2): new crate nucleus-egress-proxy, the host egress proxy's
 # guest-facing parser -- every byte guest root writes toward the network -- declares all
 # seven from its first commit; a panic is a proxy the guest can stop. 39 of 96 = 40.62%.
-floor_bp = 4062
+# 2026-10-12 (off serde_yaml): new crate nucleus-yaml, the one YAML reader every spec,
+# profile and workflow goes through, declares all seven from its first commit -- a reader
+# that panics on hostile YAML is a denial of service on every caller. 40 of 97 = 41.23%.
+# 2026-10-12 (request proofs, merged with the above): nucleus-request-proof parses DPoP
+# proofs from any client before authority is granted and declares all seven from its first
+# commit; a panic on a crafted proof would take down the listener it guards. 41 of 98 = 41.83%.
+# 2026-10-13 (signed owner decisions): nucleus-signed-decision verifies bytes from outside the
+# pod and declares all seven from its first commit. 42 of 99 = 42.42%.
+# 2026-10-13 (Program B M1, merged with the above): new crate nucleus-memory-context, the
+# pure kernel that decides what a run may see of shared memory and whether a publish is
+# valid, declares all seven from its first commit. Combined 43 of 100 = 43.00%.
+floor_bp = 4300
 floor_set = "measurement"
-population_floor = 96
+population_floor = 100
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -389,9 +402,32 @@ population_floor = 96
 # 2026-10-04: EgressUploadHold carries the original ledger id/epoch directly;
 # pace admission and settlement check that binding. The new affine right is
 # bounded, bringing life from 13/20 to 14/21 (66.66%).
-floor_bp = 6666
+# 2026-10-12: two new affine rights carry their interval from the first commit.
+# VerifiedRequest (a DPoP proof that passed replay) refuses into_thumbprint after
+# the proof's expiry; PendingCaller (an issuer assertion awaiting replay) fixes
+# exp + leeway when its check passes. 16 of 23 = 69.56%.
+# 2026-10-13 (#2906): broker_transport::peer::ArmContainerInit, the one-shot
+# right to name the only process a container pod's credential broker admits,
+# entered as an affine right. Unbounded it reddened CI at 14/22 (63.63%), and the
+# gap was real: the right was minted when the listener was bound and could name
+# a pid at any later time. It now carries not_after (ARM_WINDOW after the bind),
+# and arm() past it arms nothing and fails the launch by name
+# (PeerRefused::ArmExpired, an_arm_used_after_its_window_admits_nobody). 15/22 on its own branch;
+# with the two DPoP rights above (#3385), 17 of 24 = 70.83%.
+# 2026-10-13 (signed owner decisions): SignedDecision enters as an affine right carrying the
+# signed window (valid_from, not_after) that every cite and spend re-checks. 18 of 25 = 72.00%.
+# 2026-10-13 (Program B M1): two new affine rights in nucleus-memory-context, each bounded
+# from its first commit. AdmittedOp (one admitted mediated memory op) carries the epoch
+# and not_after it was admitted under; ValidCandidate (a whole-candidate-validated
+# publish) carries the generation it was validated against, and History::commit refuses
+# it unless that is still the head. Combined with SignedDecision above, 20 of 27 = 74.07%.
+# 2026-10-14 (#3471): nucleus_identity::pod_files::PodKey, a pod's private key that no
+# launcher writes to a file, enters as an affine right taken by value to deliver. Unbounded
+# it reddened this family at 20/28 (71.42%). It carries not_after (its certificate's expiry)
+# from the commit that adds it, and into_pipe refuses a stale key by name. 21 of 28 = 75.00%.
+floor_bp = 7500
 floor_set = "measurement"
-population_floor = 21
+population_floor = 28
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -597,9 +633,41 @@ population_floor = 23
 # 2026-10-08 (eval cell M2): ci-scope appends its one `relevant=` line to the runner's
 # GITHUB_OUTPUT, a step-output file and not a record log, under a reasoned #[expect] of the
 # append ban. 32/147 = 21.76%; both pins follow the tree.
-floor_bp = 2176
+# 2026-10-12 (off serde_yaml): nucleus-yaml's reader and writer are the one place a direct
+# serde_saphyr call is allowed (the G-1 disallowed-methods entries), each under a reasoned
+# #[expect]. 34/149 = 22.81%; both pins follow the tree.
+# 2026-10-12 (request proofs, merged with the above): the tool-proxy's per-pod proof key
+# provisioning reads and writes key files outside the workload tree under two reasoned
+# #[expect]s of the #1216 file-I/O ban. 36/151 = 23.84%; both pins follow the tree.
+# 2026-10-13 (#3419): deleting the tool-proxy's unsigned attestation-header path removed
+# five undischarged #[allow(dead_code)]s with the code they excused (151 -> 146). The ratio
+# rises because the denominator shrank, not because anything was discharged; pinned at
+# the measurement so it does not read as progress. 36/146 = 24.65%.
+# 2026-10-13 (ADR 0016 S3): the secret manager's TPM-quoting signer takes the CSR, its
+# key, the identity, the TTL and the three launch claims, under a reasoned #[expect] of
+# clippy::too_many_arguments. 37/147 = 25.17%; both pins follow the tree.
+# 2026-10-13 (#3437): retiring nucleus setup's dead keychain secrets deleted the code that
+# created and rotated them, and five undischarged #[allow]s went with it (147 -> 142). As
+# with #3419, the ratio rises because the denominator shrank, not because anything was
+# discharged; pinned at the measurement. 37/142 = 26.05%.
+# 2026-10-13 (#3433, C2 census, merged after #3437): the NodeState census builds its list
+# one cfg-carrying push at a time under a reasoned #[expect] of vec_init_then_push.
+# 38/143 = 26.57%; both pins follow the tree.
+# 2026-10-14 (#3461): the tests that seal their process run alone in a fresh copy of the
+# test binary, under one reasoned #[expect] of the #1216 spawn ban (the umask pattern).
+# 39/144 = 27.08%; both pins follow the tree.
+# 2026-11-01 (#3525, RustSec batch): tokio 1.54 deprecates AsyncFd::new / with_interest
+# (tokio#8587). The node's two call sites hand over self-owning descriptors and keep the call
+# under two reasoned #[expect(deprecated)]s, rather than two new unsafe blocks.
+# 41/146 = 28.08%; both pins follow the tree.
+# 2026-11-18 (egress decisions extractable): the broker's egress deciders, written for
+# Charon/Aeneas in nucleus-cred-protocol's `extracted` module, waive four clippy
+# suggestions whose forms Aeneas cannot translate (`RangeInclusive::contains`,
+# `Vec::is_empty`, `Option::map`'s closure) or that the crate's no-credential scan
+# forbids, under nine reasoned #[expect]s. 50/155 = 32.25%; both pins follow the tree.
+floor_bp = 3225
 floor_set = "measurement"
-population_floor = 147
+population_floor = 155
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
@@ -621,6 +689,8 @@ population_floor = 147
 # escalate, each Checked on an authority of its own (signature, token, certificate chain).
 # 2026-09-30, merging main: #3038 split declassify into Kernel::verify_declassification and
 # FlowGraph::apply_verified, so its OWN_AUTHORITY row names verify_declassification. 22/25.
-floor_bp = 8800
+# 2026-10-13 (signed owner decisions): /v1/decision/{read,list} each spend a
+# (ReadFiles, AuditLogAppend) Authority before reading. 24/27.
+floor_bp = 8888
 floor_set = "measurement"
-population_floor = 25
+population_floor = 27

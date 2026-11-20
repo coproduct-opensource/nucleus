@@ -125,6 +125,7 @@ fn main() -> Result<(), Error> {
     // 2. The node's own appraisal of it, at the mint time.
     let reference: ReferenceManifest = serde_json::from_slice(&std::fs::read(reference)?)?;
     let anchors = AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: vec![OperatorPin {
             source: source.clone(),

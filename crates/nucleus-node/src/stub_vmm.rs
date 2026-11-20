@@ -120,7 +120,7 @@ impl StubVmm {
 #[cfg(target_os = "linux")]
 pub(crate) fn sample_config() -> crate::firecracker_config::FirecrackerConfig {
     let spec: nucleus_spec::PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("a minimal PodSpec deserializes");
     // Deserialized rather than hand-constructed so the spec's own defaults
     // apply — a literal would have to be edited every time a field is added.

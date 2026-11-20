@@ -64,6 +64,12 @@ Nucleus supports multiple isolation levels depending on the deployment environme
 nucleus-node --driver local --allow-local-driver
 ```
 
+**The bare tier is insecure.** With `--allow-local-driver` the node runs in a
+declared insecure mode: its workloads can read the node's keys, so the node
+refuses to start with any trusted authority configured, and everything it
+signs is marked and rejected by verifiers. See
+[Bare tier is insecure](../bare-tier-insecure.md).
+
 ## Lima VM as Development Environment
 
 For macOS users without firecracker support (Intel Macs, M1/M2), Lima provides a development-grade sandbox:

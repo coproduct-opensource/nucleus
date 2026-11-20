@@ -33,8 +33,11 @@ use tracing::{debug, info};
 pub struct GrpcTlsConfig {
     /// Server certificate and key.
     pub server_identity: Identity,
-    /// Trust bundle for client verification (enables mTLS if present).
-    pub client_ca: Option<Certificate>,
+    /// Trust bundle for client verification (enables mTLS if present). The
+    /// listener's client CA and the bundle the interceptor admits each peer's
+    /// launch against (`auth::authenticate_grpc_request`) are both read from
+    /// this one field, so they cannot name different roots (G-1).
+    client_trust: Option<TrustBundle>,
 }
 
 /// Error type for TLS configuration.
@@ -63,22 +66,22 @@ impl GrpcTlsConfig {
 
         let server_identity = Identity::from_pem(&cert_pem, &key_pem);
 
-        let client_ca = if let Some(ca) = ca_path {
+        let client_trust = if let Some(ca) = ca_path {
             let ca_pem = tokio::fs::read_to_string(ca).await?;
-            Some(Certificate::from_pem(&ca_pem))
+            Some(TrustBundle::from_pem(&ca_pem)?)
         } else {
             None
         };
 
         info!(
             cert_path = %cert_path.display(),
-            mtls_enabled = client_ca.is_some(),
+            mtls_enabled = client_trust.is_some(),
             "loaded gRPC TLS configuration"
         );
 
         Ok(Self {
             server_identity,
-            client_ca,
+            client_trust,
         })
     }
 
@@ -102,24 +105,16 @@ impl GrpcTlsConfig {
         let key_pem = cert.private_key_pem().to_string();
         let server_identity = Identity::from_pem(&cert_pem, &key_pem);
 
-        let client_ca = trust_bundle.map(|bundle| {
-            let ca_pem = bundle
-                .roots()
-                .iter()
-                .map(|c| c.to_pem())
-                .collect::<Vec<_>>()
-                .join("\n");
-            Certificate::from_pem(&ca_pem)
-        });
+        let client_trust = trust_bundle.cloned();
 
         debug!(
-            mtls_enabled = client_ca.is_some(),
+            mtls_enabled = client_trust.is_some(),
             "created gRPC TLS config from workload certificate"
         );
 
         Ok(Self {
             server_identity,
-            client_ca,
+            client_trust,
         })
     }
 
@@ -153,8 +148,14 @@ impl GrpcTlsConfig {
     pub fn build_server_tls_config(&self) -> ServerTlsConfig {
         let mut config = ServerTlsConfig::new().identity(self.server_identity.clone());
 
-        if let Some(ref ca) = self.client_ca {
-            config = config.client_ca_root(ca.clone());
+        if let Some(bundle) = &self.client_trust {
+            let ca_pem = bundle
+                .roots()
+                .iter()
+                .map(|c| c.to_pem())
+                .collect::<Vec<_>>()
+                .join("\n");
+            config = config.client_ca_root(Certificate::from_pem(&ca_pem));
             debug!("mTLS enabled: requiring client certificates");
         }
 
@@ -163,7 +164,12 @@ impl GrpcTlsConfig {
 
     /// Returns whether mTLS is enabled (client certs required).
     pub fn mtls_enabled(&self) -> bool {
-        self.client_ca.is_some()
+        self.client_trust.is_some()
+    }
+
+    /// The bundle client certificates are verified against, when mTLS is on.
+    pub fn client_trust_bundle(&self) -> Option<&TrustBundle> {
+        self.client_trust.as_ref()
     }
 }
 

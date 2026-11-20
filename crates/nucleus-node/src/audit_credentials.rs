@@ -465,7 +465,7 @@ pub(crate) mod fake {
         )
         .expect("loads");
         let spec: nucleus_spec::PodSpec = serde_json::from_str(
-            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
         )
         .expect("spec parses");
         sinks

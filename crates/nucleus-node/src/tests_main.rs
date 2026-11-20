@@ -91,6 +91,7 @@ fn container_driver_rejects_network_policy_fail_closed() {
             cgroup: None,
             audit_sink: None,
             credentials: None,
+            requires_decision: Vec::new(),
         })
     };
     let with_policy = mk(Some(
@@ -797,6 +798,7 @@ fn posture_spec(label: Option<&str>, rootfs: Option<&std::path::Path>) -> PodSpe
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     });
     if let Some(l) = label {
         spec.metadata
@@ -1013,16 +1015,19 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         container_id: created.id.clone(),
         docker,
         signed_proxy: Mutex::new(None),
+        broker: Mutex::new(None),
         permit: Mutex::new(None),
         cached_exit: Mutex::new(None),
     };
     // Non-vacuity: it was running, so the cancel had something to stop.
     assert!(matches!(pod.status().await, PodState::Running));
 
+    let spec: PodSpec = serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
+        .expect("minimal spec");
     let handle = PodHandle {
         id: uuid::Uuid::new_v4(),
-        spec: serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
-            .expect("minimal spec"),
+        manifest_hash: crate::delivered_spec::fixture_hash(&spec),
+        spec,
         created_at: 1_757_000_000,
         execution_deadline: tokio::time::Instant::now() + Duration::from_secs(3600),
         log_path: std::env::temp_dir().join("container-cancel-test.log"),
@@ -1032,6 +1037,10 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         posture_stamp: None,
         owner: None,
         capacity: tokio::sync::Mutex::new(None),
+        // A fixture names no lineage: a child of it is refused memory, never given a guess.
+        memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+            parent: uuid::Uuid::nil(),
+        },
     };
     handle.cancel().await.expect("cancel");
     let after = handle.status().await;
@@ -1093,7 +1102,7 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         credentials: "read_files=cc".to_string(),
     };
     let mut spec: PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     // The labels a spec author writes, through the same declaration.
     spec.metadata.labels = dlc.labels();
@@ -1115,7 +1124,7 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         .admit_kept(&root, &spec, id)
         .await
         .expect("the root minter admits the pod");
-    let proxy = container_env(&state, &spec, id, "test-token-123", "", None, None).await;
+    let proxy = container_env(&state, &spec, id, "", None, None).await;
     for (key, value) in dlc.env() {
         let want = format!("{key}={value}");
         assert!(
@@ -1132,97 +1141,54 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
     // credentials stay out of the workload's environment.
     let mut direct_state = state.clone();
     direct_state.container_mediation = crate::container_mediation::ContainerMediation::Unmediated;
-    let direct = container_env(&direct_state, &spec, id, "test-token-123", "", None, None).await;
+    let direct = container_env(&direct_state, &spec, id, "", None, None).await;
     assert!(
         !direct.iter().any(|e| e.starts_with(ENV_PREFIX)),
         "a direct-mode container is the workload itself and must not hold DLC credentials"
     );
 }
 
-/// #2446 step 1: a node started with no transport flag provisions its container pods with no
-/// shared secret at all. The proxy is reached over the peer-verified socket and approvals are
-/// verified against the node's PUBLIC key, so neither `NUCLEUS_TOOL_PROXY_AUTH_SECRET` nor
-/// `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET` (nor either value under another name) is in the
-/// container. Red before the default flipped: the default transport was TCP, which provisioned
-/// both, and the socket transport still provisioned the approval secret.
+/// #2446: a container pod is provisioned with no shared secret and no sandbox token. The proxy
+/// is reached over the peer-verified socket, approvals are verified against the node's PUBLIC
+/// key, and its sandbox proof is the identity files. Step 1 took the secrets out of the default
+/// transport; step 3 deleted the `tcp-hmac` transport that still provisioned them and the
+/// tier-3 token every container pod was still handed. Red before step 3: the environment
+/// carried `NUCLEUS_SANDBOX_TOKEN`, HMAC'd with the node's `proxy_auth_secret`.
 #[cfg(feature = "local-driver")]
 #[tokio::test]
-async fn a_default_nodes_container_pod_holds_no_shared_secret() {
-    use crate::container_transport::{self, CONTAINER_PROXY_SOCKET, ContainerProxyTransport};
-    use crate::signed_proxy::ApprovalSigning;
+async fn a_container_pod_holds_no_shared_secret_and_no_token() {
+    use crate::container_transport::CONTAINER_PROXY_SOCKET;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let state = crate::pod_api::handler_tests::state(&dir);
     let spec: PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
-    assert_eq!(state.container_proxy, ContainerProxyTransport::Unix);
-    let default = container_env(
-        &state,
-        &spec,
-        Uuid::new_v4(),
-        "test-token-123",
-        "",
-        None,
-        None,
-    )
-    .await;
-    let secrets = [
-        state.proxy_auth_secret.as_str(),
-        state.proxy_approval_secret.as_str(),
-    ];
-    let held: Vec<&str> = default
+    let env = container_env(&state, &spec, Uuid::new_v4(), "", None, None).await;
+    let held: Vec<&str> = env
         .iter()
         .filter(|e| {
             e.starts_with("NUCLEUS_TOOL_PROXY_AUTH_SECRET=")
                 || e.starts_with("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET=")
-                || secrets.iter().any(|s| e.contains(s))
+                || e.starts_with("NUCLEUS_SANDBOX_TOKEN=")
         })
         .filter_map(|e| e.split('=').next())
         .collect();
     assert!(
         held.is_empty(),
-        "a default container pod holds a node secret under {held:?}"
+        "a container pod holds a retired credential under {held:?}"
     );
     // Non-vacuity: the environment is the proxy's, and it names the channel that replaced them.
     assert!(
-        default.contains(&format!(
+        env.contains(&format!(
             "NUCLEUS_TOOL_PROXY_LISTEN_UNIX={CONTAINER_PROXY_SOCKET}"
         )),
-        "{default:?}"
+        "{env:?}"
     );
-    assert!(default.contains(&format!(
+    assert!(env.contains(&format!(
         "NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS={}",
         hex::encode(state.approval_signer.verifying_key().to_bytes())
     )));
-    assert!(matches!(
-        container_transport::approval_signing(&state),
-        ApprovalSigning::Ed25519(_)
-    ));
-
-    // The opt-out is a choice the operator names, and it still provisions the legacy pair.
-    let mut legacy = state.clone();
-    legacy.container_proxy = ContainerProxyTransport::TcpHmac;
-    let legacy_env = container_env(
-        &legacy,
-        &spec,
-        Uuid::new_v4(),
-        "test-token-123",
-        "",
-        None,
-        None,
-    )
-    .await;
-    for (key, value) in [
-        ("NUCLEUS_TOOL_PROXY_AUTH_SECRET", secrets[0]),
-        ("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", secrets[1]),
-    ] {
-        assert!(legacy_env.contains(&format!("{key}={value}")), "{key}");
-    }
-    assert!(matches!(
-        container_transport::approval_signing(&legacy),
-        ApprovalSigning::Hmac(_)
-    ));
 }
 
 /// What a child spawned from `command` actually starts with: this process's environment (a
@@ -1298,19 +1264,10 @@ async fn the_ambient_key_never_reaches_a_container_uploader() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = crate::pod_api::handler_tests::state(&dir);
     let spec: PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     let grant = fake::grant(fake::target()).await;
-    let env = container_env(
-        &state,
-        &spec,
-        Uuid::new_v4(),
-        "test-token-123",
-        "",
-        Some(&grant),
-        None,
-    )
-    .await;
+    let env = container_env(&state, &spec, Uuid::new_v4(), "", Some(&grant), None).await;
     let leaked: Vec<&str> = env
         .iter()
         .filter(|e| audit_sink::ambient_fixture::leaks(e))
@@ -1343,7 +1300,7 @@ async fn a_sink_without_a_minter_is_refused_at_create_by_name() {
     );
     assert!(st.audit_minter.is_none(), "the fixture has no minter");
     let spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
     )
     .expect("spec parses");
     let admission = crate::pod_authority::Admission {
@@ -1366,4 +1323,15 @@ async fn a_sink_without_a_minter_is_refused_at_create_by_name() {
         st.pods.lock().await.is_empty(),
         "nothing was registered for a refused create"
     );
+}
+
+/// #3208: `--version` is the decided version (the release tag, else
+/// the Cargo version marked `+dev`), never the bare workspace Cargo version every
+/// release used to print.
+#[test]
+fn version_flag_is_the_decided_version_not_the_bare_cargo_version() {
+    let cmd = <Args as clap::CommandFactory>::command();
+    let decided = nucleus_spec::reported_version!().to_string();
+    assert_eq!(cmd.get_version(), Some(decided.as_str()));
+    assert_ne!(cmd.get_version(), Some(env!("CARGO_PKG_VERSION")));
 }

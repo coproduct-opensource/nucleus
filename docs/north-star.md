@@ -114,6 +114,13 @@ the code that ships, re-checked on every change, and a relying party can verify
 from the outside that the pod they are talking to is the artifact the theorem is
 about.**
 
+The clause "*nor those of any other pod*" is **NOT-YET**, even inside the
+sentence's own limits (explicit flows only; timing, cache, microarchitectural,
+availability and resource-contention channels excluded). It is scoped by its row
+in the ledger below: the C2 note under the table states what of it is proved,
+what is assumed, and what is not covered. Read the sentence through that row,
+not past it.
+
 The exclusions are **inside the sentence, not a footnote**, so the claim cannot
 be quoted without its limits. Cross-pod confidentiality stated without them would
 read as "immune to co-tenancy attacks" — the worst overclaim available to this
@@ -225,7 +232,84 @@ What each status means, and what it deliberately does not:
   conformance leg is bounded by C7 ("a theorem about the code that ships"),
   itself TESTED, so the row records the proven relation with the runtime
   conformance gated beside it — the same shape as C4.
-- **C2 (NOT-YET — first mechanization landed 2026-08-11).** The design
+- **C2 (NOT-YET).** **Proved:** a pod's view of the pod registry and of its
+  served identity is unchanged by pods outside its lineage (direct children and
+  itself), for create and for identity mint/release/register/unregister.
+  **Assumed:** the runtime refuses a create naming a parent the caller does not
+  own. **Not covered:** persistent memory as content (below), clearing-auction prices
+  (`crates/nucleus-tool-proxy/src/authority_round.rs`), lockdown delivery
+  (filtered per watcher, not mechanized), and the 2 node fields the
+  compile-checked census leaves `Unclassified` (`request_proofs`, `authority`).
+  The census is `crates/nucleus-node/src/node_state_census.rs`: it destructures
+  all 56 `NodeState` fields with no `..`, so a new field fails to compile until
+  it is classified.
+
+  **Persistent memory is content, shared only through declared channels**
+  (Program B, M3). A memory space is an object (`memory_space.rs`: tenant,
+  space id, schema) with a hash-chained history; a run never inherits a parent's
+  powers over it. At pod creation the node mints the run its own binding from
+  the policy that admits it (`memory_binding.rs`), pins the space's head, and
+  hands the run a private copy of that version as the policy's view sees it.
+  Audiences: `Lineage(root)` by default (runs of one lineage share the base and
+  never each other's writes until one is published); `Workspace(selector)` over
+  labels only the tenant's own identity wrote; `TenantAll`, only when named; and
+  `TenantAll-legacy`, the declared, receipted form migration gives a store the
+  owner-keyed layout already shared. Lineage, workspace and tenant audiences
+  are declared channels between pods, not a confidentiality the runtime
+  withholds. **Cross-run memory needs dependency-stamped labels** (Program C, C0
+  then C1). The tool-proxy stamps every record it writes with its session's
+  floating confidentiality — what the session had read, read from the discharge
+  term under the flow-graph lock that decided the write and bound into the
+  write's authority by value — and joins it into the record's label, so a run
+  that read Secret data and then writes a literal that read selected writes a
+  Secret record. The stamp is in the commit's head hash, and replay re-derives
+  each label against the floor the record recorded, never a fresh session's. An
+  unstamped record (a v1 journal, a migrated store, a guest that predates
+  `GuestCapability::MemoryDependencyStamp`, the pinned 2.7.0 one among them) is
+  Secret wherever it is delivered, and so is anything derived from it: withheld
+  from every view below Secret, held stamped Secret by a stamping run, and never
+  given to a legacy run, which is given only stamped Public records. A space
+  whose every record is stamped (a declared space, which starts empty; a
+  lineage's own space created by a stamping run) refuses an unstamped publish
+  by name (`UnstampedRecords`) and admits `Workspace` and `TenantAll` policies;
+  every other space keeps C0's refusal (`CrossRunMemoryUnavailable` at
+  creation, at bind and at publish, and for a `Lineage` policy over a space any
+  of whose policies admits another lineage), and a migrated owner-keyed store is
+  delivered to no run. Nothing reclassifies a legacy record downward in C1. The
+  floor is the whole session's: implicit flows inside a session are covered only
+  by that ratchet, not tracked per value. The bind-time `QuotaFullyAllocated`
+  refusal names no unreserved byte count (it would count Secret bytes). Every delivery is a node-signed receipt kept before the pod is
+  handed the bytes; reads of a delivered snapshot are local and are not
+  observed. Revoking a space or a policy refuses new mediated operations
+  (`ForeignEpoch`, by name); **revocation does not erase what was already
+  disclosed.** The publish verdict's quota half depends only on the binding's
+  own allocation (a budget split); the bind-time allocation refusal, a stale
+  base and a keyed conflict on the run's own records remain declared channels.
+  Tests: `sibling_runs_share_the_base_and_never_each_others_writes`,
+  `a_workspace_policy_is_refused_until_labels_are_stamped`,
+  `a_secret_selected_record_reaches_no_public_view_of_a_stamped_workspace`,
+  `a_secret_selected_record_reaches_no_public_view_over_http_across_a_stamped_workspace`,
+  `a_session_that_read_secret_writes_a_secret_record_that_replays_secret`,
+  `replay_in_a_fresh_session_keeps_the_recorded_floor`,
+  `a_legacy_run_is_given_only_stamped_public_records_and_cannot_publish_unstamped_ones`,
+  `an_unstamped_record_and_what_derives_from_it_are_secret_wherever_delivered`,
+  `a_tenant_all_policy_is_refused_at_creation_bind_and_publish`,
+  `lineage_policies_still_bind_and_publish_and_never_reach_another_lineage`,
+  `a_fully_allocated_refusal_names_no_byte_count`,
+  `a_child_is_never_handed_its_parents_binding`,
+  `a_journal_truncated_below_a_pin_is_refused_by_name`,
+  `a_publish_verdict_depends_only_on_the_bindings_own_allocation`,
+  `migration_declares_each_legacy_store_once_and_delivers_it_to_no_run_until_stamped`. This does not
+  promote C2: the Lean model of the memory surface (`MemoryContext.lean`) is not
+  yet linked to this code, and the mediated propose/publish path through the
+  tool-proxy is M4. Stamped labels decide what a view is GIVEN; they do not close
+  what a publish verdict says. A Public binding of a stamped workspace still
+  shares one head with Secret publishes (stale base, its success head, keyed
+  conflicts over records it cannot see), which Program C's C3 and C4 address,
+  and none of this says anything of timing, microarchitectural or
+  resource-contention channels.
+
+  *History.* The first mechanization landed 2026-08-11. The design
   (`docs/cross-pod-view.md`, after Nickel/OSDI-2018: the view relation is
   *untrusted*, so a too-coarse relation fails the proof) is now a kernel-checked
   two-run theorem for the first shared surface. `PodCrossView.lean` defines
@@ -239,16 +323,18 @@ What each status means, and what it deliberately does not:
   guardrail (dropping the lineage filter makes `local_respect` false, so a weaker
   relation breaks the proof rather than silently passing). Clean axiom profile
   (⊆ `[propext, Classical.choice, Quot.sound]`), gated by the proven-lean
-  workflow. **What keeps C2 NOT-YET:** (a) only `pods` of the 8 shared-mutable
-  fields is mechanized — the rest are not yet in-Lean (five are
-  availability/cardinality channels the sentence already excludes); (b) the two
-  fields that were excluded *because their code was defective* are now fixed —
-  the `lockdown_tx` broadcast leak (#2203, server-side filter; the remaining
-  `label:` broadcast is closed too, because the node now evaluates the selector
-  per watcher, `lockdown::reaches`, 2026-10-08) and the node-wide
-  identity socket handing out an arbitrary cert+key (#2204, retired) both landed —
-  so `lockdown_tx` and the identity registry can now **re-enter** the model in a
-  later increment (they are unblocked, not yet mechanized); (c) the model↔runtime
+  workflow. **What keeps C2 NOT-YET:** (a) only `pods` and, since #3347, the
+  identity surface (`PodCrossViewIdentity.lean`) are mechanized — the rest of
+  the shared-mutable fields are not yet in-Lean; the field census they are
+  counted from is now a compile error (`crates/nucleus-node/src/node_state_census.rs`,
+  56 fields), and it leaves 2 `Unclassified`; (b) the two fields that were excluded *because their code was
+  defective* are now fixed — the `lockdown_tx` broadcast leak (#2203, server-side
+  filter for `pod:` scopes; the `label:` broadcast is closed too, because the node
+  now evaluates the selector per watcher in `lockdown::reaches` with
+  `matches_label_selector`, #3355, 2026-10-08, and an unparseable scope reaches
+  nobody) and the node-wide identity socket handing out an arbitrary cert+key
+  (#2204, retired) both landed. The identity registry has since **re-entered** the
+  model (#3347); lockdown delivery is unblocked but **not yet mechanized**; (c) the model↔runtime
   parity for the `pods` filter is **tied** — `caller_may_manage_matches_the_podview_lineage_filter`
   pins the shipped listing/management predicate (`pod_api.rs`, live at #2199) to
   the abstract `ownedBy` relation exhaustively; (d) the cross-pod isolation is now
@@ -266,29 +352,43 @@ What each status means, and what it deliberately does not:
   caller token: the node scopes the listing server-side (`caller_may_manage`) so
   A sees A but **not** B — a strict subset of the operator view that sees both.
   This runs KVM-free because a pod's caller token is
-  `derive_token(caller_secret, id)` whether delivered as a local-driver env var or
-  over the Firecracker vsock — its unforgeability rests on the node-only
+  `derive_token(caller_secret, id)` and its unforgeability rests on the node-only
   `caller_secret`, not on the transport (correcting an earlier over-strong note
-  that this "needs a real Firecracker pod"). What remains: a **two-pod Firecracker
-  boot** exercising the same path with the token delivered over the real vsock
-  (transport + real-guest-origin fidelity, `quickstart-boot`); re-entering the
-  now-unblocked `lockdown_tx`/identity fields; and VM-level guest isolation (partly
-  covered by `net-guest-isolation-check.sh`). "Any other pod" is not yet earned end
-  to end — the substrate, first surface, filter parity, request-path isolation,
-  live-node lineage, and running-node scoped exclusion are in; the Firecracker
-  two-pod boot is not.
+  that this "needs a real Firecracker pod"). Only the local driver delivers a
+  caller token now: since #3356 a Firecracker guest is served its own id and an
+  empty token, because nothing in the VM can reach the HTTP listener that reads
+  one. (g) The **two-pod Firecracker boot** is in: `podlist-probe.yml` — a
+  required check (`ci/required-checks.txt`) — boots A, A's child C and sibling B
+  under Firecracker with a jailer on one node and runs `cargo xtask cross-pod-live`
+  (#2604, ported to Rust and extended to both views in #3360). Each guest calls
+  `POD_LIST` over its own vsock, which the socket authenticates, and the host
+  asserts view(A) ⊇ {A, C} without B, view(B) holds B without A or C, each root's
+  view holds itself and not the other root, and both are strict subsets of the
+  operator view. What remains is the M6 plan below: classifying the census's
+  2 `Unclassified` fields; mechanizing
+  lockdown delivery and the remaining fields; linking the model to the runtime by
+  extraction rather than by the parity test in (c); and the owner's sign-off.
+  VM-level guest isolation (partly covered by `net-guest-isolation-check.sh`)
+  stays with the escape lane, not C2. "Any other pod" is not yet earned end to
+  end: the live boot checks one listing surface, not every shared field.
 
-  **M6 plan for C2, re-verified on main at `827394f5a` (2026-10-08).** Three of
-  the statements above have gone stale. Each is corrected here first, because the
-  plan rests on them.
-  - *The real-vsock boot exists.* `podlist-probe.yml` boots A, a child C and a
-    sibling B under Firecracker with a jailer (#2604,
-    `scripts/firecracker/podlist-boot-check.sh`). It is green on main. A's
-    `POD_LIST` over A's own vsock returns {A, C} and never B, and that is a strict
-    subset of the operator view. It does not check **B's** view, it does not
-    check that the identities are distinct, and the client in the guest is CI-only
+  **M6 plan for C2, re-verified on main at `827394f5a` (2026-10-08); bullets
+  re-checked at `d4005cb2e` (2026-10-12).** Statements in the C2 note had gone
+  stale. Each is corrected here first, because the plan rests on them. Three of
+  the four corrections below have since been overtaken by merged work, and each
+  says so.
+  - *The real-vsock boot exists, and now checks both views.* `podlist-probe.yml`
+    boots A, a child C and a sibling B under Firecracker with a jailer (#2604). On
+    `827394f5a` it ran `scripts/firecracker/podlist-boot-check.sh`, which checked
+    only A's view. #3360 replaced that script with `cargo xtask cross-pod-live`
+    (`crates/nucleus-cli/src/host_evidence_live/cross_pod.rs`), which also checks
+    that B's view holds B and neither A nor C, that each root's view holds itself
+    and not the other root (a node binding both sockets to one id fails), and that
+    both views are strict subsets of the operator's. The check is required
+    (`ci/required-checks.txt`). The client in the guest is still CI-only
     instrumentation (`ci-podlist-probe`).
-  - *The census is out of date.* `NodeState` has **56** fields, not 38. Four have
+  - *The census is out of date* (counted at `827394f5a`). `NodeState` has **56**
+    fields, not 38. Four have
     gone (`auth`, `broker_vsock_port`, `github_oidc`, `identity_vsock_port`) and
     **22 are unclassified**: `approval_signer audit_minter audit_sinks authority
     container_mediation container_proxy decision_epochs egress_stream_limits
@@ -298,23 +398,33 @@ What each status means, and what it deliberately does not:
     longer a derived number. At least `lockdowns`, `node_capacity`,
     `decision_epochs`, `staging_budget`, `memory` and `authority` are
     pod-written.
-  - *Lockdown is only partly fixed.* `lockdown::delivery` filters `pod:` scopes
-    by lineage, but a `label:` scope still reaches **every** watcher, carrying the
-    operator's free-text reason and selector. An unresolved watcher receives
-    everything. Today that is only a non-pod peer, because a pod peer always
-    resolves.
-  - *There is no caller token on the Firecracker path.* guest-init fetches it over
-    vsock and exports it. Its only consumer is the tool-proxy's HTTP
-    `NodeClient`, and a Firecracker guest has no route to the node's HTTP
-    listener. The Firecracker route is `POD_LIST`, which is authenticated by the
-    socket it arrives on (`PodListView` binds the pod at construction and has no
-    setter). The token also never leaves the guest, so a host-side check cannot
-    present B's token for A.
+  - *Lockdown delivery is now fixed in the runtime; it is not yet modelled.* On
+    `827394f5a` a `label:` scope still reached every watcher, carrying the
+    operator's free-text reason and selector. #3355 closed that:
+    `lockdown::reaches` is the one decider for `delivery`, `in_force` and
+    `admits`, and it evaluates `Target::Label` per watcher with
+    `matches_label_selector`, so a pod the selector does not match is sent
+    nothing. A scope the node cannot parse reaches nobody, and `issue` refuses to
+    issue one. `lockdown::watcher` refuses a stream to any caller that is not a
+    pod, so there is no unresolved watcher left to receive everything. #3362
+    holds a label lockdown, so a matching pod that connects later is told. The
+    tests are in `lockdown.rs`:
+    `a_label_scoped_lockdown_reaches_only_the_pods_it_matches`,
+    `an_unparseable_scope_reaches_nobody` and
+    `an_unparseable_scope_is_refused_at_issue`.
+  - *There is no caller token on the Firecracker path.* On `827394f5a`
+    guest-init fetched one over vsock and exported it, with no consumer: its only
+    consumer is the tool-proxy's HTTP `NodeClient`, and a Firecracker guest has
+    no route to the node's HTTP listener. Since #3356 the node serves a
+    Firecracker guest its own id and an empty token
+    (`handle_fetch_pod_caller_token`). The Firecracker route is `POD_LIST`, which
+    is authenticated by the socket it arrives on (`PodListView` binds the pod at
+    construction and has no setter).
 
-    On HTTP, a pair that is presented and fails to verify is **dropped**, not
-    refused (`token_pod.ok()` in `auth.rs`), and the caller falls back to its
-    peer's own scope. That is not an escalation: a pod peer falls back to its own
-    SVID's pod, and an operator was already node-wide.
+    On HTTP, a pair that is presented and fails to verify used to be
+    **dropped**, not refused, and the caller fell back to its peer's own scope.
+    Since #3357 it is refused with a 401 and a named reason
+    (`CallerTokenRefused`, `resolve_http_caller` in `auth.rs`).
 
   Each step below names its definition of done (**DoD**) and its A-19 falsifier
   (**red**), which must be driven red on the real defect and then green.
@@ -328,22 +438,38 @@ What each status means, and what it deliberately does not:
        the test instead of a hand list.
      - **Red:** adding a field to `NodeState` fails to compile, and deleting one
        entry from the classification fails the test.
+     - **Landed:** `crates/nucleus-node/src/node_state_census.rs`. One list
+       generates both the exhaustive `NodeState { … }` pattern and the
+       classification, so a field added without an entry (E0027) and an entry
+       naming no field (E0026) are both compile errors, which is stronger than
+       the test failure the red asked for. 56 fields: `container_proxy` has gone
+       since `827394f5a` and `guest_report` (#3438) has arrived. The classes are finer than the four above:
+       `Structural`, `Secret`, `PerPod`, `LineageScoped`, `SelectorScoped`,
+       `TenantShared`, `Contention`, `Unclassified`. The counts are pinned in the
+       test, so a reclassification is a visible edit.
   2. **Classify the 22 new fields** in the revelation form the KILL assessment
      prescribes: what B's action reveals to A, not what shape the counter has.
      - Expected classes:
-       - availability: `node_capacity`, `staging_budget`, `memory`
+       - availability: `node_capacity`, `staging_budget`
        - cardinality: `decision_epochs`, which reveals a node-wide count of
          decision channels
        - lineage-keyed and needing a model: `authority`, `eval_cells`,
          `lockdowns`
      - Size: S–M, a reading pass.
+     - **Census result (step 1):** `memory` is not availability: it is
+       content. It is `TenantShared` as a declared channel: one space per
+       lineage by default, crossed only under a tenant-declared (or migrated,
+       receipted) policy, each run bound to a pinned snapshot of its own (C2
+       note above). `authority` and `request_proofs` are `Unclassified`.
      - **DoD:** no field is left without a stated revelation.
      - **Red:** a field whose projection varies with another pod's *contents*
        fires the KILL condition, and C2 stays NOT-YET until it is fixed.
   3. **Mechanize the remaining fields**, one Mathlib-free file each, beside
      `PodCrossView.lean`. Each file reuses `ownedBy` and carries its own
      coarse-relation-fails witness.
-     - **Identity (S, ~100 lines).** No production path reads `vm_registry` any
+     - **Identity (S, ~100 lines). Landed in #3347**
+       (`PodCrossViewIdentity.lean`, listed in `portcullis-core-proven-lean.yml`).
+       No production path reads `vm_registry` any
        more. It is written at register/teardown and read only by
        `rebuild_registry_from_disk` and by tests. What a pod is served is
        `identity_for(bridge.pod_id)` from the certificate cache, keyed by an
@@ -358,14 +484,14 @@ What each status means, and what it deliberately does not:
        - Theorem: delivery to A is determined by A's lineage and the operator's
          command, and creating or cancelling a pod outside A's lineage leaves it
          unchanged.
-       - The `Label` broadcast is stated as an explicit exclusion: operator
-         content reaches every pod. The **strongest** fix is to evaluate the
-         selector node-side. `issue` already computes `affected` with
-         `matches_label_selector`. **Owner decision:** it changes the lockdown
-         semantics, because proxies over-apply label lockdowns today.
+       - The `Label` scope needs no exclusion any more: the node evaluates the
+         selector per watcher (`lockdown::reaches`, #3355), which was the
+         strongest option this step named. The model is to cover `Label s` as a
+         predicate over A's own labels, and a held label lockdown (#3362).
+         Not yet mechanized.
        - **Red:** the pre-#2203 broadcast `delivery` breaks local-respect.
      - **Availability, cardinality and contention fields (S):** the pools,
-       `node_capacity`, `staging_budget`, `memory`, `network_allocator`,
+       `node_capacity`, `staging_budget`, `network_allocator`,
        `decision_epochs`, `docker` and `http_client`. List them in Lean as an
        `Excluded` enumeration that step 1's census must equal.
        - **Red:** a census field that is in neither list.
@@ -394,7 +520,14 @@ What each status means, and what it deliberately does not:
      - **Red:** with `|| pod == caller` dropped, or with the filter replaced by
        `true` in the Rust source, the regenerated Lean fails the non-triviality
        or local-respect proof.
-  5. **The live boot: both pods, both views, distinct identities.**
+  5. **The live boot: both pods, both views, distinct identities.** Landed in
+     #3360 (`cargo xtask cross-pod-live`, run by the required `podlist-probe.yml`),
+     with two differences. Its verdict is the last line of its own lane, not a
+     stage in the escape lane's `escape-lane.json` (#3338 merged, and
+     `crates/xtask/src/escape_lane.rs` has no cross-pod stage). The distinct-identity check is made through the
+     views (each root's view holds itself and not the other root), not by the
+     guest echoing the id it was served. Both owner decisions below also landed:
+     #3356 and #3357.
      - Port `podlist-boot-check.sh` to Rust: a `host_evidence_live` test behind a
        `cargo xtask` subcommand. This follows the mandate, because the script has
        to change anyway.

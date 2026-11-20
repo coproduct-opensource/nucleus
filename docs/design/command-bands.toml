@@ -37,6 +37,7 @@
 "config" = "observe"                 # show current configuration
 "doctor" = "observe"                 # check setup status and diagnose issues
 "envelope" = "emit"                  # extract a portable provenance bundle — writes it
+"envelope-export" = "emit"           # sign a verified bundle as an in-toto/SLSA/Sigstore attestation — writes it
 "envelope-verify" = "observe"        # verify a provenance bundle standalone
 "lineage" = "observe"                # walk the data-lineage DAG
 "lineage-verify-chain" = "observe"   # verify Merkle integrity against checkpoints

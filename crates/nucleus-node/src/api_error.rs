@@ -24,11 +24,15 @@ pub(crate) enum ApiError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serde error: {0}")]
-    Serde(#[from] serde_yaml::Error),
+    Serde(#[from] nucleus_yaml::Error),
     #[error("driver error: {0}")]
     Driver(String),
     #[error("workload supervisor unavailable: {0}")]
     SupervisorUnavailable(String),
+    /// The node is full and started nothing: a definite refusal (429, as a provider answers
+    /// `RESOURCE_EXHAUSTED`), with a hint of when to try again. Checked before any spawn.
+    #[error("node capacity exhausted: {0}")]
+    CapacityExhausted(String),
     #[error("auth error: {0}")]
     Auth(#[from] AuthError),
     /// A pod id and caller token were presented and do not verify. It is
@@ -43,12 +47,16 @@ pub(crate) enum ApiError {
     Authority(String),
     #[error("request body error: {0}")]
     Body(String),
-    /// The request is well formed and authorized, and the node's current state
-    /// refuses it: a cancel of a pod a link names, or a link the table refuses
-    /// (ADR 0017).
+    /// 409: the request is well formed and authorized, and the node's current state refuses
+    /// it. Either it was decided against state that has since moved (a compare-and-swap whose
+    /// expected head is stale; the message names the current state so the caller can retry on
+    /// it), or a link names the pod being cancelled, or the link table refuses a link (ADR 0017).
     #[error("conflict: {0}")]
     Conflict(String),
 }
+
+/// How long a caller refused for capacity should wait: about one pod teardown.
+const CAPACITY_RETRY_SECONDS: &str = "30";
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -60,15 +68,25 @@ impl IntoResponse for ApiError {
             ApiError::Serde(_) => StatusCode::BAD_REQUEST,
             ApiError::Driver(_) => StatusCode::BAD_REQUEST,
             ApiError::SupervisorUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::CapacityExhausted(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Auth(_) | ApiError::CallerToken(_) => StatusCode::UNAUTHORIZED,
             ApiError::Authorization(_) => StatusCode::FORBIDDEN,
             ApiError::Authority(_) => StatusCode::FORBIDDEN,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
         };
+        let retry = matches!(self, ApiError::CapacityExhausted(_));
         let body = Json(ErrorBody {
             error: self.to_string(),
         });
+        if retry {
+            return (
+                status,
+                [(axum::http::header::RETRY_AFTER, CAPACITY_RETRY_SECONDS)],
+                body,
+            )
+                .into_response();
+        }
         (status, body).into_response()
     }
 }

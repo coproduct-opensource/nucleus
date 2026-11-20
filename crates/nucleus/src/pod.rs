@@ -294,7 +294,7 @@ mod provenance_gate_tests {
 
     fn spec() -> PodSpec {
         PodSpec::new(
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
             std::env::temp_dir(),
             Duration::from_secs(60),
         )

@@ -58,7 +58,11 @@ fn memory_write() -> Result<Value> {
         source_class: SourceClass::LocalFile,
         source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
     };
-    let label = nucleus_provenance_memory::recompute::derive_label(&derivation, &[]);
+    let label = nucleus_provenance_memory::recompute::derive_label(
+        &derivation,
+        &[],
+        nucleus_provenance_memory::LabelStamp::Unstamped,
+    );
     Ok(json!({
         "value": value,
         "schema": serde_json::to_value(SchemaType::String)?,

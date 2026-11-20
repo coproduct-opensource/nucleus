@@ -9,20 +9,20 @@ pub(crate) async fn container_env(
     state: &NodeState,
     spec: &PodSpec,
     id: Uuid,
-    sandbox_token: &str,
     spec_yaml: &str,
     audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    memory: Option<&memory_provisioning::Attachment>,
 ) -> Vec<String> {
-    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
+    // No sandbox token: the tier-3 proof it carried is deleted (#2446 step 3), and the
+    // proxy's proof is the identity files `spawn_container_pod` provisions.
+    let mut env: Vec<String> = Vec::new();
     let proxy_mode = state.container_mediation.runs_tool_proxy();
 
     if proxy_mode {
         if let Some(grant) = memory {
             env.extend(grant.container_env());
         }
-        // The transport's entries, approval authority included: a public key on the socket,
-        // the shared secret only on the deprecated `tcp-hmac` transport.
+        // The socket transport's entries, approval authority included: the node's public key.
         env.extend(container_transport::proxy_env(state));
         env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
         art12_collector::provision_container_env(&mut env);
@@ -55,19 +55,31 @@ pub(crate) async fn container_env(
         if let Some(dlc) = state.authority.dlc(id).await {
             env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
         }
+        // Owner-decision material, bind-mounted read-only beside it (`decision_provisioning`).
+        if let Some(decisions) = &state.decisions {
+            env.extend(decisions.container_env());
+        }
     }
 
-    // Pass credentials from PodSpec (if any)
-    if let Some(ref creds) = spec.spec.credentials {
-        for (key, val) in &creds.env {
-            env.push(format!("{key}={val}"));
-        }
+    // No credential VALUE reaches a container's environment (#2906): `docker inspect`,
+    // `/proc/<pid>/environ` and every child read it there. A mediated pod's credentialed calls
+    // are the host broker's (`container_broker`), and `spec_posture::admit` refuses a container
+    // spec carrying any `credentials.env` key but the unmediated task runner, which is a command
+    // and is read here by name, for the one mode that runs it.
+    if !proxy_mode
+        && let Some(runner) = spec
+            .spec
+            .credentials
+            .as_ref()
+            .and_then(|creds| creds.env.get(container_broker::TASK_RUNNER))
+    {
+        env.push(format!("{}={runner}", container_broker::TASK_RUNNER));
     }
 
     // In direct mode, extract the task from the raw YAML (task is not in the typed
     // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
     if !proxy_mode
-        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(spec_yaml)
+        && let Ok(raw) = nucleus_yaml::from_str::<serde_json::Value>(spec_yaml)
         && let Some(task) = raw
             .get("spec")
             .and_then(|s| s.get("task"))

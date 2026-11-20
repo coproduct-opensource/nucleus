@@ -58,9 +58,9 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-14
+          - os: macos-15
             target: x86_64-apple-darwin
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,7 +86,7 @@ jobs:
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-mcp-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-mcp
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -184,7 +184,7 @@ jobs:
           VERSION="${VERSION#v}"
           cargo xtask guest-kernel-mirror stage --arch ${{ matrix.arch }} --file vmlinux.download --version "$VERSION" --dist dist
       - name: Upload packaged artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: nucleus-binaries-${{ matrix.target }}
           if-no-files-found: error
@@ -193,7 +193,7 @@ jobs:
             dist/*.node-reference.json
             dist/*.vmlinux
       - name: Upload guest binaries for rootfs build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: guest-binaries-${{ matrix.arch }}
           # All nine the rootfs needs. Building them is not enough — the
@@ -232,7 +232,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download guest binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: guest-binaries-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release
@@ -258,7 +258,7 @@ jobs:
           mkdir -p dist
           gzip -9 -c build/firecracker/${{ matrix.arch }}/rootfs.ext4 > "dist/nucleus-rootfs-${VERSION}-${{ matrix.arch }}.ext4.gz"
       - name: Upload rootfs artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rootfs-${{ matrix.arch }}
           path: dist/*.ext4.gz
@@ -278,7 +278,7 @@ jobs:
           cp scripts/lima/nucleus-aarch64.yaml "dist/nucleus-lima-${VERSION}-aarch64.yaml"
           cp scripts/lima/nucleus-x86_64.yaml "dist/nucleus-lima-${VERSION}-x86_64.yaml"
       - name: Upload Lima templates
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lima-templates
           path: dist/*.yaml
@@ -315,7 +315,7 @@ jobs:
           done
           exit $fail
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: rootfs-*
           path: rootfs
@@ -350,7 +350,7 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: dist
       - name: Collect assets
@@ -485,7 +485,7 @@ jobs:
         env:
           HOMEBREW_TAP: ${{ secrets.HOMEBREW_TAP }}
           HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         with:
           path: dist

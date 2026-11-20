@@ -226,7 +226,7 @@ pub fn run(a: Args) -> Result<i32> {
     let raw = std::fs::read_to_string(&a.spec)
         .with_context(|| format!("reading {}", a.spec.display()))?;
     let spec: Value =
-        serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", a.spec.display()))?;
+        nucleus_yaml::from_str(&raw).with_context(|| format!("parsing {}", a.spec.display()))?;
 
     let mut runs = Vec::new();
     let mut exit = 0;

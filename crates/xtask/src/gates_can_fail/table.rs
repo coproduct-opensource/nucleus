@@ -315,7 +315,10 @@ pub fn probes() -> Vec<Probe> {
         },
         Probe {
             family: xtask("push-auth"),
-            target: ".github/workflows/clippy-ratchet.yml",
+            // Was clippy-ratchet.yml until its push moved into `cargo xtask
+            // clippy-ratchet-down` (Rust, with the same explicit credential), leaving no
+            // `git push` in that workflow for this probe to strip the credential from.
+            target: ".github/workflows/aeneas-decide-pure.yml",
             desc: "a CI push relying on the checkout's ambient credential",
             perturb: pert!(perturb_push_auth_strip),
         },
@@ -577,7 +580,10 @@ pub const SELF_FALSIFIED: &[&str] = &[
     "check-egress-probe.sh        States 2+3 in the 'egress-probe-falsifier' job (quickstart-boot.yml)",
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)",
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)",
-    "check-mutants-report.sh     --self-test in the 'mutants' job (coverage-matrix.yml)",
+    // Replaced `check-mutants-report.sh`, whose `tested == total` read both numbers from the
+    // report it was judging and so passed a cancelled run. Its fixtures include that truncated
+    // report, a missing and a cancelled shard, and a survivor.
+    "xtask mutants-gate          --self-test in the 'Mutation Testing' job (coverage-matrix.yml)",
     // Needs a built Lean tier and its toolchain. The self-test forges a kernel-rejected
     // `.olean` and its sound twin under each tier's toolchain, in every Lean proof job.
     "xtask lean-replay           --self-test <tier> beside each `lean-replay --workflow` step, in that Lean proof job",
