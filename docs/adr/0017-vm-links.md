@@ -721,9 +721,9 @@ after the run. Built on the VM from the branch (`cargo xtask gauntlet-host-setup
    pod's channel for good in the rehearsal.
 4. Final run (`e27cc34fd`): the table above.
 
-**Found on the VM, not yet fixed:** a node that dies leaves its confined proxies running
-(reparented to PID 1, sockets open, the binary busy for the next install): 24 after run 1, 10
-after the final run. A fix (parent-death signal on the confined child) is in progress.
+**Found on the VM, fixed since (see the next paragraphs):** a node that dies leaves its confined
+proxies running (reparented to PID 1, sockets open, the binary busy for the next install): 24
+after run 1, 10 after the final run.
 
 **Not covered by this run:**
 - TLS over a link: a pod CA is minted only for eval cells, and an eval cell needs an attested node
@@ -749,6 +749,228 @@ no `block_in_place`). Test: `a_confined_child_dies_with_its_spawner` (Linux, roo
 SIGKILLs a spawner that started a child exactly as the node does and requires the child gone
 within 1 s. Driven red: with signal 0 in place of `SIGKILL`, the child outlived its spawner
 and the test failed.
+
+### The gauntlet at full scale (2026-11-20, commit `b32cf4c91`)
+
+**Scale:** `NUCLEUS_LINKS_OPS=10000 NUCLEUS_LINKS_REQUESTS=50000 NUCLEUS_LINKS_PROBES=10000`, on a
+fresh VM of the same shape (`n2-standard-16` spot, nested virtualization, shielded vTPM, 150 GB
+standard disk, a 6-hour maximum run so it deletes itself). The run took about 100 minutes
+(09:43–11:25 UTC) while a mutation run shared the host at `nice 19`.
+
+**Result: no item failed.**
+
+| item | verdict | numbers |
+|---|---|---|
+| (a) model ↔ node differential | pass | 10,000 random operations on 8 pods, outcomes identical to `LinkTable`: 4,217 done, 3,650 refused, 2,133 not found |
+| (b) per-request decisions | pass | 50,000 of each kind sent; 50,000/50,000 linked delivered, each with a host decision in the journal; 50,000/50,000 unlinked refused; 0 leaked, 0 undecided, 0 failed; 0 of 50,000 TLS requests answered (no pod CA on this node) |
+| (c) adversary (guest root) | pass | as at `e27cc34fd`: every raw vsock and protocol attack refused or decided, none delivered |
+| (d) isolation | pass | 10,000 probes, one status (404), one body; Welch t = −0.60 (reported, not judged) |
+| (e1) cancel while linked, then exit | pass | link 200, cancel 409, then a drop-on-exit receipt |
+| (e2) 64 concurrent link/unlink tasks | pass | 2 links and 2 unlinks answered 200; the row is absent afterwards, matching them |
+| (e3) unlink mid-request | recorded | 5 × 200, 2 × 403, 1 × closed |
+| (e4) node restart | recorded | the table is lost (404, 0 rows): not persisted until native Olog |
+| (f) canary with no link | pass | listening, received nothing |
+| (g) offline receipt verification | pass | 4,223/4,223 verified with the node's public key alone |
+
+**Two harness defects, found only at scale, both of the kind "a pass that was not one".**
+
+1. *(b) read "pass" on 19,162 of 50,000.* The sender was waited on for a fixed 900 s; at about
+   20 requests per kind per second, 50,000 needs about 2,500 s. Nothing it sent failed, so the
+   item passed. Fixed in `08f8c57fc`: the verdict counts what was sent, and a run that sent fewer
+   than asked is inconclusive; the wait grows with the count. Test
+   `a_run_that_sent_fewer_than_asked_is_not_a_pass`, red on the old rule with the run's numbers.
+2. *(e1) failed and (e2) read "pass" with nothing linked.* The standing pods (pool, destination,
+   canary) lived a fixed 3,600 s and the run took about 5,600 s, so by the chaos items the holder
+   had exited: (e1)'s link was refused ("both pods must be running"), and (e2)'s 64 tasks all got
+   409, which left the table "consistent" at 0 links done. Fixed in `b32cf4c91`: the lifetime
+   grows with the run, and a race in which no link was made is inconclusive. Tests
+   `standing_pods_outlive_a_full_scale_run` and `a_race_in_which_nothing_was_linked_is_not_a_pass`,
+   both red on the old rules.
+
+The run between them (`08f8c57fc`, 07:51–09:24) is the one that showed defect 2; its report and
+this one are kept outside the repository with the earlier ones.
+
+**Still not covered:** TLS over a link end to end (in-process tests only; this node has no pod
+CA), links across trust domains (handler tests and `no_cross_tenant_link` only), persistence
+across a restart (e4).
+
+**VMs and cost.** Two throwaway spot VMs this day, both deleted by name and confirmed absent from
+the instance list: the `n2-standard-16` above (07:11–12:52 UTC, both full-scale runs and mutation
+run 1 and A) and an `n2-standard-32` for the remaining mutation runs (12:53–16:18 UTC). About 9
+VM-hours. At an upper estimate of spot prices for these shapes, with two 150 GB standard disks,
+that is under $5; with the earlier runs (under $1), well under the $10 ceiling. The figure is an
+estimate from list prices: the job's credential cannot read billing.
+
+### Every new test driven red (2026-11-20, commit `b32cf4c91`)
+
+**Claim, and how it is checked.** Each of the 109 tests this branch adds (`#[test]` and
+`#[tokio::test]` functions in `git diff 5e8f7c85a..b32cf4c91`; `pdeath_parent_helper` is a
+helper the parent-death test re-executes, not a test) failed on at least one defect, and passed
+without it. The defects are of three kinds:
+
+- **Mutants** from `cargo-mutants` 27.1.0, run with `--in-diff` over the branch's changed lines,
+  on the throwaway VMs. A test counts when a mutant's log has `test <name> ... FAILED`. Four runs:
+
+  | run | scope | caught | missed | timeout | unviable |
+  |---|---|---|---|---|---|
+  | 1 | every changed crate (stopped at 367 of 552) | 171 | 51 | 63 | 76 |
+  | A | tool-proxy relay, receipt, spec | 17 | 4 | 17 | 7 |
+  | B | `nucleus-node` link, CA, egress files; its new tests only (stopped at 18 of 130) | 10 | 1 | 7 | 0 |
+  | C | 26 mutants chosen for the 12 node tests still without one | 12 | 10 | 2 | 2 |
+
+- **Hand mutants** (16 tests), where `cargo-mutants` cannot reach: the harness's helper tests
+  are in a `cfg(test)` module it does not mutate; a mutant in one crate is tested only against
+  that crate's tests (`link_name` is in the egress proxy, its test in the node); and for a few
+  tests no listed mutant failed them. Each was applied with `perl`, checked to have changed the
+  file, run with `cargo test --exact`, and the unmutated test was run first as a control. All 16
+  failed at a panic and none at a compile error.
+- **Recorded defects** (5 tests): the gauntlet's own numbers under the rule the test replaced.
+
+**How specific the evidence is.** For each test the table names the mutant that failed the fewest
+tests. 33 tests have a mutant that failed that test alone; the other mutation rows name one that
+also failed between 2 and 11 tests. A broad mutant shows the test can fail, not that it isolates
+its defect. Two hand mutants fail their tests by a panic rather than at the assertion the test
+names: the receipt mutant makes a `Link` projection unserializable, so both receipt tests fail at
+signing, and the tamper test is not shown catching a tamper; the outbound splice mutant fails by
+a resumed future, not at the EOF assertion.
+
+**What the runs also found.**
+
+- *The `local-driver` feature hid 11 tests.* `link_proxy`'s and `pod_links`'s tests are
+  `cfg(all(test, feature = "local-driver"))`. Run 1 and run B's first baseline built without the
+  feature, so those tests did not exist, and every mutant in those files could only be missed or
+  timed out against the rest of the node suite. Run C passed `--features local-driver`; its
+  baseline listed 22 tests where the earlier one listed 11.
+- *Missed mutants that are gaps in the tests, not in the red evidence.* Across the runs, 66
+  mutants were missed. Among them: against the 12 tests run C ran, `permitted_names` returning an empty list,
+  `["xyzzy"]` or `[""]`, or losing its `!`, `LinkProxy::shutdown` replaced with `()`, and both
+  `start_for_pod`s returning `Ok(None)` are missed (run B, which ran the CA tests, timed out on
+  the `permitted_names` mutants, so whether those tests catch them is not known); the egress proxy's `decision.rs` (3) and `main.rs` (3) mutants are missed, as are 9 in
+  the kernel's `links.rs`. The full lists are in each run's `missed.txt`, kept outside the
+  repository with the gauntlet reports. They are the next tests to write.
+- *Timeouts are not catches.* A run's timeout was first the test suite being slow on a loaded
+  host (the node's suite takes 61 s idle; its census walks took over 300 s under eight parallel
+  builds), and then the first full workspace build in each job's copy exceeding 1,500 s. Neither
+  says anything about the mutant; no test above relies on a timeout.
+- *Run configuration took five attempts, none of them a defect in the code.* (1) `cargo install`
+  ran outside the tree and found no toolchain; (2) the baseline failed six key-custody tests
+  because the launching shell's umask was 002, so temporary key directories were group-writable
+  and the node correctly refused them; (3) a 60 s timeout also applied to the baseline;
+  (4) filtering on `workload_api_vsock` pulled in the census walks; (5) the missing feature above.
+  Each was a run setting. The steps were passed to the VM as temporary command files in the
+  session scratchpad, which is shell outside the repository; nothing here was added to it.
+
+| crate file | test | defect it failed on |
+|---|---|---|
+| `nucleus-cli/src/host_evidence_live/links.rs` | `links_gauntlet` | the live runs: (b)/(f) inconclusive at `66ab86b9e`, (b) 63/200 at `98aee0d22`, (e1) fail at `08f8c57fc` |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `a_503_on_a_made_link_fails_item_b` | the x86 run-2 numbers (63 delivered, 137 × 503) under the old rule |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `a_run_that_sent_fewer_than_asked_is_not_a_pass` | the full-scale run's numbers (19,162 of 50,000) under the old rule |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `a_race_in_which_nothing_was_linked_is_not_a_pass` | the old (e2) rule passed `links_done = 0` |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `standing_pods_outlive_a_full_scale_run` | the old fixed 3,600 s lifetime |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `a_canary_passes_only_when_seen_listening_and_untouched` | hand: canary passes when *not* listening |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `a_faithful_node_passes_and_the_mix_covers_every_answer` | hand: a refused unlink expected as 409, not 404 |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `one_flipped_node_answer_is_caught` | hand: `mismatches` filters every step out |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `the_api_mapping_is_pod_links` | hand: a refused unlink expected as 409, not 404 |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `welch_t_is_zero_for_equal_samples_and_large_for_shifted` | hand: `welch_t` sign flipped |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `the_report_fails_only_on_a_fail` | hand: `Report::failed` true on any non-pass |
+| `nucleus-cli/src/host_evidence_live/links.rs` | `received_reads_ids_and_ports` | hand: `received` keeps only empty ids |
+| `nucleus-egress-proxy/src/link.rs` | `uuids_and_link_names_round_trip_in_one_spelling` | `crates/nucleus-egress-proxy/src/link.rs:112:5: replace uuid_string -> String with "xyzzy".into()` (fails 10 tests) |
+| `nucleus-egress-proxy/src/link.rs` | `control_lines_parse_exactly` | `crates/nucleus-egress-proxy/src/link.rs:212:9: delete match arm "LINK" in parse_control` (fails 1 test) |
+| `nucleus-egress-proxy/src/link.rs` | `sever_signals_every_receiver_and_drops_the_route` | `crates/nucleus-egress-proxy/src/link.rs:257:9: replace Links::apply with ()` (fails 7 tests) |
+| `nucleus-egress-proxy/src/link.rs` | `a_bad_control_line_severs_everything` | `crates/nucleus-egress-proxy/src/link.rs:280:9: replace Links::sever_all with ()` (fails 2 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `an_admitted_request_is_delivered_with_the_preamble` | `crates/nucleus-egress-proxy/src/serve.rs:673:31: replace == with != in upstream_request` (fails 3 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `a_denied_request_never_reaches_the_destination` | `crates/nucleus-egress-proxy/src/link.rs:365:5: replace deliverable -> bool with true` (fails 2 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `a_request_on_a_link_that_is_not_live_is_never_connected` | `crates/nucleus-egress-proxy/src/serve.rs:317:9: replace Proxy<D, R>::deliver_link -> Result<(), Refusal> with Ok(())` (fails 8 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `sever_closes_live_connections` | `crates/nucleus-egress-proxy/src/serve.rs:455:5: replace until_severed with ()` (fails 6 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `a_broken_control_channel_severs_live_connections` | `crates/nucleus-egress-proxy/src/link.rs:280:9: replace Links::sever_all with ()` (fails 2 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `tls_over_a_link_is_terminated_and_delivered` | `crates/nucleus-egress-proxy/src/link.rs:299:9: replace Links::has_dst -> bool with false` (fails 2 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `smuggling_shapes_are_refused_before_anything_is_connected` | `crates/nucleus-egress-proxy/src/serve.rs:620:5: replace read_body -> Result<Vec<u8>, Refusal> with Ok(vec![])` (fails 2 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `the_link_proxy_refuses_a_name_that_is_not_a_link` | `crates/nucleus-egress-proxy/src/link.rs:127:5: replace link_dst -> Option<u128> with Some(0)` (fails 16 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `the_egress_proxy_refuses_a_link_name` | `crates/nucleus-egress-proxy/src/refusal.rs:191:9: replace Refusal::code -> &'static str with ""` (fails 8 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `tls_to_an_unannounced_link_name_gets_no_leaf` | `crates/nucleus-egress-proxy/src/link.rs:299:9: replace Links::has_dst -> bool with true` (fails 1 test) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `a_ca_without_the_link_subtree_is_refused_for_link_mode` | `crates/nucleus-egress-proxy/src/tls.rs:197:9: replace PodCa::permits_subtree -> bool with true` (fails 1 test) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `tls_over_a_link_uses_the_connect_port` | `crates/nucleus-egress-proxy/src/link.rs:299:9: replace Links::has_dst -> bool with false` (fails 2 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `a_slow_answer_refuses_one_request_and_the_link_keeps_working` | `crates/nucleus-egress-proxy/src/link.rs:365:5: replace deliverable -> bool with true` (fails 2 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `a_destination_that_never_closes_releases_the_slot_after_the_deadline` | `crates/nucleus-egress-proxy/src/link.rs:365:5: replace deliverable -> bool with false` (fails 6 tests) |
+| `nucleus-egress-proxy/src/serve_link_tests.rs` | `one_hundred_fifty_sequential_link_requests_are_all_delivered` | `crates/nucleus-egress-proxy/src/link.rs:365:5: replace deliverable -> bool with false` (fails 6 tests) |
+| `nucleus-egress-proxy/src/serve_tests.rs` | `a_late_answer_is_dropped_and_the_channel_recovers` | `crates/nucleus-egress-proxy/src/request.rs:121:9: replace Scheme::as_str -> &'static str with ""` (fails 11 tests) |
+| `nucleus-egress-proxy/src/serve_tests.rs` | `an_answer_with_an_unissued_number_poisons` | `crates/nucleus-egress-proxy/src/request.rs:121:9: replace Scheme::as_str -> &'static str with ""` (fails 11 tests) |
+| `nucleus-egress-proxy/src/serve_tests.rs` | `a_node_owing_more_than_the_cap_poisons` | `crates/nucleus-egress-proxy/src/request.rs:121:9: replace Scheme::as_str -> &'static str with ""` (fails 11 tests) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `a_permitted_name_is_decided` | `crates/nucleus-egress-proxy/src/tls.rs:277:9: replace LeafMinter::minted -> usize with 0` (fails 1 test) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `a_name_outside_the_constraints_is_refused_and_no_leaf_is_minted` | `crates/nucleus-egress-proxy/src/tls.rs:188:9: replace PodCa::name_permitted -> bool with true` (fails 3 tests) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `a_client_trusting_another_ca_is_refused_and_recorded` | `crates/nucleus-egress-proxy/src/serve.rs:161:9: replace Proxy<D, R>::tls_journal -> Vec<TlsRecord> with vec![]` (fails 7 tests) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `sni_and_host_that_differ_are_fronting` | `crates/nucleus-egress-proxy/src/serve.rs:430:65: replace && with || in Proxy<D, R>::tunnel` (fails 1 test) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `a_connect_authority_that_differs_from_the_tls_name_is_fronting` | `crates/nucleus-egress-proxy/src/request.rs:330:8: delete ! in parse_origin_form` (fails 5 tests) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `an_expired_ca_is_refused` | `crates/nucleus-egress-proxy/src/tls.rs:241:5: replace now_unix -> u64 with 0` (fails 1 test) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `an_h2_only_client_gets_no_h2` | `crates/nucleus-egress-proxy/src/request.rs:258:62: replace != with == in parse_connect_head` (fails 10 tests) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `a_connect_that_does_not_speak_tls_is_refused` | `crates/nucleus-egress-proxy/src/request.rs:239:20: replace != with == in parse_connect_head` (fails 11 tests) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `without_a_ca_connect_is_refused_as_before` | `crates/nucleus-egress-proxy/src/serve.rs:214:9: replace Proxy<D, R>::handle -> Result<(), Stop> with Ok(())` (fails 30 tests) |
+| `nucleus-egress-proxy/src/serve_tls_tests.rs` | `the_upstream_client_verifies_roots_and_name` | `crates/nucleus-egress-proxy/src/tls.rs:105:5: replace take -> Option<&'a[u8]> with None` (fails 16 tests) |
+| `nucleus-egress-proxy/src/tls.rs` | `a_bundle_round_trips_and_its_facts_come_from_the_certificate` | `crates/nucleus-egress-proxy/src/tls.rs:176:9: replace PodCa::permitted -> &[String] with Vec::leak(Vec::new())` (fails 1 test) |
+| `nucleus-egress-proxy/src/tls.rs` | `read_bundle_takes_exactly_the_bundle_from_the_channel` | `crates/nucleus-egress-proxy/src/tls.rs:212:12: replace != with == in read_bundle` (fails 1 test) |
+| `nucleus-egress-proxy/src/tls.rs` | `read_bundle_refuses_a_short_a_wrong_or_an_oversized_channel` | `crates/nucleus-egress-proxy/src/tls.rs:210:5: replace read_bundle -> Result<Vec<u8>, CaError> with Ok(vec![])` (fails 2 tests) |
+| `nucleus-egress-proxy/src/tls.rs` | `a_ca_that_would_vouch_for_any_name_is_refused` | `crates/nucleus-egress-proxy/src/tls.rs:105:5: replace take -> Option<&'a[u8]> with None` (fails 16 tests) |
+| `nucleus-guest-init/src/egress_trust.rs` | `the_pod_ca_is_appended_to_the_guest_roots` | `crates/nucleus-guest-init/src/egress_trust.rs:57:39: replace == with != in checked_ca` (fails 2 tests) |
+| `nucleus-guest-init/src/egress_trust.rs` | `without_guest_roots_the_bundle_is_the_pod_ca` | `crates/nucleus-guest-init/src/egress_trust.rs:57:39: replace == with != in checked_ca` (fails 2 tests) |
+| `nucleus-guest-init/src/egress_trust.rs` | `a_reply_carrying_a_key_is_refused` | `crates/nucleus-guest-init/src/egress_trust.rs:51:5: replace checked_ca -> Result<&str, TrustError> with Ok("")` (fails 4 tests) |
+| `nucleus-guest-init/src/egress_trust.rs` | `anything_but_one_certificate_is_refused` | `crates/nucleus-guest-init/src/egress_trust.rs:56:9: replace && with || in checked_ca` (fails 1 test) |
+| `nucleus-guest-init/src/identity.rs` | `the_certificate_reply_is_the_pem_and_an_error_is_none` | `crates/nucleus-guest-init/src/identity.rs:642:5: replace parse_egress_ca -> Result<Option<String>, FetchError> with Ok(None)` (fails 1 test) |
+| `nucleus-ifc-kernel/src/extracted/decision.rs` | `an_answer_applies_only_to_its_own_request` | hand: `disposition` inverts `is_owed` |
+| `nucleus-ifc-kernel/src/extracted/decision.rs` | `a_deadline_poisons_only_a_broken_peer` | `crates/nucleus-ifc-kernel/src/extracted/decision.rs:49:23: replace || with && in on_deadline` (fails 1 test) |
+| `nucleus-ifc-kernel/src/extracted/link.rs` | `every_guard_of_may_link_refuses_alone` | `crates/nucleus-ifc-kernel/src/extracted/link.rs:60:17: replace && with || in may_link` (fails 3 tests) |
+| `nucleus-ifc-kernel/src/extracted/link.rs` | `a_link_matches_only_its_own_row` | `crates/nucleus-ifc-kernel/src/extracted/link.rs:38:21: replace && with || in link_matches` (fails 2 tests) |
+| `nucleus-ifc-kernel/src/extracted/link.rs` | `names_is_either_end` | `crates/nucleus-ifc-kernel/src/extracted/link.rs:43:5: replace names -> bool with true` (fails 1 test) |
+| `nucleus-ifc-kernel/src/extracted/link.rs` | `cancel_unlink_and_delivery_guards` | `crates/nucleus-ifc-kernel/src/extracted/link.rs:66:13: replace && with || in may_unlink` (fails 1 test) |
+| `nucleus-ifc-kernel/src/extracted/tls.rs` | `each_refusal_fires_alone_and_in_order` | `crates/nucleus-ifc-kernel/src/extracted/tls.rs:42:17: replace || with && in tls_verdict` (fails 1 test) |
+| `nucleus-ifc-kernel/src/extracted/tls.rs` | `a_leaf_needs_a_live_ca_and_a_permitted_name` | `crates/nucleus-ifc-kernel/src/extracted/tls.rs:61:13: replace && with || in may_issue_leaf` (fails 1 test) |
+| `nucleus-ifc-kernel/src/links.rs` | `no_cross_tenant_link` | `crates/nucleus-ifc-kernel/src/links.rs:128:54: replace == with != in LinkTable::manages` (fails 1 test) |
+| `nucleus-ifc-kernel/src/links.rs` | `connect_only_along_links` | `crates/nucleus-ifc-kernel/src/links.rs:247:9: replace LinkTable::invariant_holds -> bool with false` (fails 3 tests) |
+| `nucleus-ifc-kernel/src/links.rs` | `unlink_severs` | `crates/nucleus-ifc-kernel/src/links.rs:171:35: delete ! in LinkTable::unlink` (fails 1 test) |
+| `nucleus-ifc-kernel/src/links.rs` | `request_is_a_decision` | `crates/nucleus-ifc-kernel/src/extracted/link.rs:79:21: replace && with || in may_deliver` (fails 2 tests) |
+| `nucleus-ifc-kernel/src/links.rs` | `cancel_refuses_linked_and_exit_drops_links` | `crates/nucleus-ifc-kernel/src/links.rs:231:9: replace LinkTable::exit -> Vec<Receipt> with vec![]` (fails 1 test) |
+| `nucleus-ifc-kernel/src/links.rs` | `close_removes` | `crates/nucleus-ifc-kernel/src/links.rs:210:38: replace != with == in LinkTable::close` (fails 1 test) |
+| `nucleus-ifc-kernel/src/links.rs` | `step_inv` | `crates/nucleus-ifc-kernel/src/extracted/link.rs:38:21: replace && with || in link_matches` (fails 2 tests) |
+| `nucleus-link-probe/src/lib.rs` | `a_report_round_trips_through_a_noisy_console` | `crates/nucleus-link-probe/src/lib.rs:84:5: replace line -> String with String::new()` (fails 2 tests) |
+| `nucleus-link-probe/src/lib.rs` | `listening_round_trips_through_a_noisy_console` | `crates/nucleus-link-probe/src/lib.rs:84:5: replace line -> String with String::new()` (fails 2 tests) |
+| `nucleus-link-probe/src/lib.rs` | `ids_are_distinct_and_seeded` | `crates/nucleus-link-probe/src/lib.rs:104:5: replace request_id -> String with String::new()` (fails 1 test) |
+| `nucleus-link-probe/src/lib.rs` | `status_and_head_parse` | `crates/nucleus-link-probe/src/lib.rs:120:5: replace status_of -> Option<u16> with None` (fails 1 test) |
+| `nucleus-node/src/egress_proxy_tests.rs` | `https_hosts_are_the_https_routes_only` | `crates/nucleus-node/src/egress_proxy.rs:253:9: replace EgressRoutes::https_hosts -> Vec<String> with vec![]` (fails 1 test) |
+| `nucleus-node/src/egress_proxy_tests.rs` | `a_confined_child_dies_with_its_spawner` | hand: signal 0 in place of `SIGKILL` |
+| `nucleus-node/src/link_proxy_tests.rs` | `a_request_over_a_made_link_is_decided_by_the_table_and_delivered` | `crates/nucleus-node/src/pod_ca.rs:106:17: replace && with || in dns_name` (fails 2 tests) |
+| `nucleus-node/src/link_proxy_tests.rs` | `a_link_not_in_the_table_is_refused_by_the_node_and_nothing_is_connected` | `crates/nucleus-node/src/link_proxy.rs:231:26: replace match guard links.has_row(row) with true in LinkDecider::step` (fails 1 test) |
+| `nucleus-node/src/link_proxy_tests.rs` | `unlink_severs_a_live_connection_through_the_control_socket` | `crates/nucleus-node/src/pod_links.rs:152:9: replace Links::sever with ()` (fails 2 tests) |
+| `nucleus-node/src/link_proxy_tests.rs` | `a_link_port_outside_tcp_is_refused_before_any_control_line` | hand: port check `&&` for `\|\|` |
+| `nucleus-node/src/link_proxy_tests.rs` | `the_ca_arrives_on_the_channel_and_tls_admits_only_announced_links` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-node/src/link_proxy_tests.rs` | `many_requests_over_a_link_leave_no_connection_open` | `C:crates__nucleus-node__src__link_proxy.rs_line_231_col_26_001` (fails 2 tests) |
+| `nucleus-node/src/link_proxy_tests.rs` | `the_proxy_dials_the_nodes_forwarder_never_the_destination_jail` | `crates/nucleus-node/src/link_proxy.rs:176:9: replace <impl Drop for Forwarder>::drop with ()` (fails 1 test) |
+| `nucleus-node/src/link_proxy_tests.rs` | `a_forwarder_path_under_the_vsock_prefix_is_refused` | hand: the vsock-prefix refusal removed |
+| `nucleus-node/src/pod_ca_tests.rs` | `constraints_are_exactly_the_https_hosts_and_the_link_subtree` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-node/src/pod_ca_tests.rs` | `no_https_hosts_still_constrains_to_the_link_namespace` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-node/src/pod_ca_tests.rs` | `a_host_that_is_not_a_dns_name_is_refused` | `crates/nucleus-node/src/pod_ca.rs:104:17: replace && with || in dns_name` (fails 1 test) |
+| `nucleus-node/src/pod_ca_tests.rs` | `not_after_is_no_later_than_the_pod_deadline` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-node/src/pod_ca_tests.rs` | `a_deadline_past_the_clock_is_refused` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-node/src/pod_ca_tests.rs` | `link_names_live_under_the_link_subtree` | hand: `link_name` drops the `.link.nucleus.invalid` suffix |
+| `nucleus-node/src/pod_ca_tests.rs` | `the_handover_is_the_bundle_the_proxy_parses` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-node/src/pod_ca_tests.rs` | `the_guest_sees_the_certificate_and_never_the_key` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-node/src/pod_links.rs` | `link_list_unlink_with_verifying_receipts` | `crates/nucleus-node/src/pod_links.rs:267:8: delete ! in link_pods` (fails 6 tests) |
+| `nucleus-node/src/pod_links.rs` | `no_cross_tenant_link` | `crates/nucleus-ifc-kernel/src/links.rs:128:54: replace == with != in LinkTable::manages` (fails 1 test) |
+| `nucleus-node/src/pod_links.rs` | `cancel_of_a_linked_pod_is_refused` | `crates/nucleus-node/src/pod_links.rs:358:5: replace cancel_unlinked -> Result<(), ApiError> with Ok(())` (fails 1 test) |
+| `nucleus-node/src/pod_links.rs` | `exit_drops_links_with_a_receipt_for_the_survivor` | `crates/nucleus-node/src/pod_links.rs:389:5: replace pod_gone with ()` (fails 1 test) |
+| `nucleus-node/src/spec_posture_tests.rs` | `the_link_relay_port_is_the_runtimes` | `crates/nucleus-node/src/spec_posture.rs:171:5: replace admit -> Result<Option<AuditTarget>, PostureRefused> with Ok(None)` (fails 1 test) |
+| `nucleus-node/src/workload_api_vsock.rs` | `the_guest_fetch_returns_the_certificate_only` | `crates/nucleus-node/src/pod_ca.rs:103:13: delete ! in dns_name` (fails 8 tests) |
+| `nucleus-receipt/src/lib.rs` | `a_link_receipt_verifies` | hand: `Projection::Link` not serializable (fails at signing) |
+| `nucleus-receipt/src/lib.rs` | `a_tampered_link_body_fails_verify` | hand: `Projection::Link` not serializable (fails at signing, not at the tamper) |
+| `nucleus-receipt/src/lib.rs` | `a_link_projection_round_trips_with_its_kind` | `crates/nucleus-receipt/src/lib.rs:129:9: replace Projection::kind -> &'static str with ""` (fails 2 tests) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `the_preamble_is_exactly_port_n` | `crates/nucleus-tool-proxy/src/link_relay.rs:75:26: replace || with && in parse_preamble` (fails 1 test) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `a_port_outside_the_range_is_refused` | `crates/nucleus-tool-proxy/src/link_relay.rs:80:20: replace >= with < in parse_preamble` (fails 2 tests) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `a_non_host_peer_is_refused_and_reaches_nothing` | `crates/nucleus-tool-proxy/src/link_relay.rs:219:5: replace handle_inbound -> Result<(), InboundRefusal> with Ok(())` (fails 2 tests) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `a_malformed_or_out_of_range_preamble_is_refused` | `crates/nucleus-tool-proxy/src/link_relay.rs:93:33: replace + with - in read_preamble` (fails 1 test) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `inbound_bytes_are_spliced_both_ways_after_the_preamble` | `crates/nucleus-tool-proxy/src/link_relay.rs:88:5: replace read_preamble -> Result<u16, InboundRefusal> with Ok(0)` (fails 1 test) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `a_closed_host_side_closes_the_workload_side` | hand: outbound splice no longer ends on the host's close (panics on resume) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `a_workload_half_close_still_gets_the_answer` | `crates/nucleus-tool-proxy/src/link_relay.rs:111:5: replace splice with ()` (fails 2 tests) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `a_server_that_answers_and_closes_ends_the_inbound_exchange` | `crates/nucleus-tool-proxy/src/link_relay.rs:148:5: replace splice_inbound with ()` (fails 2 tests) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `a_closed_host_side_closes_the_inbound_workload_side` | hand: inbound splice waits for both directions (5 s timeout) |
+| `nucleus-tool-proxy/src/link_relay.rs` | `outbound_bytes_are_spliced_both_ways` | `crates/nucleus-tool-proxy/src/link_relay.rs:174:5: replace serve_outbound with ()` (fails 1 test) |
 
 ## Consequences
 
