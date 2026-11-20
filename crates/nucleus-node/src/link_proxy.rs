@@ -93,12 +93,80 @@ impl Control {
     }
 }
 
-/// What `pod_links` needs of a pod's link proxy: its control socket, and the
-/// pod's Firecracker vsock socket (where a link TO this pod is dialled).
+/// What `pod_links` needs of a pod's link proxy: its control socket, the pod's
+/// Firecracker vsock socket (where a link TO this pod is dialled), and where and
+/// as whom the node lays this proxy's per-link forwarder sockets.
 #[derive(Debug)]
 pub(crate) struct Relay {
     pub control: Arc<Control>,
     pub vsock: PathBuf,
+    /// The pod directory: the proxy can reach it (its control socket is here).
+    pub pod_dir: PathBuf,
+    /// The proxy's uid and gid, which own its forwarder sockets.
+    pub run_as: (u32, u32),
+}
+
+/// The node's byte pipe for one link, from the SOURCE pod's link proxy to the
+/// DESTINATION pod's Firecracker vsock socket.
+///
+/// Found on the first Linux run (2026-11-19, local rehearsal): the destination's
+/// vsock socket sits in its jail root, mode 0700 and owned by the jail user, which
+/// the unprivileged link proxy cannot traverse, so every admitted request ended
+/// `LinkUnreachable`. Loosening the jail would widen every pod's; instead the
+/// node, which can reach every jail, listens on a socket in the source pod's
+/// directory, owned by the proxy's uid alone (0600), and pipes each connection
+/// to the destination. Bytes only: the proxy still performs the vsock
+/// handshake and preamble, and decides every request before it writes one.
+/// Dropping it closes the listener and every connection it carries, so a
+/// `SEVER` is enforced on the node's side as well as the proxy's.
+#[derive(Debug)]
+pub(crate) struct Forwarder {
+    path: PathBuf,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Forwarder {
+    /// Listen on `path` (owned by `run_as`, 0600) and pipe each connection to
+    /// `dst_vsock`.
+    ///
+    /// # Errors
+    /// The bind, chown or chmod failed.
+    pub(crate) fn start(
+        path: PathBuf,
+        dst_vsock: PathBuf,
+        run_as: (u32, u32),
+    ) -> Result<Self, String> {
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path)
+            .map_err(|e| format!("link forwarder socket: {e}"))?;
+        give_to(&path, run_as)?;
+        let task = tokio::spawn(async move {
+            let mut pipes = tokio::task::JoinSet::new();
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                let dst = dst_vsock.clone();
+                pipes.spawn(async move {
+                    if let Ok(mut out) = tokio::net::UnixStream::connect(&dst).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut out).await;
+                    }
+                });
+                while pipes.try_join_next().is_some() {}
+            }
+        });
+        Ok(Self { path, task })
+    }
+
+    /// The socket the proxy dials for this link.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for Forwarder {
+    fn drop(&mut self) {
+        // Aborting the accept loop drops its JoinSet, which aborts every pipe.
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// The node's decision service for one pod's link proxy.
@@ -392,6 +460,8 @@ pub(crate) async fn start_for_pod(
         Relay {
             control,
             vsock: vsock_path.to_path_buf(),
+            pod_dir: pod_dir.to_path_buf(),
+            run_as: (uid, gid),
         },
     )
     .await;

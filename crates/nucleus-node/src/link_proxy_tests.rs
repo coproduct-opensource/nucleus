@@ -35,6 +35,14 @@ use crate::pod_api::handler_tests::{register_as, state};
 const TENANT_A: &str = "spiffe://tenant-a.example.invalid/ns/rt-a/sa/alice";
 const TENANT_A2: &str = "spiffe://tenant-a.example.invalid/ns/rt-a/sa/bob";
 
+/// This process's uid and gid, from a directory it made: forwarder sockets are
+/// chowned to the proxy's uid, which in a test is ours.
+fn me(dir: &std::path::Path) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(dir).unwrap();
+    (m.uid(), m.gid())
+}
+
 fn tenant() -> CallerScope {
     CallerScope::Tenant("tenant-a.example.invalid".to_owned())
 }
@@ -159,6 +167,8 @@ async fn rig(hold: bool) -> Rig {
         Relay {
             control: Arc::new(Control::new(node_side)),
             vsock: dir.path().join("src-vsock.sock"),
+            pod_dir: dir.path().to_path_buf(),
+            run_as: me(dir.path()),
         },
     )
     .await;
@@ -169,6 +179,8 @@ async fn rig(hold: bool) -> Rig {
         Relay {
             control: Arc::new(Control::new(b_control)),
             vsock: dst.path.clone(),
+            pod_dir: dir.path().join("dst-pod"),
+            run_as: me(dir.path()),
         },
     )
     .await;
@@ -427,4 +439,48 @@ async fn many_requests_over_a_link_leave_no_connection_open() {
         let _ = r.dst.seen.recv().await.unwrap();
     }
     assert_eq!(r.st.links.lock().await.open_conns(), 0);
+}
+
+/// Found on the first Linux run (local rehearsal, 2026-11-19): a destination's
+/// vsock socket is in its jail root (0700, the jail user's), which the
+/// unprivileged link proxy cannot traverse, so every admitted request ended
+/// `LinkUnreachable`. The proxy is therefore given the node's forwarder in the
+/// SOURCE pod's directory, never the destination's socket; unlinking removes
+/// it, and with it every connection it carried.
+#[tokio::test]
+async fn the_proxy_dials_the_nodes_forwarder_never_the_destination_jail() {
+    let r = rig(false).await;
+    assert_eq!(link(&r, 8080).await, StatusCode::OK);
+    proxy_sees(&r, true).await;
+    let target = LinkTarget {
+        dst: r.b.as_u128(),
+        port: 8080,
+    };
+    let (route, _) = r.proxy_links.live(target).expect("the link was announced");
+    assert_ne!(
+        route.uds, r.dst.path,
+        "the proxy must never be sent to the destination's jail"
+    );
+    assert!(
+        route.uds.starts_with(r._dir.path()),
+        "the forwarder lives in the source pod's directory: {}",
+        route.uds.display()
+    );
+    assert!(route.uds.exists(), "the forwarder is listening");
+    let (served, out) = send(&r, get(&r, 8080)).await;
+    assert_eq!(
+        served,
+        Served::Forwarded,
+        "delivered through the forwarder: {out}"
+    );
+    let status = call(
+        &r.st,
+        "DELETE",
+        format!("/v1/pods/{}/links/{}/8080", r.a, r.b),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    proxy_sees(&r, false).await;
+    assert!(!route.uds.exists(), "unlinking removes the forwarder");
 }

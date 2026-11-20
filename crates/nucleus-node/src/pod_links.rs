@@ -54,6 +54,11 @@ pub(crate) struct Links {
     drops: HashMap<Uuid, Vec<Receipt>>,
     /// Each running pod's link proxy control socket and vsock path (L4b).
     relays: HashMap<Uuid, crate::link_proxy::Relay>,
+    /// The node-side byte pipe of each announced link, keyed by row.
+    forwarders: HashMap<(u128, u128, u32), crate::link_proxy::Forwarder>,
+    /// Names forwarder sockets (`lf-<n>.sock`): a pod directory and a uuid
+    /// would overrun a Unix socket path's 108 bytes.
+    next_forwarder: u64,
 }
 
 /// `NodeState.links`. An async lock: [`cancel_unlinked`] holds it across a
@@ -66,6 +71,8 @@ pub(crate) fn shared() -> SharedLinks {
         table: LinkTable::empty(),
         drops: HashMap::new(),
         relays: HashMap::new(),
+        forwarders: HashMap::new(),
+        next_forwarder: 0,
     }))
 }
 
@@ -98,30 +105,50 @@ impl Links {
         self.table.conns().len()
     }
 
-    /// Write `LINK` for `row` to its source's relay, naming the destination's
-    /// vsock socket. Nothing to write when either end has no link proxy.
-    async fn announce(&self, row: Link) {
+    /// Start the node-side forwarder for `row` and write `LINK` to its source's
+    /// relay, naming the forwarder (`link_proxy::Forwarder`: the proxy cannot
+    /// reach the destination's jail). Nothing to write when either end has no
+    /// link proxy.
+    async fn announce(&mut self, row: Link) {
         let (Some(src), Some(dst)) = (
             self.relays.get(&uuid_of(row.src)),
             self.relays.get(&uuid_of(row.dst)),
         ) else {
             return;
         };
+        self.next_forwarder += 1;
+        let path = src.pod_dir.join(format!("lf-{}.sock", self.next_forwarder));
+        let forwarder = match crate::link_proxy::Forwarder::start(
+            path,
+            dst.vsock.clone(),
+            src.run_as,
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(error = %e, src = %uuid_of(row.src), "link forwarder not started; the link carries nothing");
+                return;
+            }
+        };
         let line = format!(
             "LINK {} {} {} {}",
             uuid_of(row.dst),
             row.port,
             nucleus_spec::LINK_RELAY_GUEST_PORT,
-            dst.vsock.display()
+            forwarder.path().display()
         );
-        if let Err(e) = src.control.send(&line).await {
+        let control = Arc::clone(&src.control);
+        self.forwarders
+            .insert((row.src, row.dst, row.port), forwarder);
+        if let Err(e) = control.send(&line).await {
             tracing::warn!(error = %e, src = %uuid_of(row.src), "link proxy control: LINK not written");
         }
     }
 
     /// Write `SEVER` for `row` to its source's relay. Called before the
     /// receipt is signed; a relay that is gone carries nothing to sever.
-    async fn sever(&self, row: Link) {
+    async fn sever(&mut self, row: Link) {
+        // The node's pipe first: its connections close whatever the proxy does.
+        self.forwarders.remove(&(row.src, row.dst, row.port));
         let Some(src) = self.relays.get(&uuid_of(row.src)) else {
             return;
         };
