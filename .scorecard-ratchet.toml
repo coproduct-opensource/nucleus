@@ -278,9 +278,11 @@ population_floor = 278
 # verifier that panics on a crafted certificate is one an attacker can stop. 44 of 101 = 43.56%.
 # 2026-11-20: nucleus-weight-patch, the measured half of a weight-patch release (ADR 0018),
 # denies all seven totality lints from its first commit. 45 of 102 = 44.11%.
-floor_bp = 4411
+# 2026-11-20: nucleus-release-gate, which decides whether the serving pointer moves, denies
+# all seven from its first commit. 46 of 103 = 44.66%.
+floor_bp = 4466
 floor_set = "measurement"
-population_floor = 102
+population_floor = 103
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -435,9 +437,14 @@ population_floor = 102
 # It carries the generation it was decided against, the chain head it verified, from the
 # commit that adds it: a verdict about a chain that has since grown is not current, so a
 # relying party compares that head before acting. 22 of 29 = 75.86%.
-floor_bp = 7586
+# 2026-11-20 (ADR 0018): nucleus_release_gate::chain::PointerMove, the right to move the
+# serving pointer once, enters as an affine right bounded from its first commit. It carries the
+# pointer generation it was minted against and not_after (the earlier of the grant's and the
+# approval's expiry); Registry::advance takes it by value and refuses it as StaleMove if
+# either no longer holds. 23 of 30 = 76.66%.
+floor_bp = 7666
 floor_set = "measurement"
-population_floor = 29
+population_floor = 30
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

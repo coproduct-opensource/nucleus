@@ -1,0 +1,31 @@
+[package]
+name = "nucleus-release-gate"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The gate between a proposed checkpoint and the one being served: a receipt chain from proposal grant to approval, walked hop by hop against a deployer's policy, and a serving pointer that moves only for a right the walk minted — with the previous digest kept for rollback and every move replayable from the log."
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+ed25519-dalek = { workspace = true }
+# The signed envelope every body here travels in. Not modified: the bodies
+# carry their own schema names inside an existing projection.
+nucleus-receipt = { path = "../nucleus-receipt", version = "1.0.0" }
+# Digests, the patch program, and the measured write set.
+nucleus-weight-patch = { path = "../nucleus-weight-patch", version = "1.0.0" }
+# The one sanctioned way to append a record to a log (ADR 0007 G-1).
+nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
