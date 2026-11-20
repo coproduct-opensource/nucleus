@@ -79,6 +79,23 @@ inductive extracted.credential.CredSink where
 | Guest : extracted.credential.CredSink
 | ExternalService : extracted.credential.CredSink
 
+/-- [nucleus_ifc_kernel::extracted::decision::Disposition]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/decision.rs', lines 14:0-21:1
+    Visibility: public -/
+@[discriminant isize]
+inductive extracted.decision.Disposition where
+| Apply : extracted.decision.Disposition
+| DropLate : extracted.decision.Disposition
+| Poison : extracted.decision.Disposition
+
+/-- [nucleus_ifc_kernel::extracted::decision::OnDeadline]
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/decision.rs', lines 38:0-44:1
+    Visibility: public -/
+@[discriminant isize]
+inductive extracted.decision.OnDeadline where
+| RefuseAndOwe : extracted.decision.OnDeadline
+| RefuseAndPoison : extracted.decision.OnDeadline
+
 /-- [nucleus_ifc_kernel::extracted::mediation::MedOperation]
     Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 56:0-70:1
     Visibility: public -/

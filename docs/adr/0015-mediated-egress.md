@@ -475,6 +475,27 @@ which need it; owner decision of that date).
   registry hosts. **Not compiled for Linux** (`mint_for_pod`, the handover in `start`, the
   `main.rs` wiring): the cross check fails on `ring`'s and `aws-lc-sys`'s C build.
 
+**The decision channel: a late answer is dropped, not a broken peer (2026-11-19).** §2's first
+implementation poisoned the channel on any non-answer, on the assumption that a late answer is
+evidence of a broken peer and could be read as the answer to the next request. The ADR 0017
+local rehearsal disproved the first half: one node answer arrived about 2.2 s after the 2 s
+deadline, after 103 answers of about 10 ms, and every later request on that pod was refused
+`HostUnavailable(Poisoned)`. The second half is a numbering problem, not a reason to stop.
+`crates/portcullis-core/lean/DecisionChannel.lean` now states the channel: a request whose deadline
+passes is refused (fail closed) and its number is *owed*; an owed answer is dropped by number; an
+answer applies only to the outstanding request with its number; poisoning is kept for evidence of a
+broken peer (a number neither outstanding nor owed, a frame that does not parse or is not a verdict,
+the socket closing, a request frame cut short, more than `OWED_CAP` = 64 owed answers). Theorems:
+`answer_admits_only_its_request`, `late_answer_never_admits` (an outcome is written once),
+`late_answer_dropped`, `channel_recovers_after_timeout`, `tick_resolves_overdue`,
+`unissued_answer_poisons`. The two decisions are extracted
+(`nucleus_ifc_kernel::extracted::decision::{disposition, on_deadline}`) and proved equal to the
+model's in `DecisionChannelExtracted.lean`; two `proof-obligations.toml` rows bind them. The proxy
+(`decision.rs`) reads frames cancel-safely, so a deadline that fires mid-frame loses no bytes. The
+deadline is unchanged. Tested in-process, egress and link mode; driven red: every timeout
+poisoning (the old rule), a late answer applied, an unissued number tolerated, and an extracted
+`disposition` that applies an owed answer.
+
 ## Consequences
 
 - No pod changes behaviour when this record is accepted. Before E4, everything is

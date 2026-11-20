@@ -14,9 +14,27 @@
 //! `Result<bool>` (ADR 0007 A-1). Every way of not getting a verdict is its
 //! own [`HostUnavailable`] arm: the deadline passing, the node closing the
 //! socket, a frame that does not parse, an answer to a different question,
-//! and the proxy being too busy to ask in time. Each refuses the request, and
-//! after any of them the channel is poisoned: a reply that arrives late could
-//! otherwise be read as the answer to the next question.
+//! and the proxy being too busy to ask in time. Each refuses the request.
+//!
+//! # A late answer is dropped, not a broken peer (`DecisionChannel.lean`)
+//!
+//! A request whose deadline passes is refused, and its number is *owed*: the
+//! node's answer, when it comes, is dropped by number and never read as the
+//! answer to another request. The channel stays in use. Found 2026-11-19 (ADR
+//! 0017 local rehearsal): the first version poisoned the channel on any missed
+//! deadline, assuming a late answer meant a broken peer, so one answer 0.2 s
+//! late left a pod whose links and egress never carried anything again.
+//!
+//! What still poisons is evidence of a broken peer: an answer whose number is
+//! neither the outstanding request's nor owed, a frame that does not parse or is
+//! not a verdict, the node closing the socket, a request frame cut short by the
+//! deadline (the node saw a partial frame), and more than [`OWED_CAP`] owed
+//! answers (the node is not answering at all). Both decisions go through the
+//! extracted `nucleus_ifc_kernel::extracted::decision` functions.
+//!
+//! Reads are cancel-safe: bytes go into a buffer kept across requests, so a
+//! deadline that fires mid-frame loses nothing and the next request resumes
+//! the frame where it stopped.
 
 use std::time::Duration;
 
@@ -91,6 +109,10 @@ impl HostUnavailable {
     }
 }
 
+/// How many owed answers a channel tolerates before the node counts as not
+/// answering at all (`DecisionChannel.cap`).
+pub const OWED_CAP: u32 = 64;
+
 /// The proxy's end of its decision channel.
 #[derive(Debug)]
 pub struct DecisionClient<S> {
@@ -98,6 +120,13 @@ pub struct DecisionClient<S> {
     /// The number the node expects next; `None` once every number is used.
     next: Option<Seq>,
     poisoned: bool,
+    /// Numbers whose request timed out: their answers are owed and dropped.
+    owed: Vec<Seq>,
+    /// Bytes read but not yet a whole frame, kept across requests so a
+    /// deadline that fires mid-read loses nothing.
+    buf: Vec<u8>,
+    /// Whether the current request's frame reached the node whole.
+    frame_written: bool,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> DecisionClient<S> {
@@ -107,7 +136,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DecisionClient<S> {
             stream,
             next: Some(Seq::FIRST),
             poisoned: false,
+            owed: Vec::new(),
+            buf: Vec::new(),
+            frame_written: false,
         }
+    }
+
+    /// How many answers the node owes for requests that timed out.
+    #[must_use]
+    pub fn owed(&self) -> usize {
+        self.owed.len()
     }
 
     /// Ask the node about one request, waiting at most `deadline`.
@@ -117,6 +155,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DecisionClient<S> {
         digest: ArgsDigest,
         deadline: Duration,
     ) -> HostAnswer {
+        use nucleus_ifc_kernel::extracted::decision::{OnDeadline, on_deadline};
         if self.poisoned {
             return HostAnswer::Unreachable(HostUnavailable::Poisoned);
         }
@@ -129,19 +168,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DecisionClient<S> {
             subject,
             args_digest: digest,
         };
-        let answer = match tokio::time::timeout(deadline, self.exchange(&frame, seq)).await {
-            Ok(answer) => answer,
-            Err(_) => HostAnswer::Unreachable(HostUnavailable::Timeout),
-        };
-        match answer {
-            HostAnswer::Verdict(_) => self.next = seq.next(),
-            HostAnswer::Unreachable(_) => self.poisoned = true,
+        self.frame_written = false;
+        match tokio::time::timeout(deadline, self.exchange(&frame, seq)).await {
+            Ok(HostAnswer::Verdict(v)) => HostAnswer::Verdict(v),
+            Ok(HostAnswer::Unreachable(why)) => {
+                self.poisoned = true;
+                HostAnswer::Unreachable(why)
+            }
+            Err(_) => {
+                let owed_after =
+                    u32::try_from(self.owed.len().saturating_add(1)).unwrap_or(u32::MAX);
+                match on_deadline(self.frame_written, owed_after, OWED_CAP) {
+                    OnDeadline::RefuseAndOwe => self.owed.push(seq),
+                    OnDeadline::RefuseAndPoison => self.poisoned = true,
+                }
+                HostAnswer::Unreachable(HostUnavailable::Timeout)
+            }
         }
-        answer
     }
 
     async fn exchange(&mut self, frame: &GuestFrame, seq: Seq) -> HostAnswer {
         use HostUnavailable as U;
+        use nucleus_ifc_kernel::extracted::decision::{Disposition, disposition};
         let unreachable = HostAnswer::Unreachable;
         let Ok(bytes) = frame.encode() else {
             return unreachable(U::Protocol);
@@ -149,47 +197,71 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> DecisionClient<S> {
         if self.stream.write_all(&bytes).await.is_err() || self.stream.flush().await.is_err() {
             return unreachable(U::Io);
         }
-        let mut prefix = [0u8; LEN_PREFIX];
-        if let Err(e) = self.stream.read_exact(&mut prefix).await {
-            return unreachable(match e.kind() {
-                std::io::ErrorKind::UnexpectedEof => U::Closed,
-                _ => U::Io,
-            });
-        }
-        let Ok(len) = body_len(prefix) else {
-            return unreachable(U::Protocol);
-        };
-        let mut body = vec![0u8; len];
-        if let Err(e) = self.stream.read_exact(&mut body).await {
-            return unreachable(match e.kind() {
-                std::io::ErrorKind::UnexpectedEof => U::Closed,
-                _ => U::Io,
-            });
-        }
-        let Ok(reply) = HostFrame::decode_body(&body) else {
-            return unreachable(U::Protocol);
-        };
-        match reply {
-            HostFrame::Verdict { seq: got, verdict } if got == seq => {
-                HostAnswer::Verdict(match verdict {
-                    Verdict::Allowed { decision_id } => {
-                        // Already redeemed by the node; see `Decided`.
-                        drop(decision_id);
-                        Decided::Allowed
-                    }
-                    Verdict::Denied { reason } => Decided::Denied(reason),
-                    Verdict::ApprovalRequired { approval_id } => {
-                        drop(approval_id);
-                        Decided::ApprovalRequired
-                    }
-                })
+        // The node has this number now: the next request takes the next one,
+        // whatever happens to this one.
+        self.frame_written = true;
+        self.next = seq.next();
+        loop {
+            let reply = match self.read_frame().await {
+                Ok(reply) => reply,
+                Err(why) => return unreachable(why),
+            };
+            let (got, verdict) = match reply {
+                HostFrame::Verdict { seq: got, verdict } => (got, verdict),
+                HostFrame::Observed { seq: _ }
+                | HostFrame::Compared {
+                    seq: _,
+                    agreement: _,
+                } => return unreachable(U::UnexpectedFrame),
+            };
+            match disposition(got == seq, self.owed.contains(&got)) {
+                Disposition::Apply => {
+                    return HostAnswer::Verdict(match verdict {
+                        Verdict::Allowed { decision_id } => {
+                            // Already redeemed by the node; see `Decided`.
+                            drop(decision_id);
+                            Decided::Allowed
+                        }
+                        Verdict::Denied { reason } => Decided::Denied(reason),
+                        Verdict::ApprovalRequired { approval_id } => {
+                            drop(approval_id);
+                            Decided::ApprovalRequired
+                        }
+                    });
+                }
+                Disposition::DropLate => {
+                    // A timed-out request's answer: dropped by number, never
+                    // read as this request's (`late_answer_never_admits`).
+                    self.owed.retain(|s| *s != got);
+                }
+                Disposition::Poison => return unreachable(U::OutOfSequence),
             }
-            HostFrame::Verdict { seq: _, verdict: _ } => unreachable(U::OutOfSequence),
-            HostFrame::Observed { seq: _ }
-            | HostFrame::Compared {
-                seq: _,
-                agreement: _,
-            } => unreachable(U::UnexpectedFrame),
+        }
+    }
+
+    /// One whole frame from the node. Cancel-safe: `read` either returns
+    /// bytes, which go into `buf`, or is dropped having read nothing.
+    async fn read_frame(&mut self) -> Result<HostFrame, HostUnavailable> {
+        use HostUnavailable as U;
+        loop {
+            if let Some(head) = self.buf.get(..LEN_PREFIX) {
+                let prefix: [u8; LEN_PREFIX] = head.try_into().map_err(|_| U::Protocol)?;
+                let len = body_len(prefix).map_err(|_| U::Protocol)?;
+                let end = LEN_PREFIX.checked_add(len).ok_or(U::Protocol)?;
+                if let Some(body) = self.buf.get(LEN_PREFIX..end) {
+                    let reply = HostFrame::decode_body(body).map_err(|_| U::Protocol)?;
+                    self.buf.drain(..end);
+                    return Ok(reply);
+                }
+            }
+            let mut chunk = [0u8; 4096];
+            match self.stream.read(&mut chunk).await {
+                Ok(0) => return Err(U::Closed),
+                Ok(n) => self
+                    .buf
+                    .extend_from_slice(chunk.get(..n).unwrap_or_default()),
+                Err(_) => return Err(U::Io),
+            }
         }
     }
 }

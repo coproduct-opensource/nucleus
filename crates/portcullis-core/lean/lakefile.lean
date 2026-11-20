@@ -224,6 +224,14 @@ lean_lib «TlsTermination» where
 lean_lib «TlsTerminationExtracted» where
   roots := #[`TlsTerminationExtracted]
 
+-- The proxy–node decision channel: a late answer is dropped, never poisons
+-- (ADR 0014 §7, ADR 0015 §2, found by the ADR 0017 rehearsal).
+lean_lib «DecisionChannel» where
+  roots := #[`DecisionChannel]
+
+lean_lib «DecisionChannelExtracted» where
+  roots := #[`DecisionChannelExtracted]
+
 -- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
 -- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
 -- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.

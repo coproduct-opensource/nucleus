@@ -298,6 +298,20 @@ kind = "lean-extracted"
 artifact = "crates/portcullis-core/lean/TlsTerminationExtracted.lean::tls_verdict_is_step"
 status = "proved"
 
+# The proxy–node decision channel: a late answer is dropped, a broken peer poisons
+# (DecisionChannel.lean; found by the ADR 0017 rehearsal).
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::decision::disposition"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DecisionChannelExtracted.lean::disposition_is_model"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::decision::on_deadline"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DecisionChannelExtracted.lean::on_deadline_is_tick"
+status = "proved"
+
 [[obligation]]
 function = "nucleus_ifc_kernel::extracted::identity::ident_may_deliver"
 kind = "lean-extracted"

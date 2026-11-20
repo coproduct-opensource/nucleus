@@ -646,6 +646,10 @@ Found and **not** fixed, because it changes the decision protocol's meaning (mod
   the wrong request). For links it turns one stall into a pod whose links never carry another
   byte. A resynchronisation (for example, numbered answers the proxy can discard when late) is a
   change to the decision channel's semantics and goes through its model first.
+  **Fixed, model first (2026-11-19):** `DecisionChannel.lean` and ADR 0015 §14. A timed-out
+  request is refused and its number owed; the late answer is dropped by number; the channel keeps
+  working. `a_slow_answer_refuses_one_request_and_the_link_keeps_working` is the link-mode test
+  (red under the old poisoning rule).
 
 Rehearsal environment only, not product defects: Debian's `musl-gcc` on aarch64 runs the repo's
 `.cargo/ld/real-ld` wrapper, which linked dynamically against a musl loader the guest does not

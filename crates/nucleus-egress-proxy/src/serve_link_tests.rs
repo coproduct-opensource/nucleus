@@ -658,3 +658,69 @@ async fn tls_over_a_link_uses_the_connect_port() {
     );
     assert_eq!(asked.load(Ordering::SeqCst), 1);
 }
+
+/// **`channel_recovers_after_timeout`, link mode** (`DecisionChannel.lean`).
+/// The node answers the first request after the deadline and every later one
+/// at once. The first is refused as a timeout and never connected; the second
+/// is decided and delivered, rather than refused as `Poisoned` (the ADR 0017
+/// rehearsal: one 2.2 s answer left a pod whose links carried nothing again).
+#[tokio::test]
+async fn a_slow_answer_refuses_one_request_and_the_link_keeps_working() {
+    let (proxy_end, node_end) = UnixStream::pair().unwrap();
+    tokio::spawn(async move {
+        let mut end = node_end;
+        let mut ledger = DecisionLedger::new(7);
+        let mut first = true;
+        loop {
+            let mut prefix = [0u8; LEN_PREFIX];
+            if end.read_exact(&mut prefix).await.is_err() {
+                return;
+            }
+            let mut body = vec![0u8; body_len(prefix).unwrap()];
+            end.read_exact(&mut body).await.unwrap();
+            let GuestFrame::Decide {
+                seq, args_digest, ..
+            } = GuestFrame::decode_body(&body).unwrap()
+            else {
+                panic!("the proxy sends only Decide");
+            };
+            if first {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                first = false;
+            }
+            let verdict = Verdict::Allowed {
+                decision_id: ledger.allow(args_digest).unwrap(),
+            };
+            let reply = HostFrame::Verdict { seq, verdict }.encode().unwrap();
+            end.write_all(&reply).await.unwrap();
+        }
+    });
+    let links = Arc::new(Links::default());
+    let r = Rig {
+        proxy: Arc::new(Proxy::link(
+            SharedDecider::new(proxy_end, Duration::from_millis(150)),
+            Arc::clone(&links),
+        )),
+        links,
+        asked: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut d = dst_mux(Answer::Whole);
+    announce(&r, &d, 8080);
+    let (served, _) = send(&r, &get(8080)).await;
+    assert_eq!(
+        served,
+        Served::Refused(Refusal::HostUnavailable(
+            crate::decision::HostUnavailable::Timeout
+        ))
+    );
+    assert_eq!(
+        d.connections.load(Ordering::SeqCst),
+        0,
+        "refused, never connected"
+    );
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let (served, response) = send(&r, &get(8080)).await;
+    assert_eq!(served, Served::Forwarded, "{response}");
+    let seen = d.seen.recv().await.unwrap();
+    assert_eq!(seen.preamble, "PORT 8080");
+}

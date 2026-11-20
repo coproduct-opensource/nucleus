@@ -276,6 +276,34 @@ def extracted.credential.credential_may_reach
   extracted.credential.cred_may_deliver
     extracted.ifc_confidentiality.ConfLevel.Secret sink
 
+/-- [nucleus_ifc_kernel::extracted::decision::disposition]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/decision.rs', lines 25:0-33:1
+    Visibility: public -/
+def extracted.decision.disposition
+  (is_current : Bool) (is_owed : Bool) :
+  Result extracted.decision.Disposition
+  := do
+  if is_current
+  then ok extracted.decision.Disposition.Apply
+  else
+    if is_owed
+    then ok extracted.decision.Disposition.DropLate
+    else ok extracted.decision.Disposition.Poison
+
+/-- [nucleus_ifc_kernel::extracted::decision::on_deadline]:
+    Source: 'crates/nucleus-ifc-kernel/src/extracted/decision.rs', lines 48:0-54:1
+    Visibility: public -/
+def extracted.decision.on_deadline
+  (frame_written : Bool) (owed_after : Std.U32) (cap : Std.U32) :
+  Result extracted.decision.OnDeadline
+  := do
+  if frame_written
+  then
+    if owed_after > cap
+    then ok extracted.decision.OnDeadline.RefuseAndPoison
+    else ok extracted.decision.OnDeadline.RefuseAndOwe
+  else ok extracted.decision.OnDeadline.RefuseAndPoison
+
 /-- [nucleus_ifc_kernel::extracted::mediation::opcode]:
     Source: 'crates/nucleus-ifc-kernel/src/extracted/mediation.rs', lines 100:0-116:1
     Visibility: public -/
