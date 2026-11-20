@@ -801,6 +801,59 @@ VM-hours. At an upper estimate of spot prices for these shapes, with two 150 GB 
 that is under $5; with the earlier runs (under $1), well under the $10 ceiling. The figure is an
 estimate from list prices: the job's credential cannot read billing.
 
+### The gauntlet's own verdicts, given a meaning and bound (2026-11-20, commit `b779afac4`)
+
+The owner ruled (2026-11-20) that the harness's pass/fail rules are decisions like any other
+and are bound in `proof-obligations.toml`. The case for it is in this section's runs: three
+times an item read "pass" when it had not observed what it claims, and each time the rule was
+the defect.
+
+- **Meaning first:** `crates/portcullis-core/lean/GauntletVerdict.lean`, plain Lean like
+  `DecisionChannel.lean`. One shape decides every judged item, `judge bad enough`: bad fails;
+  otherwise enough passes; otherwise inconclusive. Each item states its own "bad" and "enough".
+  Theorems: `judge_pass_iff`, `judge_never_recorded`, `a_failed_linked_request_fails` (the 503
+  finding), `a_short_run_never_passes` (the 19,162 finding), `an_empty_race_never_passes` and
+  `a_consistent_race_passes` (the (e2) finding, and that the rule is not vacuous the other way),
+  `canary_pass_iff`, `reportFails_iff`, `standing_outlives_sender` (the expired-pods finding),
+  `full_scale_fits`, and worked examples decided on each run's own numbers.
+- **One decider:** `nucleus_ifc_kernel::extracted::gauntlet`, twelve functions over integers and
+  booleans. The harness (`nucleus-cli`, `host_evidence_live::links`) calls them for every judged
+  item, including `Report::failed`, the receipt item without a key, and an item whose setup
+  failed. Its own copies of the rules are gone. `Recorded` stays an explicit choice for (e3) and
+  (e4). The Welch t is reported and not judged, so it is no decision.
+- **Extracted and proved:** Charon/Aeneas translate the slice with the other 61 roots (77/77
+  functions transparent, no axioms) into `generated-link/`, as pure additions.
+  `GauntletVerdictExtracted.lean` proves each function computes the model for every input, and
+  `standing_lifetime` for every input whose lifetime fits a `u64`. There is no `sorry`, and
+  `#print axioms` shows only `propext`, `Classical.choice` and `Quot.sound`. Twelve rows bind
+  them; `cargo xtask proof-obligations` holds 101 rows (lean-extracted 73).
+- **Driven red, each on the real defect:** the old (e2) rule (no `links_done == 0` case) in the
+  slice fails `race_is_model`; the old (b) rule without the sent count fails
+  `per_request_is_model`; a row naming `canary_is_model` for `race` fails the binding check
+  ("does not mention … race in its statement"); and the two new Rust tests in the slice fail on
+  the old (e2) rule and on a base lifetime without its three hours.
+- **Found on the way:** the local Aeneas (`d71d2e3`) translates a comparison returned as a value
+  (`… || undecided > 0`) into a `Prop` where a `Bool` is needed, and the generated file did not
+  compile. The slice returns literals from each branch instead (clippy's `needless_bool` and
+  `if_same_then_else` are allowed there, with the reason in a comment). The binding check also
+  refused all twelve rows until a CI workflow builds the proof file: `aeneas-ifc-scoped.yml`
+  now carries the twelve roots, the two `lake build`s and the no-`sorry` scan. That is a
+  guardrail path, so it needs the owner's hardware-key approval with the other three.
+- **Live, with the bound rules deciding (2026-11-20, 17:38–19:04 UTC):** the full-scale gauntlet
+  on a third throwaway x86 spot VM at `b779afac4`, `cargo xtask links-live` with 10,000 ops and
+  50,000 requests per kind, exit 0, "no item failed". (a) Pass, 10,000/10,000 ops (4,217 done,
+  3,650 refused, 2,133 not found, 8 pods). (b) Pass, 50,000/50,000 linked delivered, 50,000
+  unlinked refused, nothing failed, missing, leaked or undecided. (c) Pass. (d) Pass, 10,000
+  probes, one status (404), one body, Welch t 0.87 (reported). (e1) Pass: link 200, cancel 409,
+  drop receipt seen. (e2) Pass on 1 link, 1 unlink, no row, so the race made a link this time and
+  the non-vacuous branch decided it. (f) Pass, 0 received, seen listening. (g) Pass, 4,223/4,223
+  receipts verified. (e3) and (e4) Recorded, as ruled. The kernel tests (2), the harness tests
+  (11) and clippy were clean on the VM first. Report: 5,442 bytes, SHA-256
+  `c6cd24a3d28ba9d66d4a99ca42bc7ef46f612d82e8b5de18d361ec3dae47f3f5`, kept with the session's
+  reports (not committed: it names pod ids of a deleted VM). The VM ran 17:26–19:06 UTC, about
+  1.7 VM-hours, and was deleted by name and confirmed absent from the instance list. The day's
+  estimate stays under $7 against the $10 ceiling, from list prices as above.
+
 ### Every new test driven red (2026-11-20, commit `b32cf4c91`)
 
 **Claim, and how it is checked.** Each of the 109 tests this branch adds (`#[test]` and
