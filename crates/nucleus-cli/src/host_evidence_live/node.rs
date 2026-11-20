@@ -161,8 +161,11 @@ impl Node {
     /// Start `node_bin` (e.g. the installed `/usr/local/bin/nucleus-node`),
     /// with `extra` arguments appended after the fixture's own.
     pub async fn start_with(node_bin: &Path, nonce: &str, extra: &[String]) -> Result<Self> {
+        // `NUCLEUS_LINKS_KEEP` leaves the node's state and jail for inspection
+        // after a live run (the pods' console logs live there).
         let directory = tempfile::Builder::new()
             .prefix("he")
+            .disable_cleanup(std::env::var_os("NUCLEUS_LINKS_KEEP").is_some())
             .tempdir_in("/var/tmp")?;
         let state = directory.path().join("state");
         std::fs::create_dir(&state)?;

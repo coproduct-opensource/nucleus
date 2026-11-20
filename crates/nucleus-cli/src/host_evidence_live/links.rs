@@ -260,6 +260,7 @@ impl Artifacts {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::Builder::new()
             .prefix("lk")
+            .disable_cleanup(std::env::var_os("NUCLEUS_LINKS_KEEP").is_some())
             .tempdir_in("/var/tmp")?;
         let root = dir.path().to_path_buf();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))?;
@@ -384,6 +385,25 @@ impl Run<'_> {
             .send()
             .await?;
         Ok(r.status().as_u16())
+    }
+
+    /// Unlink every row naming `pod`, then cancel it, so its vCPU is free for
+    /// the next item. Found on the first local rehearsal (2026-11-19): items
+    /// left their pods running, and the fifth item's create met "node capacity
+    /// exhausted: 0 vCPUs" on a 12-vCPU host.
+    async fn retire(&mut self, pod: Uuid) {
+        if let Ok((_, v)) = self.listing(pod).await {
+            for r in v["links"].as_array().cloned().unwrap_or_default() {
+                if let (Some(s), Some(d), Some(port)) =
+                    (r["src"].as_str(), r["dst"].as_str(), r["port"].as_u64())
+                {
+                    if let (Ok(s), Ok(d)) = (Uuid::parse_str(s), Uuid::parse_str(d)) {
+                        let _ = self.unlink(s, d, port as u32).await;
+                    }
+                }
+            }
+        }
+        let _ = self.cancel(pod).await;
     }
 
     async fn keep(&mut self, r: reqwest::Response) -> Result<(u16, String)> {
@@ -621,7 +641,6 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
     let src = run.create("sender", 3600, &args).await?;
     run.wait_running(src).await?;
     let (s1, b1) = run.link(src, dst, 8080).await?;
-    let (s2, b2) = run.link(src, dst, 443).await?;
     ensure!(s1 == 200, "linking sender to 8080: {s1} {b1}");
     let src_events = run.wait_done(src, Duration::from_secs(900)).await;
     let dst_events = run.events(dst).await;
@@ -660,8 +679,9 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
                         refused_ok += 1;
                     }
                 }
-                (443, true) if ok => tls_ok += 1,
-                (443, true) => tls_other += 1,
+                // TLS rides the same link, on its own port (`CONNECT <name>:8080`).
+                (8080, true) if ok => tls_ok += 1,
+                (8080, true) => tls_other += 1,
                 _ => {}
             }
         }
@@ -694,12 +714,8 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
             _ => None,
         })
         .collect();
-    if bind_failed.contains(&443) {
-        notes.push(
-            "the destination could not bind 443: a TLS link lands on the workload's port 443, \
-             which an unprivileged workload cannot listen on (L4b finding)"
-                .into(),
-        );
+    for p in &bind_failed {
+        notes.push(format!("the destination could not bind {p}"));
     }
     let saw_anything = !src_events.is_empty();
     let verdict = if linked_missing + refused_leaked + undecided.len() > 0 {
@@ -725,7 +741,6 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
                 "unlinked_refused": refused_ok, "unlinked_leaked": refused_leaked,
                 "undecided_deliveries": undecided.len(),
                 "tls_answered": tls_ok, "tls_other": tls_other,
-                "tls_link_status": s2, "tls_link_body": b2,
                 "answered_in_host_journal": journalled, "answered_total": answered.len(),
             }),
             notes,
@@ -745,6 +760,7 @@ async fn adversary(run: &mut Run<'_>, dst: Uuid, seed: u64) -> Result<Item> {
     run.wait_running(a).await?;
     let events = run.wait_done(a, Duration::from_secs(600)).await;
     let got = received(&run.events(dst).await);
+    run.retire(a).await;
     let mut notes = Vec::new();
     let mut table = Vec::new();
     let mut fail = false;
@@ -981,26 +997,34 @@ async fn chaos(run: &mut Run<'_>, holder: Uuid, x: Uuid, y: Uuid) -> Result<Vec<
 }
 
 async fn canary(run: &Run<'_>, canary: Uuid) -> Item {
-    let ev = run.events(canary).await;
-    let got = received(&ev);
+    canary_item(&run.events(canary).await)
+}
+
+/// An unlinked pod passes only when it is seen listening and received
+/// nothing. Silence is inconclusive, never a pass: before the probe reported
+/// `listening` (found 2026-11-19), a working canary and a canary whose logs
+/// were never found looked the same.
+fn canary_item(ev: &[Event]) -> Item {
+    let got = received(ev);
+    let listening = ev.iter().any(|e| matches!(e, Event::Listening { .. }));
+    let (verdict, notes) = if !got.is_empty() {
+        (
+            Verdict::Fail,
+            vec![format!("an unlinked pod received {} request(s)", got.len())],
+        )
+    } else if listening {
+        (Verdict::Pass, vec![])
+    } else {
+        (
+            Verdict::Inconclusive,
+            vec!["the canary never reported listening: its logs were not found".into()],
+        )
+    };
     Item {
         name: "f_canary_unlinked_pod",
-        verdict: if !got.is_empty() {
-            Verdict::Fail
-        } else if ev.is_empty() {
-            Verdict::Inconclusive
-        } else {
-            Verdict::Pass
-        },
-        numbers: json!({"received": got.len(), "events": ev.len()}),
-        notes: if ev.is_empty() {
-            vec![
-                "the canary reported nothing (no bind event either): its logs were not found"
-                    .into(),
-            ]
-        } else {
-            vec![]
-        },
+        verdict,
+        numbers: json!({"received": got.len(), "events": ev.len(), "listening": listening}),
+        notes,
     }
 }
 
@@ -1052,6 +1076,16 @@ fn receipts(collected: &[Value], key: Option<[u8; 32]>) -> Item {
     }
 }
 
+/// An item whose setup failed: recorded as a failure, with why.
+fn could_not_run(name: &'static str, e: &anyhow::Error) -> Item {
+    Item {
+        name,
+        verdict: Verdict::Fail,
+        numbers: json!({}),
+        notes: vec![format!("the item could not run: {e:#}")],
+    }
+}
+
 async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<Report> {
     let ops = env_u64("NUCLEUS_LINKS_OPS", 2000);
     let probes = env_u64("NUCLEUS_LINKS_PROBES", 200);
@@ -1073,11 +1107,7 @@ async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<R
         );
     }
     let dst = run
-        .create(
-            "destination",
-            3600,
-            &["serve".into(), "8080".into(), "443".into()],
-        )
+        .create("destination", 3600, &["serve".into(), "8080".into()])
         .await?;
     let canary_pod = run
         .create("canary", 3600, &["serve".into(), "8080".into()])
@@ -1091,17 +1121,32 @@ async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<R
     );
 
     items.push(differential(&mut run, &mut pool, ops, seed).await);
-    let (b, sender) = per_request(&mut run, dst, requests, seed ^ 1).await?;
-    items.push(b);
-    items.push(adversary(&mut run, dst, seed ^ 2).await?);
+    // An item that cannot run is a failed item in the report, never a run
+    // that ends without one.
+    let mut sender = None;
+    match per_request(&mut run, dst, requests, seed ^ 1).await {
+        Ok((b, s)) => {
+            items.push(b);
+            run.retire(s).await;
+            sender = Some(s);
+        }
+        Err(e) => items.push(could_not_run("b_per_request", &e)),
+    }
+    match adversary(&mut run, dst, seed ^ 2).await {
+        Ok(c) => items.push(c),
+        Err(e) => items.push(could_not_run("c_adversary", &e)),
+    }
     items.push(isolation(&mut run, dst, probes).await);
-    items.extend(chaos(&mut run, pool[0], pool[1], pool[pool.len() - 1]).await?);
+    match chaos(&mut run, pool[0], pool[1], pool[pool.len() - 1]).await {
+        Ok(e) => items.extend(e),
+        Err(e) => items.push(could_not_run("e_chaos", &e)),
+    }
     items.push(canary(&run, canary_pod).await);
     let key = executor_key(run.node, bins).await.ok();
     items.push(receipts(&run.receipts, key));
 
     // Unlink everything this run made, so the pods can be cancelled.
-    for p in pool.iter().chain([&dst, &sender]) {
+    for p in pool.iter().chain([&dst]).chain(sender.iter()) {
         if let Ok((_, v)) = run.listing(*p).await {
             for r in v["links"].as_array().cloned().unwrap_or_default() {
                 if let (Some(s), Some(d), Some(port)) =
@@ -1212,6 +1257,28 @@ async fn links_gauntlet() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_canary_passes_only_when_seen_listening_and_untouched() {
+        assert_eq!(
+            canary_item(&[]).verdict,
+            Verdict::Inconclusive,
+            "silence is not a pass"
+        );
+        let listening = Event::Listening { port: 8080 };
+        assert_eq!(
+            canary_item(std::slice::from_ref(&listening)).verdict,
+            Verdict::Pass
+        );
+        let hit = Event::Received {
+            id: "x".into(),
+            method: "GET".into(),
+            path: "/".into(),
+            port: 8080,
+            body_sha256: String::new(),
+        };
+        assert_eq!(canary_item(&[listening, hit]).verdict, Verdict::Fail);
+    }
 
     fn pods(n: usize) -> Vec<Uuid> {
         (0..n).map(|_| Uuid::new_v4()).collect()

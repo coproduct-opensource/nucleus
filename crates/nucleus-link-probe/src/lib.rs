@@ -48,6 +48,11 @@ pub enum Event {
         port: u16,
         body_sha256: String,
     },
+    /// `serve`: a port is bound and listening. Found on the first live run
+    /// (2026-11-19): an unlinked canary that is working correctly reports
+    /// nothing else, which read the same as a canary whose logs were never
+    /// found.
+    Listening { port: u16 },
     /// `serve`: a port could not be bound (for example 443 as an unprivileged
     /// workload).
     BindFailed { port: u16, error: String },
@@ -198,6 +203,15 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn listening_round_trips_through_a_noisy_console() {
+        let line = format!(
+            "[    2.1] [workload] {}",
+            line(&Event::Listening { port: 8080 })
+        );
+        assert_eq!(parse(&line), vec![Event::Listening { port: 8080 }]);
     }
 
     #[test]

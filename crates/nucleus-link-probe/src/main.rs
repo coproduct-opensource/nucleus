@@ -92,7 +92,10 @@ fn serve(args: &[String]) -> Result<(), String> {
     let mut handles = Vec::new();
     for port in ports {
         match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(listener) => handles.push(std::thread::spawn(move || accept(listener, port, slow))),
+            Ok(listener) => {
+                report(&Event::Listening { port });
+                handles.push(std::thread::spawn(move || accept(listener, port, slow)));
+            }
             Err(e) => report(&Event::BindFailed {
                 port,
                 error: e.to_string(),
@@ -184,11 +187,21 @@ fn roots(trusted: Option<&str>) -> Result<rustls::RootCertStore, String> {
 }
 
 /// One request over TLS terminated by the link proxy (ADR 0015 E3): CONNECT,
-/// then the handshake trusting `store`, then the request in the tunnel.
-fn tls(proxy: &str, host: &str, id: &str, store: rustls::RootCertStore) -> Result<u16, String> {
+/// then the handshake trusting `store`, then the request in the tunnel. The
+/// link's own port, not 443: an unprivileged workload cannot bind 443 (found
+/// on the first x86 live run).
+fn tls(
+    proxy: &str,
+    host: &str,
+    port: u32,
+    id: &str,
+    store: rustls::RootCertStore,
+) -> Result<u16, String> {
     let mut tcp = connect(proxy).map_err(|e| format!("connect: {e}"))?;
-    tcp.write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").as_bytes())
-        .map_err(|e| e.to_string())?;
+    tcp.write_all(
+        format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n").as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
     let (head, _) = read_head(&mut tcp).map_err(|e| e.to_string())?;
     match status_of(&head) {
         Some(200) => {}
@@ -207,7 +220,7 @@ fn tls(proxy: &str, host: &str, id: &str, store: rustls::RootCertStore) -> Resul
     let conn = rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| e.to_string())?;
     let mut stream = rustls::StreamOwned::new(conn, tcp);
     let req = format!(
-        "GET /r/{id} HTTP/1.1\r\nHost: {host}\r\n{ID_HEADER}: {id}\r\nConnection: close\r\n\r\n"
+        "GET /r/{id} HTTP/1.1\r\nHost: {host}:{port}\r\n{ID_HEADER}: {id}\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(req.as_bytes())
@@ -274,8 +287,8 @@ fn send(args: &[String]) -> Result<(), String> {
         }
         if with_tls {
             let id = request_id(seed, "tls", i);
-            let r = roots(trusted.as_deref()).and_then(|s| tls(&proxy, &host, &id, s));
-            record(id, 443, true, r);
+            let r = roots(trusted.as_deref()).and_then(|s| tls(&proxy, &host, port, &id, s));
+            record(id, port, true, r);
         }
         std::thread::sleep(gap);
     }
@@ -413,7 +426,7 @@ fn adversary(args: &[String]) -> Result<(), String> {
 
     // TLS trusting no root the proxy can satisfy (a foreign CA).
     let tid = id("foreign-ca");
-    let r = tls(&proxy, &host, &tid, rustls::RootCertStore::empty());
+    let r = tls(&proxy, &host, 8080, &tid, rustls::RootCertStore::empty());
     attempt("tls_foreign_ca", by_status(&r), format!("{r:?}"), Some(tid));
 
     // More connections than the relay's per-pod cap (64).
