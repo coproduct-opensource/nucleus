@@ -355,10 +355,13 @@ async fn list_links(
 /// (`may_cancel`, `cancel_refuses_linked`). The table lock is held across the
 /// teardown, so no link is made in between.
 ///
-/// The check, the teardown and the forget run in one detached task, as
-/// `PodHandle::cancel_detached` does for an unlinked node: a caller that drops
-/// the request mid-teardown neither strands the pod's capacity nor releases the
-/// table lock while the pod is half torn down.
+/// The check, the teardown and the forget run in one task of their own. A
+/// client that stops waiting drops its handler's future; awaited inline,
+/// teardown was abandoned after resources were taken and before the VMM kill,
+/// its last step, so the VMM and the pod's capacity were held until the
+/// execution deadline (stage node, 2026-10-13;
+/// `a_dropped_cancel_request_still_returns_node_capacity`). Detached, a dropped
+/// request also cannot release the table lock while the pod is half torn down.
 pub(crate) async fn cancel_unlinked(
     state: &NodeState,
     pod: &Arc<PodHandle>,

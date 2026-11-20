@@ -1426,8 +1426,7 @@ mod tests {
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
                 GuestCapability::HostApprovalRedeem => GuestCapability::PodLinkRelay,
                 GuestCapability::PodLinkRelay => GuestCapability::EgressProxyTrust,
-                GuestCapability::EgressProxyTrust => GuestCapability::CaBundle,
-                GuestCapability::HostApprovalRedeem => GuestCapability::SignedArt12Log,
+                GuestCapability::EgressProxyTrust => GuestCapability::SignedArt12Log,
                 GuestCapability::SignedArt12Log => GuestCapability::ContainerBrokerSocket,
                 GuestCapability::ContainerBrokerSocket => {
                     GuestCapability::CanonicalManifestApproval

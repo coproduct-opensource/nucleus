@@ -1422,7 +1422,7 @@ pub(crate) mod handler_tests {
         let pod = st.pods.lock().await.get(&id).unwrap().clone();
         *pod.capacity.lock().await = Some(st.node_capacity.reserve(&pod.spec).unwrap());
         let held = pod.capacity.lock().await;
-        let request = pod.clone().cancel_detached();
+        let request = crate::pod_links::cancel_unlinked(&st, &pod);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), request)
                 .await
