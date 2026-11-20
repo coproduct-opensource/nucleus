@@ -91,6 +91,8 @@ inductive Effect where
   | connect (c : Conn)
   /-- One request over a connection, with the host's decision. -/
   | request (c : Conn) (v : Nat)
+  /-- A connection ended. -/
+  | close (c : Conn)
   | cancel (p : PodId)
   /-- A link dropped because a pod exited on its own. -/
   | drop (l : Link)
@@ -113,6 +115,10 @@ inductive Op where
       before the relay delivers a byte (owner decision 2026-11-19: links are
       per-request, so eval cells keep ADR 0015's promise). -/
   | request (c : Conn) (v : Nat)
+  /-- A connection ends: the workload closed it, or its single request was
+      answered (ADR 0015 is one request per connection). Without this step the
+      table only grows (found 2026-11-19, `9c8ed39b0`). -/
+  | close (c : Conn)
   | cancel (caller : Scope) (p : PodId)
   /-- Environment: the pod exited without being asked to. -/
   | exit (p : PodId)
@@ -143,6 +149,10 @@ def step (n : Node) : Op → Node × List Receipt
       ({ n with inbox := fun q => if q = c.link.dst then n.inbox q ++ [v] else n.inbox q },
        [⟨.request c v, true⟩])
     else (n, [⟨.request c v, false⟩])
+  | .close c =>
+    if n.conns.contains c then
+      ({ n with conns := n.conns.filter (· != c) }, [⟨.close c, true⟩])
+    else (n, [⟨.close c, false⟩])
   | .cancel s p =>
     if manages s n p && !n.links.any (names p) then
       ({ n with pods := removePod n.pods p }, [⟨.cancel p, true⟩])
@@ -235,6 +245,11 @@ theorem step_inv {n : Node} (op : Op) (h : Inv n) : Inv (step n op).1 := by
   | request c v =>
     simp only [step]
     split <;> exact ⟨hc, hl⟩
+  | close c =>
+    simp only [step]
+    split
+    · refine ⟨fun d hd => hc d (List.mem_filter.mp hd).1, hl⟩
+    · exact ⟨hc, hl⟩
   | cancel s p =>
     simp only [step]
     split
@@ -314,6 +329,43 @@ theorem exit_drops_links (n : Node) (p : PodId) :
 
 /-! ## Receipts determine the table -/
 
+/-- A close leaves exactly the other connections. -/
+theorem close_conns (n : Node) (c : Conn) :
+    (step n (.close c)).1.conns = n.conns.filter (· != c) := by
+  simp only [step]
+  split
+  · rfl
+  · rename_i h
+    have hn : c ∉ n.conns := fun hm => h (List.contains_iff_mem.mpr hm)
+    exact (List.filter_eq_self.mpr (fun d hd => by
+      have : d ≠ c := fun e => hn (e ▸ hd)
+      simpa using this)).symm
+
+/-- After a close, the connection is gone. -/
+theorem close_removes (n : Node) (c : Conn) : c ∉ (step n (.close c)).1.conns := by
+  rw [close_conns]
+  intro h
+  simp at h
+
+/-- Bounded: a connection that is opened, carries its one request, and is closed
+    leaves the table no larger than before it was opened — so a long-lived link
+    carrying many requests does not grow the table. -/
+theorem connect_request_close_bounded (n : Node) (i v : Nat) (l : Link) :
+    let n₁ := (step n (.connect i l)).1
+    let n₂ := (step n₁ (.request ⟨i, l⟩ v)).1
+    (step n₂ (.close ⟨i, l⟩)).1.conns.length ≤ n.conns.length := by
+  intro n₁ n₂
+  rw [close_conns]
+  have h₂ : n₂.conns = n₁.conns := by
+    show (step n₁ (.request ⟨i, l⟩ v)).1.conns = n₁.conns
+    simp only [step]; split <;> rfl
+  rw [h₂]
+  have h₁ : n₁.conns.filter (· != ⟨i, l⟩) = n.conns.filter (· != ⟨i, l⟩) := by
+    show (step n (.connect i l)).1.conns.filter _ = _
+    simp only [step]; split <;> simp
+  rw [h₁]
+  exact List.length_filter_le _ _
+
 /-- Replay what the receipts say happened to the link table. -/
 def replay (ls : List Link) : List Receipt → List Link
   | [] => ls
@@ -354,6 +406,7 @@ theorem receipts_replay_links (n : Node) (op : Op) :
   | unlink s l => simp only [step]; split <;> simp [replay]
   | connect i l => simp only [step]; split <;> simp [replay]
   | request c v => simp only [step]; split <;> simp [replay]
+  | close c => simp only [step]; split <;> simp [replay]
   | cancel s p => simp only [step]; split <;> simp [replay]
   | exit p =>
     simp only [step]

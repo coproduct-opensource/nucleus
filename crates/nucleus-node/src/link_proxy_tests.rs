@@ -411,3 +411,20 @@ async fn the_ca_arrives_on_the_channel_and_tls_admits_only_announced_links() {
         "a link proxy terminates link names only"
     );
 }
+
+/// `connect_request_close_bounded`, on the node: every request over a link is
+/// recorded as connect, request and close, so a link that carries many
+/// requests leaves no connection open in the table. Before `close`, each one
+/// stayed (found 2026-11-19, `9c8ed39b0`).
+#[tokio::test]
+async fn many_requests_over_a_link_leave_no_connection_open() {
+    let mut r = rig(false).await;
+    assert_eq!(link(&r, 8080).await, StatusCode::OK);
+    proxy_sees(&r, true).await;
+    for _ in 0..20 {
+        let (served, out) = send(&r, get(&r, 8080)).await;
+        assert_eq!(served, Served::Forwarded, "{out}");
+        let _ = r.dst.seen.recv().await.unwrap();
+    }
+    assert_eq!(r.st.links.lock().await.open_conns(), 0);
+}

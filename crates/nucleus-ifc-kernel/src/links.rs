@@ -47,6 +47,8 @@ pub enum Effect {
     Connect(Conn),
     /// One request over a connection, with the host's decision applied.
     Request(Conn),
+    /// A connection ended.
+    Close(Conn),
     Cancel(PodId),
     /// A link dropped because a pod exited without being asked to.
     Drop(Link),
@@ -200,6 +202,18 @@ impl LinkTable {
         }
     }
 
+    /// `step (.close c)`: the connection ended (closed by the workload, or its
+    /// single request answered). It leaves every other connection; without it the
+    /// table only grows.
+    pub fn close(&mut self, conn: Conn) -> Receipt {
+        if self.conns.contains(&conn) {
+            self.conns.retain(|c| *c != conn);
+            Receipt::done(Effect::Close(conn))
+        } else {
+            Receipt::refused(Effect::Close(conn))
+        }
+    }
+
     /// `step (.cancel s p)`: refused while a link names the pod.
     pub fn cancel(&mut self, scope: &Scope, pod: PodId) -> Receipt {
         let linked = self.links.iter().any(|l| names(*l, pod));
@@ -348,8 +362,30 @@ mod tests {
         assert!(t.invariant_holds());
     }
 
+    /// `close_removes` and `connect_request_close_bounded`: a connection that
+    /// carries its one request and is closed leaves no trace, so many requests
+    /// over one link leave the table no larger.
+    #[test]
+    fn close_removes() {
+        let mut t = demo();
+        t.link(&Scope::NodeWide, l12());
+        for id in 0..100 {
+            t.connect(id, l12());
+            let c = Conn { id, link: l12() };
+            assert_eq!(t.request(c, true).outcome, Outcome::Done);
+            assert_eq!(t.close(c), Receipt::done(Effect::Close(c)));
+            assert!(!t.conns().contains(&c));
+        }
+        assert!(t.conns().is_empty());
+        assert_eq!(
+            t.close(Conn { id: 7, link: l12() }).outcome,
+            Outcome::Refused,
+            "closing what is not open is refused"
+        );
+    }
+
     fn op() -> impl Strategy<Value = (u8, u128, u128, u32, u64)> {
-        (0u8..6, 1u128..5, 1u128..5, 79u32..82, 0u64..4)
+        (0u8..7, 1u128..5, 1u128..5, 79u32..82, 0u64..4)
     }
 
     proptest! {
@@ -367,6 +403,7 @@ mod tests {
                     2 => { t.connect(id, link); }
                     3 => { t.cancel(&scope, a); }
                     4 => { t.exit(a); }
+                    5 => { t.close(Conn { id, link }); }
                     _ => { t.request(Conn { id, link }, true); }
                 }
                 prop_assert!(t.invariant_holds());

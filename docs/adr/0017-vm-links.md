@@ -515,6 +515,14 @@ different upstream (`crates/nucleus-egress-proxy/src/link.rs`).
 - **Found:** the table records one connection per request and has no `close`, so `conns` grows
   with every request on a long-lived link until unlink or exit clears it. The Lean model has no
   close transition either; adding one is a model change first.
+  **Fixed (2026-11-19), model first:** `LinkTable.lean` gained `Op.close` with `close_conns`,
+  `close_removes` and `connect_request_close_bounded` (a connection opened, given its one
+  request and closed leaves the table no larger), `step_inv` and `receipts_replay_links` still
+  hold (core Lean, `propext` and `Quot.sound` only), and `LinkTableExtracted` still builds.
+  `links.rs` gained `LinkTable::close` (in the `step_inv` proptest mix; `close_removes` test),
+  and the node closes each connection once its request is decided
+  (`pod_links::Links::record_request`). `many_requests_over_a_link_leave_no_connection_open`
+  sends 20 requests over one link and finds none open; with the close removed it found 20.
 
 ## Consequences
 

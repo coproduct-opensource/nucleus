@@ -77,12 +77,25 @@ impl Links {
 
     /// Record one request the link proxy asked about: a connection on the row
     /// (`LinkTable::connect`), then the request with the host's answer
-    /// (`LinkTable::request`). The table's own predicates decide both.
+    /// (`LinkTable::request`), then its close (`LinkTable::close`). The table's own
+    /// predicates decide all three.
     pub(crate) fn record_request(&mut self, id: u64, row: Link, admitted: bool) {
         let connected = self.table.connect(id, row);
         if connected.outcome == Outcome::Done {
-            let _ = self.table.request(Conn { id, link: row }, admitted);
+            let conn = Conn { id, link: row };
+            let _ = self.table.request(conn, admitted);
+            // One request per connection (ADR 0015): once it is decided the
+            // connection is over (`LinkTable.close`), so the table stays bounded
+            // however many requests a link carries
+            // (`connect_request_close_bounded`).
+            let _ = self.table.close(conn);
         }
+    }
+
+    /// How many connections the table holds open.
+    #[cfg(test)]
+    pub(crate) fn open_conns(&self) -> usize {
+        self.table.conns().len()
     }
 
     /// Write `LINK` for `row` to its source's relay, naming the destination's
@@ -180,7 +193,7 @@ fn body(effect: &Effect, exited: Option<Uuid>) -> Option<(Uuid, serde_json::Valu
             "drop-on-exit",
             serde_json::json!({ "exited": exited.map(|e| e.to_string()) }),
         )),
-        Effect::Connect(_) | Effect::Request(_) | Effect::Cancel(_) => None,
+        Effect::Connect(_) | Effect::Request(_) | Effect::Close(_) | Effect::Cancel(_) => None,
     }
 }
 
