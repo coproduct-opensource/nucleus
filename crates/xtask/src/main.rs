@@ -78,6 +78,26 @@ enum Command {
         #[arg(long)]
         sudo: bool,
     },
+    /// ADR 0017's links gauntlet on a real Firecracker node: differential conformance against
+    /// the in-process `LinkTable`, per-request decisions, an adversary, isolation, chaos, a
+    /// canary and offline receipt verification; writes a JSON report. Linux/KVM only. Knobs:
+    /// `NUCLEUS_LINKS_{OPS,PROBES,REQUESTS,PODS,SEED,REPORT}`.
+    LinksLive {
+        #[arg(long)]
+        bin_dir: std::path::PathBuf,
+        /// The guest kernel to boot.
+        #[arg(long)]
+        kernel: std::path::PathBuf,
+        /// A rootfs with `nucleus-link-probe` in it (from `gauntlet-host-setup`).
+        #[arg(long)]
+        rootfs: std::path::PathBuf,
+        /// Run the compiled integration as root through sudo.
+        #[arg(long)]
+        sudo: bool,
+    },
+    /// Prepare a fresh Linux KVM host for `links-live`: check KVM and vsock, build the musl
+    /// binaries and the link-probe rootfs, run `nucleus setup`, and stage everything.
+    GauntletHostSetup(gauntlet_host_setup::Args),
     /// Boot a real pod on a fresh node and write a verified evidence bundle:
     /// receipt, logs, artifact, host effects, posture and timings, checked by
     /// the public verifiers (Rust, JS, Python) against each other and against
@@ -659,6 +679,7 @@ mod gate_budget;
 mod gate_defs;
 mod gatehouse_pin;
 mod gates_can_fail;
+mod gauntlet_host_setup;
 mod guest_kernel_mirror;
 mod guest_layer;
 mod host_decide_agreement;
@@ -723,6 +744,18 @@ fn main() -> Result<()> {
             sudo,
             host_evidence_live::Live::CrossPod { kernel, rootfs },
         ),
+        Command::LinksLive {
+            bin_dir,
+            kernel,
+            rootfs,
+            sudo,
+        } => host_evidence_live::run_live(
+            &repo_root()?,
+            &bin_dir,
+            sudo,
+            host_evidence_live::Live::Links { kernel, rootfs },
+        ),
+        Command::GauntletHostSetup(args) => gauntlet_host_setup::run_setup(&repo_root()?, &args),
         Command::LiveBootEvidence(args) => live_boot_evidence::run(&repo_root()?, &args),
         Command::EscapeLane(args) => escape_lane::run(&repo_root()?, &args),
         Command::Scripts => scripts(),

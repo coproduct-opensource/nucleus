@@ -20,6 +20,14 @@ pub enum Live {
         /// `ci-podlist-probe`.
         rootfs: std::path::PathBuf,
     },
+    /// `links-live`: ADR 0017's gauntlet. Pods linked on one node, differentially checked
+    /// against the in-process `LinkTable`, attacked, raced and restarted; one JSON report.
+    Links {
+        /// The guest kernel to boot.
+        kernel: std::path::PathBuf,
+        /// A rootfs with `nucleus-link-probe` at `/usr/local/bin` (`gauntlet-host-setup`).
+        rootfs: std::path::PathBuf,
+    },
 }
 
 impl Live {
@@ -32,6 +40,7 @@ impl Live {
             Live::CrossPod { .. } => {
                 "host_evidence_live::cross_pod::two_pods_each_see_only_their_own_lineage"
             }
+            Live::Links { .. } => "host_evidence_live::links::links_gauntlet",
         }
     }
     fn passed(&self) -> &'static str {
@@ -45,6 +54,9 @@ impl Live {
             Live::CrossPod { .. } => {
                 "cross-pod-live: CONTAINED: on one node, A's vsock POD_LIST served {A, its child C} and B's served {B}; each root was served its own id, and both views are strict subsets of the operator's"
             }
+            Live::Links { .. } => {
+                "links-live: no item failed; every verdict and number is in the JSON report"
+            }
         }
     }
     /// The binaries this integration runs from `--bin-dir`.
@@ -54,6 +66,21 @@ impl Live {
                 &["nucleus-node", "nucleus-hostctl", "nucleus-audit"]
             }
             Live::CrossPod { .. } => &["nucleus-node"],
+            Live::Links { .. } => &["nucleus-node", "nucleus-egress-proxy", "nucleus-hostctl"],
+        }
+    }
+    /// Knobs copied from this process's environment to the test, when set.
+    fn knobs(&self) -> &'static [&'static str] {
+        match self {
+            Live::Links { .. } => &[
+                "NUCLEUS_LINKS_OPS",
+                "NUCLEUS_LINKS_PROBES",
+                "NUCLEUS_LINKS_REQUESTS",
+                "NUCLEUS_LINKS_PODS",
+                "NUCLEUS_LINKS_SEED",
+                "NUCLEUS_LINKS_REPORT",
+            ],
+            _ => &[],
         }
     }
     /// Inputs passed to the test by environment.
@@ -63,6 +90,10 @@ impl Live {
             Live::CrossPod { kernel, rootfs } => vec![
                 ("NUCLEUS_CROSS_POD_KERNEL", kernel.as_path()),
                 ("NUCLEUS_CROSS_POD_ROOTFS", rootfs.as_path()),
+            ],
+            Live::Links { kernel, rootfs } => vec![
+                ("NUCLEUS_LINKS_KERNEL", kernel.as_path()),
+                ("NUCLEUS_LINKS_ROOTFS", rootfs.as_path()),
             ],
         }
     }
@@ -115,6 +146,11 @@ pub fn run_live(root: &Path, bins: &Path, sudo: bool, live: Live) -> Result<()> 
     for (key, path) in live.env() {
         let path = path.canonicalize().with_context(|| key.to_string())?;
         command.arg(format!("{key}={}", path.display()));
+    }
+    for key in live.knobs() {
+        if let Ok(value) = std::env::var(key) {
+            command.arg(format!("{key}={value}"));
+        }
     }
     command
         .arg(&test)

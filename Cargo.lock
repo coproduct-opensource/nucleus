@@ -6740,8 +6740,10 @@ dependencies = [
  "nucleus-envelope",
  "nucleus-federation",
  "nucleus-identity",
+ "nucleus-ifc-kernel",
  "nucleus-jsonl",
  "nucleus-lineage",
+ "nucleus-link-probe",
  "nucleus-node-binding",
  "nucleus-oci-rootfs",
  "nucleus-proto",
@@ -7230,6 +7232,18 @@ dependencies = [
  "ureq",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "nucleus-link-probe"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "vsock",
 ]
 
 [[package]]

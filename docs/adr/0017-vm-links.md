@@ -524,6 +524,40 @@ different upstream (`crates/nucleus-egress-proxy/src/link.rs`).
   (`pod_links::Links::record_request`). `many_requests_over_a_link_leave_no_connection_open`
   sends 20 requests over one link and finds none open; with the close removed it found 20.
 
+**The gauntlet (2026-11-19): written, not yet run.** L4 is not claimed working until it passes
+on a real KVM host. The pieces:
+
+- `crates/nucleus-link-probe`, the in-guest workload, laid into the rootfs by `OVERLAY_DIR`
+  (no shell change): `serve <port>…` logs every request it receives; `send` sends n requests
+  over a link, n to an unlinked port and n over TLS; `adversary` tries raw `AF_VSOCK` (to the
+  host's 1030 and 1029 and other CIDs' 1031), a forged link name, CL/TE smuggling, a pipelined
+  second request, `Upgrade`, a non-TLS `CONNECT`, TLS trusting a foreign CA, and 80 connections
+  against the cap of 64. It reports sentinel lines; it decides nothing.
+- `nucleus-cli` `host_evidence_live::links::links_gauntlet`, run by `cargo xtask links-live`, on
+  a node started with `--egress-proxy-bin`. Its items and their verdicts:
+  (a) differential conformance: N random link, unlink and cancel operations (default 2,000;
+  `NUCLEUS_LINKS_OPS`) on 8 pods, each applied to the in-process `LinkTable` and to the live
+  API, every answer compared, the first divergence a failure, each successful cancel replaced
+  by a new pod; (b) every answered request reached the destination, no request to the unlinked
+  port did, and nothing reached it unanswered, with answered ids looked up in the sender's
+  host-effect journal; (c) no adversary attempt reached a socket or the destination; (d) an
+  unknown pod at either end gets one identical 404, timings reported as Welch's t, not judged;
+  (e) a linked pod's cancel is 409 and its reaper timeout leaves a drop receipt, 64 raced
+  link/unlink pairs leave the row consistent with the 200s, an unlink mid-request and a node
+  restart are recorded; (f) a pod nobody links receives nothing; (g) every collected receipt
+  verifies with the executor public key alone. A JSON report holds every number; the run fails
+  only on a `fail` item.
+- `cargo xtask gauntlet-host-setup` prepares a fresh host: KVM and vsock, the musl build
+  (with `nucleus-egress-proxy` and the probe), `build-rootfs.sh` with the probe overlay,
+  `nucleus setup --artifacts local`, and the staged kernel, rootfs and binaries.
+- **Not covered, and why:** links across trust domains (the harness mints only node-local
+  identities; a second trust domain needs a federation enrolment it does not do); eval cells
+  (they need an attested node: a vTPM AK pin and reference manifest, `docs/findings/
+  attested-node-live-run.md`); 10,000 operations and 50,000 requests are knobs, not defaults;
+  latency and throughput are not measured. A TLS link lands on the destination workload's
+  port 443, which an unprivileged workload cannot bind; (b) records it if the destination
+  reports the bind failure.
+
 ## Consequences
 
 - Accepting this record changes no pod's behaviour. Until L4, no link can exist.

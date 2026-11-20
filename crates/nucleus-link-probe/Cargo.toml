@@ -1,0 +1,28 @@
+[package]
+name = "nucleus-link-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "In-guest workload for the ADR 0017 links gauntlet: serves, sends over, and attacks pod links, and reports what it saw as sentinel lines"
+repository = "https://github.com/coproduct-opensource/nucleus"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nucleus-link-probe"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+# TLS over a link (ADR 0015 E3): trusts only the bundle guest-init installed.
+rustls = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The adversary's raw AF_VSOCK attempts; the workload's seccomp should refuse them.
+vsock = "0.5"

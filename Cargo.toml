@@ -29,6 +29,7 @@ members = [
     "crates/nucleus-egress-probe", # in-guest egress-confinement probe (C6 phase 2 backstop)
     "crates/nucleus-adversary-probe", # in-guest ACTIVE attacker: proves the pod contains a live adversary
     "crates/nucleus-podlist-probe", # in-guest cross-pod-listing probe (C2 G4)
+    "crates/nucleus-link-probe", # in-guest workload for the ADR 0017 links gauntlet
     "crates/nucleus-mcp", # MCP server bridging Claude to tool-proxy
     "crates/nucleus-audit", # Audit log verifier CLI
     "crates/nucleus-ifc",      # Standalone IFC library for AI agents
