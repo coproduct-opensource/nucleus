@@ -583,3 +583,78 @@ fn a_ca_without_the_link_subtree_is_refused_for_link_mode() {
     let links = Arc::new(Links::default());
     assert!(crate::link::termination(ca, RootCertStore::empty(), now_unix, &links).is_err());
 }
+
+/// TLS over a link on any port: `CONNECT <name>:<port>` is link row `<port>`,
+/// and the leaf is still for `<name>`. Found on the first x86 live run
+/// (2026-11-19): the probe dialled `:443`, so a TLS link landed on the
+/// destination workload's port 443, which an unprivileged workload cannot bind.
+/// Only the 8080 row is announced here, so a proxy that sent TLS to 443 would
+/// find no route.
+#[tokio::test]
+async fn tls_over_a_link_uses_the_connect_port() {
+    let name = link_name(dst());
+    let (cert, key) = test_ca::mint(&[LINK_SUBTREE], FAR);
+    let ca = PodCa::from_bundle(&PodCa::to_bundle(&cert, &key)).unwrap();
+    let (proxy_end, node_end) = UnixStream::pair().unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    node(node_end, None, Arc::clone(&asked));
+    let links = Arc::new(Links::default());
+    let termination =
+        crate::link::termination(ca, RootCertStore::empty(), now_unix, &links).unwrap();
+    let proxy = Arc::new(
+        Proxy::link(
+            SharedDecider::new(proxy_end, Duration::from_secs(2)),
+            Arc::clone(&links),
+        )
+        .with_tls(termination),
+    );
+    let mut d = dst_mux(Answer::Whole);
+    links.apply(Control::Link(
+        LinkTarget {
+            dst: dst(),
+            port: 8080,
+        },
+        Route {
+            uds: d.path.clone(),
+            guest_port: GUEST_PORT,
+        },
+    ));
+
+    let (mut g, p) = tokio::io::duplex(1 << 20);
+    let served = tokio::spawn({
+        let proxy = Arc::clone(&proxy);
+        async move { proxy.connection(p).await }
+    });
+    g.write_all(format!("CONNECT {name}:8080 HTTP/1.1\r\nHost: {name}:8080\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut established = [0u8; 39];
+    g.read_exact(&mut established).await.unwrap();
+    let mut roots = RootCertStore::empty();
+    roots.add(CertificateDer::from(cert.clone())).unwrap();
+    let mut config =
+        rustls::ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let mut tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from(name.clone()).unwrap(), g)
+        .await
+        .unwrap();
+    tls.write_all(format!("GET /v1/x HTTP/1.1\r\nHost: {name}:8080\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    let _ = tls.read_to_end(&mut out).await;
+    let out = String::from_utf8_lossy(&out).into_owned();
+    assert!(out.ends_with("hi"), "{out}");
+    assert_eq!(served.await.unwrap(), Served::Forwarded);
+    let seen = d.seen.recv().await.unwrap();
+    assert_eq!(
+        seen.preamble, "PORT 8080",
+        "the CONNECT port is the link port"
+    );
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
