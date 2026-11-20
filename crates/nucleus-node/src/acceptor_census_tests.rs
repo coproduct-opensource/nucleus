@@ -182,6 +182,15 @@ const SITES: &[Site] = &[
         why: "federation ingress and the public evidence listener: with_no_client_auth",
     },
     Site {
+        file: "crates/nucleus-egress-proxy/src/tls.rs",
+        needle: "ServerConfig::builder",
+        count: 1,
+        gate: Gate::ServerAuthOnly,
+        why: "the egress proxy terminating its own pod's outbound TLS (ADR 0015 E3): with_no_client_auth, \
+              leaves minted under the pod CA; authority is the node's per-handshake tls_verdict over the \
+              decision channel, never a client certificate",
+    },
+    Site {
         file: "crates/nucleus-node/src/tls_ingress.rs",
         needle: "TlsAcceptor::from",
         count: 1,
