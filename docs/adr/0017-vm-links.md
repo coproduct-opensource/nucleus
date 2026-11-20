@@ -67,6 +67,38 @@ routed through the public internet.
 This record adds that one effect, and keeps C2's guarantee for every pair of pods that is not
 linked.
 
+### Use cases (surveyed 2026-11-19)
+
+Isolating one untrusted workload in a microVM is now the common baseline for running code an
+agent wrote. What a single sandbox cannot express is the policy *between* workloads: which may
+talk to which, over what, holding which credentials. That is the gap a link closes, and where a
+plan admitted by a decided predicate (`mustReach` / `mustNotReach`) says more than a sandbox
+configuration can. Ordered by how much the link and its per-request decision add:
+
+| use case | what a link adds | the theorem it leans on |
+|---|---|---|
+| **Multi-agent pipelines** (planner, coder, reviewer, executor) | the pod that reads untrusted content is proved unable to reach the pod holding private data or credentials, so no single path assembles untrusted input, private data and a way out | `noninterference_unlinked`, plus the plan's `mustNotReach` claim decided at admission |
+| **Tool servers in their own pods** (one per tool, reached by the agent only over a link) | a tool whose self-description overstates its scope still gets only the requests the host admits; its egress is its own pod's, decided per request; credentials stay host-side (ADR 0015) | `request_is_a_decision`, `connect_only_along_links` |
+| **Agent code execution** (one sandbox per task) | mostly the existing isolation; links matter once a task needs a helper service (a database, a build cache) without public egress | `step_inv` |
+| **Two-party data processing** (each party's workload in its own pod, joined by one decided channel) | "party A's raw data never reaches party B's pod" is a reachability claim admitted before boot, and the receipts are an audit trail anyone verifies offline | `noninterference_unlinked`, `receipts_replay_links` |
+| **Evaluation and red-teaming** (eval cells, ADR 0013) | an evaluated model can be given a tool pod and nothing else, with every request it sends decided and journalled | `request_is_a_decision`, `untrusting_client_refused` |
+| **CI for untrusted changes** | build steps that need a service pod get one link, not a network | `no_cross_tenant_link` |
+| **Untrusted checkers between parties who distrust each other** (a buyer's and a seller's checker) | each runs in its own pod; the exchange between them is the only channel and is receipted | `receipts_replay_links` |
+
+Where a link adds little: a single sandbox with no network and no secrets (plain isolation
+suffices, and a per-request decision only adds latency), and throughput-bound or accelerator
+work, where a relay per request is the wrong shape.
+
+Two measurements decide whether the first three rows are practical, and neither is taken yet
+(§9): pod creation, measured at about 3 s today (`docs/agency-frontier.md`) against
+sub-second starts common for agent sandboxes, which the not-yet-started snapshot warm pool
+(`docs/production-delta.md`) addresses; and the relay's added latency per request.
+
+Background reading for the survey: the Confidential Computing Consortium's workload
+governance paper (attestation alone does not meet a workload's own control objectives) and
+the CNCF's confidential-containers admission write-up (the control plane is untrusted, so the
+runtime checks pod specs), both 2025–2026.
+
 ## Decision
 
 ### 1. The path: a host relay over vsock, never a route between namespaces
