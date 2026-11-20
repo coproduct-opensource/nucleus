@@ -120,6 +120,7 @@ impl Links {
         let path = src.pod_dir.join(format!("lf-{}.sock", self.next_forwarder));
         let forwarder = match crate::link_proxy::Forwarder::start(
             path,
+            &src.vsock,
             dst.vsock.clone(),
             src.run_as,
         ) {

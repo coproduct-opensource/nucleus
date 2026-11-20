@@ -484,3 +484,23 @@ async fn the_proxy_dials_the_nodes_forwarder_never_the_destination_jail() {
     proxy_sees(&r, false).await;
     assert!(!route.uds.exists(), "unlinking removes the forwarder");
 }
+
+/// A forwarder socket of the `{vsock}_{port}` form would be one a guest can
+/// connect to; `Forwarder::start` refuses it before binding.
+#[tokio::test]
+async fn a_forwarder_path_under_the_vsock_prefix_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let vsock = dir.path().join("vsock.sock");
+    let guest_reachable = dir.path().join("vsock.sock_1030");
+    let refused = crate::link_proxy::Forwarder::start(
+        guest_reachable.clone(),
+        &vsock,
+        dir.path().join("dst.sock"),
+        (u32::MAX, u32::MAX),
+    );
+    assert!(
+        refused.is_err(),
+        "a guest-reachable forwarder path was accepted"
+    );
+    assert!(!guest_reachable.exists(), "nothing was bound");
+}

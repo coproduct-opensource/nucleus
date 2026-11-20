@@ -133,9 +133,18 @@ impl Forwarder {
     /// The bind, chown or chmod failed.
     pub(crate) fn start(
         path: PathBuf,
+        src_vsock: &Path,
         dst_vsock: PathBuf,
         run_as: (u32, u32),
     ) -> Result<Self, String> {
+        // Never a path a guest can reach: Firecracker routes the source guest's
+        // connect to `{vsock}_{port}`; this socket is the node's and the proxy's.
+        if path
+            .to_string_lossy()
+            .starts_with(src_vsock.to_string_lossy().as_ref())
+        {
+            return Err("link forwarder socket would share the vsock path's prefix".into());
+        }
         let _ = std::fs::remove_file(&path);
         let listener = tokio::net::UnixListener::bind(&path)
             .map_err(|e| format!("link forwarder socket: {e}"))?;
