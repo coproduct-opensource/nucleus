@@ -1,0 +1,23 @@
+[package]
+name = "nucleus-weight-patch"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "A change to a tensor checkpoint as a replayable program: a digest per tensor, a declarative patch applied bit-identically on every platform, and the set of tensors actually written measured from the bytes rather than taken from whoever proposed the change."
+publish = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

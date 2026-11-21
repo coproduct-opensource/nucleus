@@ -276,9 +276,11 @@ population_floor = 278
 # 2026-10-26 (generation certificates): nucleus-generation verifies a chain of releases
 # from bytes any relying party is handed and declares all seven from its first commit; a
 # verifier that panics on a crafted certificate is one an attacker can stop. 44 of 101 = 43.56%.
-floor_bp = 4356
+# 2026-11-20: nucleus-weight-patch, the measured half of a weight-patch release (ADR 0018),
+# denies all seven totality lints from its first commit. 45 of 102 = 44.11%.
+floor_bp = 4411
 floor_set = "measurement"
-population_floor = 101
+population_floor = 102
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

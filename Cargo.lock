@@ -7105,6 +7105,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-weight-patch"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "nucleus-witness"
 version = "1.0.0"
 dependencies = [

@@ -43,6 +43,7 @@ members = [
     "crates/nucleus-authority-exchange", # truthful VCG clearing of one contended authority slot, with a recomputable receipt
     "crates/nucleus-blast-radius",       # the bound on an agent's authority, projected from a VERIFIED cert chain into underwriter terms; derived, never declared
     "crates/nucleus-calibration",        # recomputable Brier/ECE receipts with the noise floor beside the estimate; "could not look" is an arm
+    "crates/nucleus-weight-patch",       # a change to a tensor checkpoint as a replayable program: per-tensor digests, bit-exact apply, the write set measured from bytes
     "crates/nucleus-permission-market", # Lagrangian permission pricing oracle
     "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
     "crates/ctf-server",               # HTTP API server for The Vault CTF
