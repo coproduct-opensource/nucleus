@@ -86,8 +86,6 @@ pub(crate) struct TransportConfig<'a> {
     pub tool_proxy_url: Option<&'a str>,
     /// `--auth-secret`.
     pub auth_secret: Option<&'a str>,
-    /// `--approval-secret`.
-    pub approval_secret: Option<&'a str>,
     /// `--signed-upstream`.
     pub signed_upstream: bool,
 }
@@ -115,12 +113,11 @@ impl ProxyTransport {
         let endpoint = ProxyEndpoint::parse(url).map_err(|e| anyhow!("{e}"))?;
         match endpoint {
             ProxyEndpoint::Unix { socket } => {
-                if cfg.auth_secret.is_some() || cfg.approval_secret.is_some() {
+                if cfg.auth_secret.is_some() {
                     bail!(
                         "the tool-proxy at `{url}` is a Unix socket, which authenticates the \
                          caller by its uid; this bridge was also given a proxy secret, which \
-                         nothing in the guest should hold. Remove NUCLEUS_MCP_AUTH_SECRET / \
-                         NUCLEUS_MCP_APPROVAL_SECRET."
+                         nothing in the guest should hold. Remove NUCLEUS_MCP_AUTH_SECRET."
                     );
                 }
                 if cfg.signed_upstream {
@@ -132,11 +129,10 @@ impl ProxyTransport {
                 Ok(Self::Door { socket })
             }
             ProxyEndpoint::Http { base } => {
-                if cfg.auth_secret.is_some() || cfg.approval_secret.is_some() {
+                if cfg.auth_secret.is_some() {
                     bail!(
-                        "--auth-secret / --approval-secret (NUCLEUS_MCP_AUTH_SECRET, \
-                         NUCLEUS_MCP_APPROVAL_SECRET) signed for the tool-proxy's shared-secret \
-                         tier, which admits only /v1/health since #2446. Reach the proxy at \
+                        "--auth-secret (NUCLEUS_MCP_AUTH_SECRET) signed for the tool-proxy's \
+                         shared-secret tier, which admits only /v1/health since #2446. Reach the proxy at \
                          `{base}` through a signing proxy (--signed-upstream), or over its \
                          peer-verified socket (a unix:// URL) with no secret"
                     );
@@ -330,7 +326,6 @@ mod tests {
             proxy_url: Some(url),
             tool_proxy_url: None,
             auth_secret: None,
-            approval_secret: None,
             signed_upstream: false,
         }
     }
@@ -349,24 +344,19 @@ mod tests {
     /// #2446 step 2: the bridge no longer signs for the shared-secret tier,
     /// which admits only `/v1/health`. A secret is refused by name, never
     /// silently dropped (the request would then go unsigned) nor sent. Red
-    /// before: `TcpAuth::Hmac` was built from either secret.
+    /// before: `TcpAuth::Hmac` was built from either secret. The approval
+    /// secret is no longer a field at all (2026-11-21): clap refuses its flag
+    /// and `refuse_retired_env` its variable, before a transport is resolved.
     #[test]
     fn a_shared_secret_is_refused_by_name() {
-        for (auth, approval) in [
-            (Some("test-token-123"), None),
-            (None, Some("test-token-123")),
-            (Some("test-token-123"), Some("test-token-456")),
-        ] {
-            let err = ProxyTransport::resolve(&TransportConfig {
-                auth_secret: auth,
-                approval_secret: approval,
-                ..cfg("http://127.0.0.1:8080")
-            })
-            .expect_err("the shared-secret tier is retired")
-            .to_string();
-            assert!(err.contains("#2446"), "{err}");
-            assert!(err.contains("/v1/health"), "{err}");
-        }
+        let err = ProxyTransport::resolve(&TransportConfig {
+            auth_secret: Some("test-token-123"),
+            ..cfg("http://127.0.0.1:8080")
+        })
+        .expect_err("the shared-secret tier is retired")
+        .to_string();
+        assert!(err.contains("#2446"), "{err}");
+        assert!(err.contains("/v1/health"), "{err}");
     }
 
     #[test]
@@ -414,19 +404,13 @@ mod tests {
     /// A secret handed to a door bridge is refused, not ignored.
     #[test]
     fn the_door_refuses_a_secret_it_would_not_use() {
-        for (auth, approval) in [
-            (Some("test-token-123"), None),
-            (None, Some("test-token-123")),
-        ] {
-            assert!(
-                ProxyTransport::resolve(&TransportConfig {
-                    auth_secret: auth,
-                    approval_secret: approval,
-                    ..cfg("unix:///run/nucleus-door/workload.sock")
-                })
-                .is_err()
-            );
-        }
+        assert!(
+            ProxyTransport::resolve(&TransportConfig {
+                auth_secret: Some("test-token-123"),
+                ..cfg("unix:///run/nucleus-door/workload.sock")
+            })
+            .is_err()
+        );
         assert!(
             ProxyTransport::resolve(&TransportConfig {
                 signed_upstream: true,

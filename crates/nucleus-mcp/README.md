@@ -42,7 +42,7 @@ nucleus-mcp \
 | `--proxy-url` | `NUCLEUS_MCP_PROXY_URL` | tool-proxy URL: `http://host:port`, or `unix:///<socket>` (falls back to `NUCLEUS_TOOL_PROXY_URL`) |
 | `--auth-secret` | `NUCLEUS_MCP_AUTH_SECRET` | retired (#2446): refused by name, because the shared-secret tier admits only `/v1/health` |
 | `--signed-upstream` | `NUCLEUS_MCP_SIGNED_UPSTREAM` | a signing proxy in front of a TCP tool-proxy signs instead (TCP only) |
-| `--approval-secret` | `NUCLEUS_MCP_APPROVAL_SECRET` | retired with `--auth-secret`: an agent's bridge must not hold an approval credential |
+| ~~`--approval-secret`~~ | `NUCLEUS_MCP_APPROVAL_SECRET` | removed (2026-11-21): an agent's bridge must not hold an approval credential, and the tool-proxy's shared-key approval tier is deleted; the flag is an unknown argument and the variable, set at all, is refused by name at startup |
 | `--actor` | `NUCLEUS_MCP_ACTOR` | actor named to a signing upstream |
 | `--spec` | `NUCLEUS_MCP_SPEC` | required (or `--spec-yaml`): PodSpec file whose policy decides the offered tools and the kernel |
 | `--spec-yaml` | `NUCLEUS_MCP_SPEC_YAML` | the PodSpec as a YAML document, for a caller with no file the bridge can read |

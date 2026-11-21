@@ -72,10 +72,6 @@ struct Args {
     /// the guest's own spec). Exclusive with `--spec`.
     #[arg(long, env = "NUCLEUS_MCP_SPEC_YAML")]
     spec_yaml: Option<String>,
-    /// RETIRED with `--auth-secret` (#2446 step 2): a bridge that holds an
-    /// approval secret lets the agent behind it approve its own operations.
-    #[arg(long, env = "NUCLEUS_MCP_APPROVAL_SECRET")]
-    approval_secret: Option<String>,
     /// Prompt on approval-required operations (uses /dev/tty).
     #[arg(long, default_value_t = true)]
     approval_prompt: bool,
@@ -98,11 +94,20 @@ struct Args {
 /// caller still setting one would be ignored silently and believe the bridge
 /// was carrying it. Each is refused at startup by name instead (ADR 0007 B-2,
 /// fail closed; A-1, "not read" is not "read and fine").
-const RETIRED_ENV: &[(&str, &str)] = &[(
-    "NUCLEUS_MCP_SANDBOX_TOKEN",
-    "--sandbox-token was retired with the tool-proxy's tier-3 orchestrator token (#2446 \
-     step 3c); this bridge never sent it, and nothing mints one",
-)];
+const RETIRED_ENV: &[(&str, &str)] = &[
+    (
+        "NUCLEUS_MCP_SANDBOX_TOKEN",
+        "--sandbox-token was retired with the tool-proxy's tier-3 orchestrator token (#2446 \
+         step 3c); this bridge never sent it, and nothing mints one",
+    ),
+    (
+        "NUCLEUS_MCP_APPROVAL_SECRET",
+        "--approval-secret was retired: a bridge holding an approval key lets the agent \
+         behind it approve its own operations, and the tool-proxy's shared-key approval \
+         tier it signed for is deleted (2026-11-21). Approvals are an approver's Ed25519 \
+         signature, made outside the agent's reach",
+    ),
+];
 
 /// Refuses the first retired variable that `is_set` reports, naming it.
 ///
@@ -737,7 +742,6 @@ fn main() -> Result<()> {
         proxy_url: args.proxy_url.as_deref(),
         tool_proxy_url: tool_proxy_url.as_deref(),
         auth_secret: args.auth_secret.as_deref(),
-        approval_secret: args.approval_secret.as_deref(),
         signed_upstream: args.signed_upstream,
     })?;
     let client = ProxyClient::new(transport, Some(args.actor.clone()), args.session_id.clone());
@@ -1511,6 +1515,38 @@ mod tests {
         refuse_retired_env(|var| var == "NUCLEUS_MCP_PROXY_URL").expect("a live variable");
     }
 
+    /// 2026-11-21: `--approval-secret` is gone, so clap refuses the flag by
+    /// name. Red before: the flag parsed, and only the transport refused it.
+    #[test]
+    fn the_approval_secret_flag_is_refused_by_name() {
+        let err = Args::try_parse_from([
+            "nucleus-mcp",
+            "--proxy-url",
+            "unix:///run/nucleus-door/workload.sock",
+            "--approval-secret",
+            "test-token-123",
+        ])
+        .expect_err("--approval-secret is retired");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(err.to_string().contains("--approval-secret"), "{err}");
+    }
+
+    /// Its variable, which clap no longer looks at, is refused by name when
+    /// set at all, and the refusal never carries the value.
+    #[test]
+    fn the_approval_secret_variable_is_refused_by_name() {
+        let err = refuse_retired_env(|var| var == "NUCLEUS_MCP_APPROVAL_SECRET")
+            .expect_err("a retired variable is refused")
+            .to_string();
+        for needle in [
+            "NUCLEUS_MCP_APPROVAL_SECRET",
+            "--approval-secret",
+            "retired",
+        ] {
+            assert!(err.contains(needle), "missing {needle:?} in {err}");
+        }
+    }
+
     /// Read one whole HTTP/1.1 request (head and `content-length` body) from
     /// `stream`, answer it with `status` and a JSON `body`, and return the
     /// request as text so a test can see what was sent.
@@ -1594,7 +1630,6 @@ mod tests {
             proxy_url: Some(url),
             tool_proxy_url: None,
             auth_secret: None,
-            approval_secret: None,
             signed_upstream,
         })
         .expect("transport")
