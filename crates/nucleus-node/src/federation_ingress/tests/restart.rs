@@ -55,6 +55,11 @@ async fn a_metered_pod_left_by_a_killed_node_is_charged_what_it_metered() {
         500_000,
         "the binding's ledger keeps what the pod metered, not its $3 allocation"
     );
+    assert_eq!(
+        next.settled_spend(pod).await,
+        Some(500_000),
+        "settled at this startup, and kept for the ended route"
+    );
     let fits = next
         .admit_kept(&who, &pod_spec(Vec::new(), 4), uuid::Uuid::new_v4())
         .await
