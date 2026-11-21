@@ -235,14 +235,6 @@ pub fn read_bundle<R: std::io::Read>(channel: &mut R) -> Result<Vec<u8>, CaError
 /// the minter and the verdict both consult, so they cannot disagree.
 pub type NamePermit = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Seconds since the epoch, for the CA's deadline.
-#[must_use]
-pub fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// Mints a leaf per TLS name on first use, signed by the pod's CA, and caches
 /// it. Decides only through [`may_issue_leaf`].
 pub struct LeafMinter {
@@ -258,6 +250,18 @@ impl fmt::Debug for LeafMinter {
             .field("ca", &self.ca)
             .finish_non_exhaustive()
     }
+}
+
+/// Seconds since the epoch, for the CA's deadline.
+///
+/// Kept below `LeafMinter` on purpose: `xtask life` attributes a `#[must_use]` to a
+/// `pub struct` a few lines after it, and placed above the struct this function's
+/// attribute counted `LeafMinter` (a cache, not a one-shot right) as an affine right.
+#[must_use]
+pub fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl LeafMinter {

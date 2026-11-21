@@ -273,9 +273,11 @@ population_floor = 278
 # 2026-10-13 (Program B M1, merged with the above): new crate nucleus-memory-context, the
 # pure kernel that decides what a run may see of shared memory and whether a publish is
 # valid, declares all seven from its first commit. Combined 43 of 100 = 43.00%.
-floor_bp = 4300
+# 2026-11-20 (ADR 0017 links, #3563): new crate nucleus-link-probe, the guest probe that
+# parses relay replies, declares all seven from its first commit. 44 of 101 = 43.56%.
+floor_bp = 4356
 floor_set = "measurement"
-population_floor = 100
+population_floor = 101
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -665,9 +667,12 @@ population_floor = 23
 # suggestions whose forms Aeneas cannot translate (`RangeInclusive::contains`,
 # `Vec::is_empty`, `Option::map`'s closure) or that the crate's no-credential scan
 # forbids, under nine reasoned #[expect]s. 50/155 = 32.25%; both pins follow the tree.
-floor_bp = 3225
+# 2026-11-20 (ADR 0017 links, #3563): Aeneas-extracted link deciders in nucleus-ifc-kernel
+# take two reasoned #[expect]s where Aeneas cannot translate the suggested form.
+# 52/157 = 33.12%; both pins follow the tree.
+floor_bp = 3312
 floor_set = "measurement"
-population_floor = 155
+population_floor = 157
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

@@ -316,17 +316,14 @@ jobs:
           echo "generated-ifc/ canonicalized from the fresh extraction; theorem builds against it."
 
       # ADR 0017 L3: the link predicates. Same single disclosed hand-edit as
-      # generated-egress (the Funs.lean import retarget).
+      # generated-egress (the Funs.lean import retarget). No branch of its own:
+      # a file Aeneas did not emit fails the `cp`/`sed` under `bash -e`, and
+      # the theorem build after this step is the gate.
       - name: Canonicalize generated-link from the fresh extraction
         if: needs.scope.outputs.relevant == 'true'
         run: |
           DST=crates/portcullis-core/lean/generated-link/PortcullisCoreLink
           SRC=crates/portcullis-core/lean/ci-generated-ifc
-          for f in Types.lean Funs.lean; do
-            if [ ! -f "$SRC/$f" ]; then
-              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
-            fi
-          done
           cp "$SRC/Types.lean" "$DST/Types.lean"
           sed 's/NucleusIfcKernel\.Types/PortcullisCoreLink.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-link/ canonicalized from the fresh extraction."

@@ -226,7 +226,20 @@ impl MintedCa {
         };
         (self, twin)
     }
+}
 
+/// One pod's CA, as the spawn path hands it out: the certificate for the guest,
+/// and one copy of the key each for the egress proxy and the link relay. `None`
+/// throughout for a pod with no CA.
+pub(crate) fn for_pod(
+    ca: Option<MintedCa>,
+) -> (Option<String>, Option<MintedCa>, Option<MintedCa>) {
+    let pem = ca.as_ref().map(MintedCa::certificate_pem);
+    let (egress, link) = ca.map(MintedCa::split).unzip();
+    (pem, egress, link)
+}
+
+impl MintedCa {
     /// Write the `nucleus-pod-ca/1` bundle (the proxy's
     /// `PodCa::from_bundle` format) to `channel`, consuming the CA: the node's
     /// copy of the key is wiped when this returns, whatever the outcome.

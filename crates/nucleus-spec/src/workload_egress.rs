@@ -39,14 +39,27 @@ pub fn upstream_url(base: &str, name: &str) -> String {
     format!("{}{ROUTE_PREFIX}{name}", base.trim_end_matches('/'))
 }
 
-/// Every `NUCLEUS_EGRESS_<NAME>_URL` entry the runtime puts in a workload's
-/// environment for `egress`, under the workload door URL `door_url`.
+/// The guest's outbound link relay (ADR 0017 L4c): the loopback address the
+/// guest tool-proxy listens on, as `host:port`.
+pub const LINK_PROXY_ADDR: &str = "127.0.0.1:3129";
+
+/// The environment variable that tells the workload [`LINK_PROXY_ADDR`], as an
+/// HTTP proxy URL. Public runtime configuration, never a credential. Where no
+/// relay runs, the address refuses connections, which is what "no link" looks
+/// like to the workload.
+pub const LINK_PROXY_ENV: &str = "NUCLEUS_LINK_PROXY";
+
+/// Every entry the runtime puts in a workload's environment besides the two
+/// mediator bindings: one `NUCLEUS_EGRESS_<NAME>_URL` per upstream in `egress`,
+/// under the workload door URL `door_url`, and [`LINK_PROXY_ENV`].
 ///
 /// The one decider of this set (ADR 0007 G-1). The tool-proxy calls it to
 /// build the environment it launches the workload with, and the node calls it
 /// to publish the same set in the workload admission record, so a verifier
 /// derives these environment inputs from that record instead of restating the
-/// runtime's spelling of a value it never set (#3219).
+/// runtime's spelling of a value it never set (#3219). `LINK_PROXY_ENV` was
+/// first inserted by the tool-proxy alone, so every honest receipt was refused
+/// with `Binding("environment_inputs_sha256")`; it is decided here now.
 #[must_use]
 pub fn injected_env(
     egress: &[crate::CredentialedEgressSpec],
@@ -55,6 +68,10 @@ pub fn injected_env(
     egress
         .iter()
         .map(|s| (url_env(&s.name), upstream_url(door_url, &s.name)))
+        .chain(std::iter::once((
+            LINK_PROXY_ENV.to_owned(),
+            format!("http://{LINK_PROXY_ADDR}"),
+        )))
         .collect()
 }
 

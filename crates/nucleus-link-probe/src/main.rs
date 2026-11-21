@@ -274,7 +274,7 @@ fn send(args: &[String]) -> Result<(), String> {
             tls,
             status,
             error,
-            at_ms: start.elapsed().as_millis() as u64,
+            at_ms: u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX),
         });
     };
     let trusted = std::env::var("NUCLEUS_EGRESS_TRUST_BUNDLE").ok();

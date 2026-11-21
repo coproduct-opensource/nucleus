@@ -43,13 +43,19 @@ fn injected() -> BTreeMap<String, String> {
         effects: nucleus_spec::EffectTable::unclassified(),
     };
     let injected = nucleus_spec::workload_egress::injected_env(&[egress], DOOR);
-    // The spelling seen live in #3219.
+    // The spelling seen live in #3219, and the link proxy every workload is given (ADR 0017).
     assert_eq!(
         injected,
-        BTreeMap::from([(
-            UPSTREAM.to_string(),
-            "unix:///run/nucleus-door/workload.sock/v1/egress/coding-model".to_string(),
-        )])
+        BTreeMap::from([
+            (
+                UPSTREAM.to_string(),
+                "unix:///run/nucleus-door/workload.sock/v1/egress/coding-model".to_string(),
+            ),
+            (
+                nucleus_spec::workload_egress::LINK_PROXY_ENV.to_string(),
+                format!("http://{}", nucleus_spec::workload_egress::LINK_PROXY_ADDR),
+            ),
+        ])
     );
     injected
 }

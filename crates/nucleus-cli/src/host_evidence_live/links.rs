@@ -191,7 +191,7 @@ impl Rng {
         x
     }
     pub fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        usize::try_from(self.next() % u64::try_from(n).unwrap_or(u64::MAX)).unwrap_or(0)
     }
 }
 
@@ -241,10 +241,15 @@ pub(crate) fn model_apply(table: &mut LinkTable, slots: &[Uuid], op: Op) -> Outc
     }
 }
 
+/// A sample count as a float. Counts here are far below 2^32; saturate rather than cast.
+fn len_f64(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
 /// Welch's t statistic for two samples (timings), reported, not judged.
 pub(crate) fn welch_t(a: &[f64], b: &[f64]) -> Option<f64> {
     let stats = |x: &[f64]| {
-        let n = x.len() as f64;
+        let n = len_f64(x.len());
         let mean = x.iter().sum::<f64>() / n;
         let var = x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
         (n, mean, var)
@@ -428,8 +433,8 @@ impl Run<'_> {
                 if let (Some(s), Some(d), Some(port)) =
                     (r["src"].as_str(), r["dst"].as_str(), r["port"].as_u64())
                 {
-                    if let (Ok(s), Ok(d)) = (Uuid::parse_str(s), Uuid::parse_str(d)) {
-                        let _ = self.unlink(s, d, port as u32).await;
+                    if let (Ok(s), Ok(d), Ok(port)) = (Uuid::parse_str(s), Uuid::parse_str(d), u32::try_from(port)) {
+                        let _ = self.unlink(s, d, port).await;
                     }
                 }
             }
@@ -581,7 +586,7 @@ async fn differential(run: &mut Run<'_>, pool: &mut [Uuid], ops: u64, seed: u64)
     let mut steps = Vec::new();
     let mut errors = Vec::new();
     let mut replaced = 0;
-    for index in 0..ops as usize {
+    for index in 0..usize::try_from(ops).unwrap_or(usize::MAX) {
         let op = gen_op(&mut rng, pool.len());
         let model = model_apply(&mut table, pool, op);
         let node = match op {
@@ -795,10 +800,13 @@ async fn per_request(run: &mut Run<'_>, dst: Uuid, n: u64, seed: u64) -> Result<
     }
     let saw_anything = !src_events.is_empty();
     let sent_of = |want_port: u32, want_tls: bool| {
-        src_events
-            .iter()
-            .filter(|e| matches!(e, Event::Sent { port, tls, .. } if *port == want_port && *tls == want_tls))
-            .count() as u64
+        u64::try_from(
+            src_events
+                .iter()
+                .filter(|e| matches!(e, Event::Sent { port, tls, .. } if *port == want_port && *tls == want_tls))
+                .count(),
+        )
+        .unwrap_or(u64::MAX)
     };
     let sent_fewest = sent_of(8080, false)
         .min(sent_of(8081, false))
@@ -925,7 +933,7 @@ async fn isolation(run: &mut Run<'_>, real: Uuid, k: u64) -> Item {
         }
     }
     let identical = statuses == BTreeSet::from([404]) && bodies.len() == 1;
-    let mean = |x: &[f64]| x.iter().sum::<f64>() / x.len().max(1) as f64;
+    let mean = |x: &[f64]| x.iter().sum::<f64>() / len_f64(x.len().max(1));
     Item {
         name: "d_isolation",
         verdict: rule::isolation(identical).into(),
@@ -1007,9 +1015,12 @@ async fn chaos(run: &mut Run<'_>, holder: Uuid, x: Uuid, y: Uuid) -> Result<Vec<
     let present = v["links"]
         .as_array()
         .map(|rows| {
-            rows.iter()
-                .filter(|r| r["dst"] == y.to_string() && r["port"] == 82)
-                .count() as i64
+            i64::try_from(
+                rows.iter()
+                    .filter(|r| r["dst"] == y.to_string() && r["port"] == 82)
+                    .count(),
+            )
+            .unwrap_or(i64::MAX)
         })
         .unwrap_or(-1);
     items.push(Item {
@@ -1179,7 +1190,8 @@ async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<R
     let ops = env_u64("NUCLEUS_LINKS_OPS", 2000);
     let probes = env_u64("NUCLEUS_LINKS_PROBES", 200);
     let requests = env_u64("NUCLEUS_LINKS_REQUESTS", 200);
-    let pool_size = env_u64("NUCLEUS_LINKS_PODS", 8).clamp(2, 12) as usize;
+    let pool_size = env_u64("NUCLEUS_LINKS_PODS", 8).clamp(2, 12);
+    let pool_size = usize::try_from(pool_size).unwrap_or(12);
     let seed = env_u64("NUCLEUS_LINKS_SEED", 0x6a75_6e74_6c65_7400);
     let lifetime = standing_lifetime(ops, requests);
     let mut items = Vec::new();
@@ -1246,8 +1258,8 @@ async fn gauntlet(node: &mut Node, bins: &Path, art: &mut Artifacts) -> Result<R
                 if let (Some(s), Some(d), Some(port)) =
                     (r["src"].as_str(), r["dst"].as_str(), r["port"].as_u64())
                 {
-                    if let (Ok(s), Ok(d)) = (Uuid::parse_str(s), Uuid::parse_str(d)) {
-                        let _ = run.unlink(s, d, port as u32).await;
+                    if let (Ok(s), Ok(d), Ok(port)) = (Uuid::parse_str(s), Uuid::parse_str(d), u32::try_from(port)) {
+                        let _ = run.unlink(s, d, port).await;
                     }
                 }
             }

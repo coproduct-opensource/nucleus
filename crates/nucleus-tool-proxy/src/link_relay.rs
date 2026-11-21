@@ -37,13 +37,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Where the workload reaches the outbound relay. 3128 is reserved for ADR
 /// 0015's egress relay (E4); 3129 is the next port and is used by nothing else
-/// in the guest.
-pub(crate) const LINK_PROXY_ADDR: &str = "127.0.0.1:3129";
-
-/// The environment variable that tells the workload [`LINK_PROXY_ADDR`], as an
-/// HTTP proxy URL. Public runtime configuration (`workload.rs`
-/// `PUBLIC_RESERVED`), never a credential.
-pub(crate) const LINK_PROXY_ENV: &str = "NUCLEUS_LINK_PROXY";
+/// in the guest. Decided in `nucleus-spec`, where `injected_env` also reads it.
+pub(crate) use nucleus_spec::workload_egress::{LINK_PROXY_ADDR, LINK_PROXY_ENV};
 
 /// The guest vsock port the host relay dials to deliver an inbound link
 /// connection. Guest-side, so it shares no namespace with the host listeners

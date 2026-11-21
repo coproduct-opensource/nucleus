@@ -48,7 +48,11 @@ mediation/net=4
 # 2026-10-04: 2 -> 3 after #3002 adds signed accounting telemetry alongside
 # #3177 shadow decisions. Only broker_client performs egress; spend_shipper and
 # host_decide retain their separate protocol justifications in the vsock allowlist.
-mediation/vsock=3
+# 2026-11-20: 3 -> 4 for the guest link relay (ADR 0017 L4c,
+# `crates/nucleus-tool-proxy/src/link_relay.rs`). It dials the host's PodLink listener, where
+# the node's link table admits or refuses each connection; it reaches no external upstream and
+# holds no authority to spend. The reason is beside the entry in the vsock allowlist.
+mediation/vsock=4
 sealed-home/spawn=7
 sealed-home/net=7
 ingest-hashed=5

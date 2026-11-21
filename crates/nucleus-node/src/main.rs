@@ -2334,7 +2334,7 @@ async fn spawn_firecracker_pod(
         // Firecracker CREATES the vsock socket at its configured `uds_path`, which
         // under the jailer is inside the jail. The host must connect where the
         // socket actually appears, so this is the jail path when jailed — getting
-        // it wrong hangs `wait_for_vsock_socket` on a file nothing will ever make.
+        // it wrong hangs `firecracker_api::wait_for_vsock_socket` on a file nothing will ever make.
         let vsock_path = match jail_layout {
             Some(ref jail) => jail.host_path(firecracker_config::in_jail::VSOCK),
             None => pod_dir.join("vsock.sock"),
@@ -2604,11 +2604,10 @@ async fn spawn_firecracker_pod(
                 let command = launch.command_mut();
                 firecracker_config::apply_seccomp_flags(command, spec, jail_layout.is_some())?;
                 let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
-                // ADR 0015 E3: the eval cell's egress CA, minted at admission. Its
-                // certificate goes to the guest; its key only to the proxy (`pod_ca`).
-                let egress_ca = egress_proxy::mint_for_pod(state, spec, id)?;
-                let egress_ca_pem = egress_ca.as_ref().map(pod_ca::MintedCa::certificate_pem);
-                let (egress_ca, link_ca) = egress_ca.map(pod_ca::MintedCa::split).unzip();
+                // Who owns what the jailed VMM opens: one decision for every helper below.
+                let jail_owner = jail_layout.as_ref().map(|_| (state.jailer_uid.get(), state.jailer_gid));
+                // ADR 0015 E3: the egress CA; certificate to the guest, key to the proxies (`pod_ca`).
+                let (egress_ca_pem, egress_ca, link_ca) = pod_ca::for_pod(egress_proxy::mint_for_pod(state, spec, id)?);
                 let prepared_pod = async {
                     let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
                         measured,
@@ -2620,9 +2619,7 @@ async fn spawn_firecracker_pod(
                         id,
                         grant: &identity_grant,
                         vsock_path: &vsock_path,
-                        jail_owner: jail_layout
-                            .as_ref()
-                            .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                        jail_owner,
                         task_token: task_token.clone(),
                         pod_certificate: pod_certificate.clone(),
                         broker_serve,
@@ -2640,9 +2637,7 @@ async fn spawn_firecracker_pod(
                             &vsock_path,
                             id,
                             broker_verify,
-                            jail_layout
-                                .as_ref()
-                                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                            jail_owner,
                         )
                         .await?
                         .with_network_meter(res.net_plan())
@@ -2657,18 +2652,12 @@ async fn spawn_firecracker_pod(
                     id,
                     &vsock_path,
                     pod_dir,
-                    jail_layout
-                        .as_ref()
-                        .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                    jail_owner,
                     egress_ca,
                 )
                 .await?;
-                let link_owner = jail_layout
-                    .as_ref()
-                    .map(|_| (state.jailer_uid.get(), state.jailer_gid));
                 let link_proxy =
-                    link_proxy::start_for_pod(state, id, &vsock_path, pod_dir, link_owner, link_ca)
-                        .await?;
+                    link_proxy::start_for_pod(state, id, &vsock_path, pod_dir, jail_owner, link_ca).await?;
                 command.stdout(log_stdout).stderr(log_stderr);
                 let vmm = launch.start(|command| prepared_pod.spawn(command)).await?;
                 let pid = vmm.pid();
@@ -2783,7 +2772,7 @@ async fn spawn_firecracker_pod(
                     res.hold_cgroup(cgroup::apply_cgroup(pid, &dir, &node_cgroup).await?);
                 }
 
-                wait_for_vsock_socket(&vsock_path).await?;
+                firecracker_api::wait_for_vsock_socket(&vsock_path).await?;
                 let bridge = vsock_bridge::VsockBridge::start(vsock_path.clone(), vsock_spec.port)
                     .await
                     .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
@@ -2991,22 +2980,6 @@ fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
         return None;
     }
     Some(Arc::new(Semaphore::new(args.firecracker_max_pods)))
-}
-
-#[cfg(target_os = "linux")]
-#[tracing::instrument(skip_all, fields(boot.stage = "vsock.wait"))]
-async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(3) {
-        if tokio::fs::metadata(path).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(ApiError::Driver(format!(
-        "vsock socket not found at {}",
-        path.display()
-    )))
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

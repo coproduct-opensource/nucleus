@@ -34,8 +34,8 @@ abbrev Seq := Nat
 abbrev Time := Nat
 
 inductive Outcome where
-  /-- The node's answer, applied: `admit` is the verdict. -/
-  | decided (admit : Bool)
+  /-- The node's answer, applied: `allow` is the verdict. -/
+  | decided (allow : Bool)
   /-- The deadline passed; refused. The node's answer, if it comes, is dropped. -/
   | timeout
   /-- The peer broke the protocol while this request was outstanding; refused. -/
@@ -63,8 +63,8 @@ inductive Op where
   /-- A request asks, with `wait` time units before its deadline. -/
   | ask (wait : Time)
   | tick
-  /-- The node answers number `s` with verdict `admit`. -/
-  | answer (s : Seq) (admit : Bool)
+  /-- The node answers number `s` with verdict `allow`. -/
+  | answer (s : Seq) (allow : Bool)
   /-- A frame that does not parse, or is not a verdict. -/
   | malformed
 
@@ -104,12 +104,12 @@ def step (σ : State) : Op → State
         if σ''.owed.length > cap then { σ'' with poisoned := true } else σ''
       else σ'
     | none => σ'
-  | .answer s admit =>
+  | .answer s allow =>
     if σ.poisoned then σ
     else
       let isCurrent := match σ.current with | some (c, _) => c == s | none => false
       match disposition isCurrent (σ.owed.contains s) with
-      | .apply => { σ with current := none, outcome := write σ.outcome s (.decided admit) }
+      | .apply => { σ with current := none, outcome := write σ.outcome s (.decided allow) }
       | .dropLate => { σ with owed := σ.owed.erase s }
       | .poison => breakChannel σ
   | .malformed => if σ.poisoned then σ else breakChannel σ
@@ -142,7 +142,7 @@ theorem step_inv {σ : State} (op : Op) (h : Inv σ) (hfresh : ∀ t, t ≥ σ.n
         simp only [Option.some.injEq, Prod.mk.injEq] at hc
         obtain ⟨rfl, rfl⟩ := hc
         exact h c0 dl0 hcur
-  | answer s admit =>
+  | answer s allow =>
     cases hp : σ.poisoned
     · cases hcur : σ.current with
       | none =>
@@ -181,7 +181,7 @@ theorem outcome_write_once {σ : State} (op : Op) (h : Inv σ) {t : Seq} {o : Ou
       · split <;> exact write_keeps (h c dl hc) ht
       · exact ht
     · exact ht
-  | answer s admit =>
+  | answer s allow =>
     unfold Inv at h
     cases hp : σ.poisoned
     · cases hcur : σ.current with
@@ -212,8 +212,8 @@ theorem outcome_write_once {σ : State} (op : Op) (h : Inv σ) {t : Seq} {o : Ou
 
 /-- An answer never admits any request but its own: the only outcome an
     answer step can add is for the number it carries. -/
-theorem answer_admits_only_its_request (σ : State) (s : Seq) (admit admit' : Bool) (t : Seq)
-    (hnew : σ.outcome t = none) (hset : (step σ (.answer s admit)).outcome t = some (.decided admit')) :
+theorem answer_admits_only_its_request (σ : State) (s : Seq) (allow allow' : Bool) (t : Seq)
+    (hnew : σ.outcome t = none) (hset : (step σ (.answer s allow)).outcome t = some (.decided allow')) :
     t = s := by
   simp only [step] at hset
   split at hset
@@ -235,12 +235,12 @@ theorem late_answer_never_admits {σ : State} (op : Op) (h : Inv σ) {t : Seq}
 
 /-- A late answer for an owed number is dropped: the channel is not poisoned and
     the outstanding request is untouched. -/
-theorem late_answer_dropped (σ : State) (s : Seq) (admit : Bool)
+theorem late_answer_dropped (σ : State) (s : Seq) (allow : Bool)
     (hp : σ.poisoned = false) (howed : s ∈ σ.owed)
     (hnotcur : ∀ dl, σ.current ≠ some (s, dl)) :
-    (step σ (.answer s admit)).poisoned = false ∧
-      (step σ (.answer s admit)).current = σ.current ∧
-      (step σ (.answer s admit)).outcome = σ.outcome := by
+    (step σ (.answer s allow)).poisoned = false ∧
+      (step σ (.answer s allow)).current = σ.current ∧
+      (step σ (.answer s allow)).outcome = σ.outcome := by
   cases hcs : σ.current with
   | none => simp [step, hp, hcs, disposition, howed]
   | some p =>
@@ -250,10 +250,10 @@ theorem late_answer_dropped (σ : State) (s : Seq) (admit : Bool)
 
 /-- Recovery: after a timeout, a request asked on the unpoisoned channel and
     answered before its deadline is decided normally. -/
-theorem channel_recovers_after_timeout (σ : State) (wait : Time) (admit : Bool)
+theorem channel_recovers_after_timeout (σ : State) (wait : Time) (allow : Bool)
     (hp : σ.poisoned = false) (hidle : σ.current = none) :
     let σ₁ := step σ (.ask wait)
-    (step σ₁ (.answer σ.next admit)).outcome σ.next = some (.decided admit) := by
+    (step σ₁ (.answer σ.next allow)).outcome σ.next = some (.decided allow) := by
   simp [step, hp, hidle, disposition, write]
 
 /-- An overdue request is resolved by the next tick: no request waits forever. -/
@@ -264,10 +264,10 @@ theorem tick_resolves_overdue (σ : State) (c dl : Nat) (hc : σ.current = some 
 
 /-- A broken peer still poisons: an answer with a number that is neither the
     outstanding request's nor owed. -/
-theorem unissued_answer_poisons (σ : State) (s : Seq) (admit : Bool)
+theorem unissued_answer_poisons (σ : State) (s : Seq) (allow : Bool)
     (hp : σ.poisoned = false) (hnowed : s ∉ σ.owed)
     (hnotcur : ∀ dl, σ.current ≠ some (s, dl)) :
-    (step σ (.answer s admit)).poisoned = true := by
+    (step σ (.answer s allow)).poisoned = true := by
   have hc : (match σ.current with | some (c, _) => c == s | none => false) = false := by
     cases hcs : σ.current with
     | none => rfl

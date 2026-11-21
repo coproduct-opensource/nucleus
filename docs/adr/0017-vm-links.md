@@ -28,7 +28,8 @@
     record reuses.
 - Touches claim **C2** ("nor those of any other pod", `docs/north-star.md`, NOT-YET). A link
   is a deliberate channel between two pods, so C2 is restated relative to the link graph
-  (§7).
+  (§7). As in C2 itself, timing, microarchitectural and resource-contention channels stay
+  outside the claim; a link adds an explicit channel and does not close those.
 
 ## Context
 

@@ -49,10 +49,12 @@ pub fn differential(mismatches: u64, errors: u64) -> Verdict {
 
 /// (b) per-request decisions.
 #[must_use]
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     clippy::needless_bool,
-    clippy::if_same_then_else
+    clippy::if_same_then_else,
+    reason = "extracted by Aeneas: one argument per counted bucket, and each branch returns a \
+              literal because a comparison returned as a value translates to a Prop"
 )]
 pub fn per_request(
     saw: bool,
@@ -106,7 +108,10 @@ pub fn cancel_then_exit(link_ok: bool, cancel_refused: bool, dropped: bool) -> V
 /// (e2) concurrent link/unlink: no link made is inconclusive; otherwise the
 /// row's presence (0 or 1) is links made less unlinks made.
 #[must_use]
-#[allow(clippy::needless_bool)]
+#[expect(
+    clippy::needless_bool,
+    reason = "extracted by Aeneas: a comparison returned as a value translates to a Prop"
+)]
 pub fn race(links_done: u64, unlinks_done: u64, present: u64) -> Verdict {
     if links_done == 0 {
         Verdict::Inconclusive

@@ -35,3 +35,11 @@ file:crates/nucleus-tool-proxy/src/spend_shipper.rs
 # of an escape from mediation. The connect lives in exactly one function,
 # `host_decide::vsock_dialer`.
 file:crates/nucleus-tool-proxy/src/host_decide.rs
+#
+# 2026-11-20 (ADR 0017 L4c): the guest link relay. Not egress: it carries a
+# workload's connection to another pod, and the host's `PodLink` listener admits
+# or refuses it against the node's link table (`LinkTable.lean`,
+# `connect_only_along_links`) before anything is spliced. The guest decides
+# nothing and spends no authority; a connection with no link is refused at the
+# host. The connect lives in exactly one function, `VsockHost::dial`.
+file:crates/nucleus-tool-proxy/src/link_relay.rs

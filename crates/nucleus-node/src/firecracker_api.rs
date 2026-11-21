@@ -190,6 +190,24 @@ pub(crate) async fn start(sock: &Path) -> Result<(), String> {
 #[path = "stub_vmm.rs"]
 pub(crate) mod stub_vmm;
 
+/// Wait until the guest's vsock socket exists at `path`, or fail naming it.
+/// The node calls this after the VMM starts, before it dials the guest.
+#[cfg(target_os = "linux")]
+#[tracing::instrument(skip_all, fields(boot.stage = "vsock.wait"))]
+pub(crate) async fn wait_for_vsock_socket(path: &Path) -> Result<(), crate::ApiError> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if tokio::fs::metadata(path).await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(crate::ApiError::Driver(format!(
+        "vsock socket not found at {}",
+        path.display()
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

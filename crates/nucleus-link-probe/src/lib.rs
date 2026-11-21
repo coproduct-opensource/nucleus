@@ -7,6 +7,21 @@
 //! (`nucleus-cli` `host_evidence_live::links`) holds the ids of every pod and
 //! decides each property from what both ends reported.
 
+// ADR 0007 totality: the probe's report is the gauntlet's evidence, and a panic here would
+// end a pod's report mid-line. Denied for the shipped build only; tests are made of `assert!`.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -105,7 +120,7 @@ pub fn request_id(seed: u64, tag: &str, index: u64) -> String {
     h.update(seed.to_le_bytes());
     h.update(tag.as_bytes());
     h.update(index.to_le_bytes());
-    hex::encode(&h.finalize()[..12])
+    hex::encode(h.finalize().iter().take(12).copied().collect::<Vec<u8>>())
 }
 
 /// The link host for a destination pod id.
@@ -133,7 +148,7 @@ pub fn body_digest(body: &[u8]) -> String {
 }
 
 /// A parsed request head: method, path, and the id header if present.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Head {
     pub method: String,
     pub path: String,
