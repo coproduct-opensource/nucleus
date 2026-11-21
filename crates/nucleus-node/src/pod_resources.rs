@@ -48,6 +48,19 @@
 //! The container driver applies the same size as `HostConfig` (`memory`, `memory_swap`,
 //! `nano_cpus`, `pids_limit`), where the pod's own processes are in the container.
 //!
+//! # Accelerators
+//!
+//! `--max-pod-accelerators 0`: a node offers none until its operator says how many one pod may
+//! take. A spec asking for more than that is refused ([`admit`]). A spec asking for any on a
+//! driver that cannot attach one is refused by name ([`admit_accelerators`], exhaustive over
+//! drivers): only the container driver can, as a device request the runtime must be seen to have
+//! retained (`container_resources`). A microVM pod has no device passthrough on this runtime, so
+//! an accelerator pod runs at container isolation and its receipts carry that tier.
+//!
+//! The runtime hands the first N devices to every asker, so two pods asking for one would be
+//! given the same one. `node_capacity` therefore lends the node's accelerators to one pod at a
+//! time.
+//!
 //! Aggregate memory and CPU admission lives in `node_capacity`: each launch
 //! reserves its size plus VMM overhead until failed launch or completed teardown.
 
@@ -107,6 +120,15 @@ pub(crate) struct PodCeilingArgs {
         default_value = "refused"
     )]
     pub pod_huge_pages: HugePagesOffer,
+    /// The most accelerator devices one pod may ask for. Zero by default: a node offers none
+    /// until its operator says so. Honoured by the container driver only; every other driver
+    /// refuses a spec that asks for one.
+    #[arg(
+        long = "max-pod-accelerators",
+        env = "NUCLEUS_NODE_MAX_POD_ACCELERATORS",
+        default_value_t = 0
+    )]
+    pub max_pod_accelerators: u32,
 }
 
 /// Whether this node lends its hugetlbfs pool to pods.
@@ -124,6 +146,7 @@ pub(crate) struct PodCeilings {
     max_memory_mib: u64,
     max_vcpus: u32,
     huge_pages: HugePagesOffer,
+    max_accelerators: u32,
 }
 
 impl PodCeilingArgs {
@@ -132,11 +155,13 @@ impl PodCeilingArgs {
             max_pod_memory_mib,
             max_pod_vcpus,
             pod_huge_pages,
+            max_pod_accelerators,
         } = *self;
         PodCeilings {
             max_memory_mib: max_pod_memory_mib,
             max_vcpus: max_pod_vcpus,
             huge_pages: pod_huge_pages,
+            max_accelerators: max_pod_accelerators,
         }
     }
 }
@@ -157,7 +182,15 @@ impl PodCeilings {
             max_memory_mib,
             max_vcpus,
             huge_pages,
+            max_accelerators: 0,
         }
+    }
+
+    /// A node whose operator offers `max` accelerators to one pod.
+    pub(crate) fn offering_accelerators(self, max: u32) -> Self {
+        let mut offered = self;
+        offered.max_accelerators = max;
+        offered
     }
 }
 
@@ -170,6 +203,8 @@ pub(crate) struct PodSize {
     memory_mib: u64,
     vcpus: u32,
     huge_pages: Option<HugePages>,
+    /// Zero is "asked for none"; the spec cannot write a zero.
+    accelerators: u32,
 }
 
 impl PodSize {
@@ -179,7 +214,15 @@ impl PodSize {
             memory_mib: r.and_then(|r| r.memory_mib).unwrap_or(DEFAULT_MEMORY_MIB),
             vcpus: r.and_then(|r| r.cpu_cores).unwrap_or(DEFAULT_VCPUS),
             huge_pages: r.and_then(|r| r.huge_pages),
+            accelerators: r
+                .and_then(|r| r.accelerators)
+                .map_or(0, std::num::NonZeroU32::get),
         }
+    }
+
+    /// How many accelerator devices the pod asked for. Zero when it asked for none.
+    pub(crate) fn accelerators(self) -> u32 {
+        self.accelerators
     }
 
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -238,6 +281,17 @@ pub(crate) enum ResourceRefused {
     )]
     HugePages,
     #[error(
+        "resources.accelerators {asked} is refused: this node offers at most {ceiling} to one pod \
+         (--max-pod-accelerators). A pod is never run with fewer than it asked for."
+    )]
+    Accelerators { asked: u32, ceiling: u32 },
+    #[error(
+        "resources.accelerators {asked} is refused on the {driver} driver: it cannot attach a \
+         device to a pod. Only the container driver can, and a pod it runs is isolated as a \
+         container."
+    )]
+    AcceleratorsOnDriver { asked: u32, driver: &'static str },
+    #[error(
         "cgroup.settings `{file}={value}` is refused: {why}. The node sets every pod's memory, \
          CPU and pids limits; a spec may only lower them."
     )]
@@ -255,8 +309,15 @@ pub(crate) fn admit(spec: &PodSpec, ceilings: &PodCeilings) -> Result<(), Resour
         max_memory_mib,
         max_vcpus,
         huge_pages,
+        max_accelerators,
     } = *ceilings;
     let size = PodSize::of(spec);
+    if size.accelerators > max_accelerators {
+        return Err(ResourceRefused::Accelerators {
+            asked: size.accelerators,
+            ceiling: max_accelerators,
+        });
+    }
     if size.memory_mib == 0 || size.memory_mib > max_memory_mib {
         return Err(ResourceRefused::Memory {
             asked: size.memory_mib,
@@ -281,6 +342,28 @@ pub(crate) fn admit(spec: &PodSpec, ceilings: &PodCeilings) -> Result<(), Resour
         }
     }
     Ok(())
+}
+
+/// Refuse at create a spec that asks for an accelerator on a driver that cannot attach one.
+/// Exhaustive over drivers, no `_` arm (ADR 0007 B-3): a new driver says whether it can.
+/// Called by `spec_posture::admit`, after [`admit`] has held the count to the node's ceiling.
+pub(crate) fn admit_accelerators(
+    spec: &PodSpec,
+    driver: &crate::driver::DriverKind,
+) -> Result<(), ResourceRefused> {
+    use crate::driver::DriverKind;
+    let asked = PodSize::of(spec).accelerators;
+    if asked == 0 {
+        return Ok(());
+    }
+    let driver = match driver {
+        DriverKind::Container => return Ok(()),
+        DriverKind::Firecracker => "firecracker",
+        DriverKind::AppleVz => "apple-vz",
+        #[cfg(feature = "local-driver")]
+        DriverKind::Local => "local",
+    };
+    Err(ResourceRefused::AcceleratorsOnDriver { asked, driver })
 }
 
 /// The cgroup hierarchy the host presents.

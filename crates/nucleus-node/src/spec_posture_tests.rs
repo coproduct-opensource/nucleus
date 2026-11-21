@@ -578,3 +578,47 @@ async fn create_refuses_a_spec_choosing_its_mediation() {
     assert!(msg.contains("nucleus.io/proxy-mode"), "{msg}");
     assert!(st.pods.lock().await.is_empty(), "nothing was registered");
 }
+
+/// The create-time decider is where the driver is known, so it is where a pod asking for an
+/// accelerator is refused on a driver that cannot attach one. A node that offers accelerators
+/// still refuses them to a microVM pod: it is never run without the device it asked for.
+#[test]
+fn an_accelerator_pod_is_admitted_on_the_container_driver_alone() {
+    let asking = spec(r#"{"resources":{"accelerators":1}}"#);
+    let offering = PodCeilings::defaults().offering_accelerators(1);
+    let on = |driver: &crate::driver::DriverKind, ceilings: &PodCeilings| {
+        super::admit(&asking, &sinks(), ceilings, driver)
+    };
+
+    on(&crate::driver::DriverKind::Container, &offering).expect("offered, and attachable");
+    for driver in [
+        crate::driver::DriverKind::Firecracker,
+        crate::driver::DriverKind::AppleVz,
+    ] {
+        let e = on(&driver, &offering).expect_err("no passthrough");
+        assert!(
+            matches!(
+                e,
+                PostureRefused::Resources(
+                    crate::pod_resources::ResourceRefused::AcceleratorsOnDriver { asked: 1, .. }
+                )
+            ),
+            "{e}"
+        );
+    }
+    let e = on(
+        &crate::driver::DriverKind::Container,
+        &PodCeilings::defaults(),
+    )
+    .expect_err("the default node offers none");
+    assert!(
+        matches!(
+            e,
+            PostureRefused::Resources(crate::pod_resources::ResourceRefused::Accelerators {
+                asked: 1,
+                ceiling: 0
+            })
+        ),
+        "{e}"
+    );
+}

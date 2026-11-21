@@ -187,6 +187,7 @@ pub(crate) fn admit(
     driver: &crate::driver::DriverKind,
 ) -> Result<Option<AuditTarget>, PostureRefused> {
     crate::pod_resources::admit(spec, ceilings)?;
+    crate::pod_resources::admit_accelerators(spec, driver)?;
     for &(label, owner) in NODE_OWNED_LABELS {
         if spec.metadata.labels.contains_key(label) {
             return Err(PostureRefused::NodeOwnedLabel { label, owner });
