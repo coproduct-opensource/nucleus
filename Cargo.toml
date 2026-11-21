@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/nucleus-request-proof",
+    "vendor/olog-store",  # Native Olog ordered map: request-proof replay ledger (vendor/OLOG-PROVENANCE.md)
+    "vendor/olog-ledger", # Hash-chained writer record over olog-store
     "crates/nucleus-escape-canary", # In-guest Gatehouse confinement evidence
     "crates/nucleus-perf",  # Dev-only: pod concurrency + start-latency measurement
     "crates/portcullis",  # Policy: quotient lattice types
