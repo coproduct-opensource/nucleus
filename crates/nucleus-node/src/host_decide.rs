@@ -103,6 +103,12 @@ const MAX_CHANNELS_PER_POD: usize = 8;
 /// the pod's record file; this bound is only on what the node holds.
 const KEPT_DISAGREEMENTS: usize = 64;
 
+/// The most compared decisions per channel whose completion the host still
+/// accepts. Past it the oldest can no longer be completed; the guest sends a
+/// completion as soon as its call answers, so only a call that outlives this
+/// many later decisions loses its completion.
+const OPEN_COMPLETIONS: usize = 256;
+
 /// The file in the pod directory that disagreements are appended to.
 pub(crate) use nucleus_spec::host_decide_telemetry::DISAGREEMENT_LOG;
 
@@ -169,6 +175,26 @@ pub(crate) struct Comparison {
     /// The decision id the host retired for it, when it issued one.
     pub retired_decision: Option<u64>,
     pub agreement: AgreementCode,
+}
+
+/// What a compared call returned, as its guest reported it in a `Completed`
+/// frame. Bound by the host to a decision it numbered on this channel; the
+/// values themselves are the guest's (`reported_by`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct CompletionReport {
+    pub pod: Uuid,
+    pub epoch: u64,
+    /// The number of the `Decide` this completes.
+    pub decided: u64,
+    /// The HTTP status the tool-proxy answered with.
+    pub status: u16,
+    /// The process exit code, for a call that ran one.
+    pub exit_code: Option<i32>,
+    /// SHA-256 of the response body, hex.
+    pub output_sha256: String,
+    pub output_len: u64,
+    /// Who measured the fields above: always the guest.
+    pub reported_by: &'static str,
 }
 
 /// [`Agreement`] as the record spells it.
@@ -380,6 +406,9 @@ pub(crate) enum ChannelError {
     Unreported { pending: Seq },
     /// A `Shadow` report for a `Decide` the host is not waiting on.
     NotPending { decided: Seq },
+    /// A `Completed` report for a decision this channel did not compare, or
+    /// already recorded a completion for.
+    NotCompletable { decided: Seq },
     /// An approval the host refused came back still pending.
     ApprovalUnsettled,
     /// The guest stalled halfway through a frame.
@@ -415,6 +444,9 @@ impl From<EncodeError> for ChannelError {
 pub(crate) struct Step {
     pub reply: Vec<u8>,
     pub compared: Option<Comparison>,
+    /// The guest's report of what a compared call returned, when the frame
+    /// was a `Completed` report the host accepted.
+    pub completed: Option<CompletionReport>,
 }
 
 /// Policy history belongs to the pod, not to a guest-selected connection.
@@ -571,6 +603,9 @@ pub(crate) struct Channel {
     ledger: DecisionLedger,
     policy: SharedPodPolicy,
     pending: Option<Pending>,
+    /// Decisions compared on this channel whose completion has not been
+    /// reported, oldest first, at most [`OPEN_COMPLETIONS`].
+    completable: VecDeque<Seq>,
 }
 
 impl std::fmt::Debug for Channel {
@@ -600,6 +635,7 @@ impl Channel {
             ledger: DecisionLedger::new(epoch),
             policy,
             pending: None,
+            completable: VecDeque::new(),
         }
     }
 
@@ -647,6 +683,7 @@ impl Channel {
                 Ok(Step {
                     reply: HostFrame::Observed { seq }.encode()?,
                     compared: None,
+                    completed: None,
                 })
             }
             GuestFrame::Redeem { seq, approval_id } => self.redeem(seq, approval_id),
@@ -655,7 +692,54 @@ impl Channel {
                 decided,
                 local,
             } => self.compare(seq, decided, local),
+            GuestFrame::Completed {
+                seq,
+                decided,
+                completion,
+            } => self.complete(seq, decided, completion),
         }
+    }
+
+    /// The guest reports what a call it decided returned. Accepted once, for
+    /// a decision this channel numbered and compared; everything it carries
+    /// is the guest's claim and is recorded as one.
+    fn complete(
+        &mut self,
+        seq: Seq,
+        decided: Seq,
+        completion: nucleus_decision_protocol::Completion,
+    ) -> Result<Step, ChannelError> {
+        // Not between a `Decide` and its report: the decision is not yet on
+        // the record, so there is nothing for a completion to join.
+        if let Some(p) = &self.pending {
+            return Err(ChannelError::Unreported { pending: p.seq });
+        }
+        // Once, and only for a decision this channel compared. Removing it is
+        // what makes a second completion of the same call a refusal.
+        let Some(at) = self.completable.iter().position(|s| *s == decided) else {
+            return Err(ChannelError::NotCompletable { decided });
+        };
+        self.completable.remove(at);
+        let nucleus_decision_protocol::Completion {
+            status,
+            exit_code,
+            output_sha256,
+            output_len,
+        } = completion;
+        Ok(Step {
+            reply: HostFrame::Recorded { seq }.encode()?,
+            compared: None,
+            completed: Some(CompletionReport {
+                pod: self.pod,
+                epoch: self.ledger.epoch(),
+                decided: decided.get(),
+                status,
+                exit_code,
+                output_sha256: hex::encode(output_sha256),
+                output_len,
+                reported_by: "guest",
+            }),
+        })
     }
 
     fn decide(
@@ -721,7 +805,8 @@ impl Channel {
             | HostFrame::Compared {
                 seq: _,
                 agreement: _,
-            } => Right::Nothing,
+            }
+            | HostFrame::Recorded { seq: _ } => Right::Nothing,
         };
         self.pending = Some(Pending {
             seq,
@@ -734,6 +819,7 @@ impl Channel {
         Ok(Step {
             reply,
             compared: None,
+            completed: None,
         })
     }
 
@@ -790,6 +876,7 @@ impl Channel {
                 return Ok(Step {
                     reply: reply.encode()?,
                     compared: None,
+                    completed: None,
                 });
             }
         };
@@ -854,7 +941,8 @@ impl Channel {
             | HostFrame::Compared {
                 seq: _,
                 agreement: _,
-            } => None,
+            }
+            | HostFrame::Recorded { seq: _ } => None,
         };
         if let (Some(right), Some(p)) = (settled, self.pending.as_mut()) {
             p.right = right;
@@ -862,6 +950,7 @@ impl Channel {
         Ok(Step {
             reply,
             compared: None,
+            completed: None,
         })
     }
 
@@ -883,6 +972,10 @@ impl Channel {
             right,
         } = p;
         let agreement = Agreement::of(host, local);
+        if self.completable.len() >= OPEN_COMPLETIONS {
+            self.completable.pop_front();
+        }
+        self.completable.push_back(decide_seq);
         let retired_decision = self.retire(right, args_digest(op, &subject))?;
         let compared = Comparison {
             pod: self.pod,
@@ -899,6 +992,7 @@ impl Channel {
         Ok(Step {
             reply: HostFrame::Compared { seq, agreement }.encode()?,
             compared: Some(compared),
+            completed: None,
         })
     }
 
@@ -963,11 +1057,106 @@ pub(crate) struct Recorder {
     /// The append-only file disagreements are written to; `None` keeps them in
     /// memory only (tests).
     pub log: Option<PathBuf>,
+    /// The pod's host-side record of every tool call, agreed or not;
+    /// `None` records none (tests that count only).
+    pub tools: Option<Arc<ToolRecord>>,
+}
+
+/// The pod's host-side tool record: one `tool_call` line in the pod's
+/// `lifecycle.log` for every decision the guest's tool-proxy reported and the
+/// host compared, auto-approved reads included, and one `tool_call_completed`
+/// line for each completion the guest reported on such a decision.
+///
+/// # What the guest can and cannot do to it
+///
+/// The file is in the node's state directory, which the guest has no path to,
+/// and the node only ever appends. A `tool_call` line holds what the host
+/// itself received in the `Decide` frame it numbered and answered (the
+/// operation and its exact subject) and both outcomes, written before the
+/// guest is told the comparison: the guest cannot edit or withdraw a line
+/// once written. Each line names the SHA-256 of the tool line before it
+/// (`previous_record_sha256`), so a reader sees a removed or edited line as a
+/// broken chain. The chain is not a signature: anyone who can write the
+/// node's state directory can rewrite the whole chain.
+///
+/// What the guest DOES choose is what it reports: its own outcome, and every
+/// field of a completion (status, exit code, output digest and length). Those
+/// are its claims and the record says so (`reported_by: "guest"`).
+#[derive(Debug)]
+pub(crate) struct ToolRecord {
+    pod_dir: PathBuf,
+    /// SHA-256 (hex) of the last tool line written, or empty before the first.
+    last: tokio::sync::Mutex<String>,
+}
+
+/// One tool line, as `lifecycle.log` carries it: the lifecycle envelope, the
+/// call, and the link to the line before.
+#[derive(serde::Serialize)]
+struct ToolLine<'a, T: serde::Serialize> {
+    timestamp_unix: u64,
+    actor: &'static str,
+    event: &'static str,
+    subject: String,
+    result: String,
+    tool: &'a T,
+    previous_record_sha256: &'a str,
+}
+
+/// The event names a reader looks for.
+pub(crate) const TOOL_CALL_EVENT: &str = "tool_call";
+pub(crate) const TOOL_COMPLETED_EVENT: &str = "tool_call_completed";
+
+impl ToolRecord {
+    pub(crate) fn new(pod_dir: &Path) -> Self {
+        Self {
+            pod_dir: pod_dir.to_path_buf(),
+            last: tokio::sync::Mutex::new(String::new()),
+        }
+    }
+
+    async fn append<T: serde::Serialize>(
+        &self,
+        pod: Uuid,
+        event: &'static str,
+        result: String,
+        tool: &T,
+    ) {
+        use sha2::{Digest, Sha256};
+        // Held across the write, so the chain order is the file order.
+        let mut last = self.last.lock().await;
+        let line = ToolLine {
+            timestamp_unix: crate::lifecycle::now_unix(),
+            actor: "nucleus-node",
+            event,
+            subject: format!("pod:{pod}"),
+            result,
+            tool,
+            previous_record_sha256: last.as_str(),
+        };
+        let line = match serde_json::to_string(&line) {
+            Ok(line) => line,
+            Err(e) => {
+                tracing::warn!(error = %e, "host tool record not encoded");
+                return;
+            }
+        };
+        let digest = hex::encode(Sha256::digest(line.as_bytes()));
+        let path = self.pod_dir.join("lifecycle.log");
+        match nucleus_jsonl::append_line_unsynced_async(path, line).await {
+            Ok(_) => *last = digest,
+            Err(e) => tracing::warn!(error = %e, "host tool record not written"),
+        }
+    }
 }
 
 impl Recorder {
     async fn record(&self, c: Comparison) {
         self.tally.count(&c);
+        if let Some(tools) = &self.tools {
+            tools
+                .append(c.pod, TOOL_CALL_EVENT, c.guest.clone(), &c)
+                .await;
+        }
         if c.agreement == AgreementCode::Disagree {
             tracing::warn!(
                 pod = %c.pod,
@@ -991,6 +1180,16 @@ impl Recorder {
                     Err(e) => tracing::warn!(error = %e, "host-decide disagreement not encoded"),
                 }
             }
+        }
+    }
+
+    async fn complete(&self, c: CompletionReport) {
+        if let Some(tools) = &self.tools {
+            let result = match c.exit_code {
+                Some(code) => format!("status {} exit {code}", c.status),
+                None => format!("status {}", c.status),
+            };
+            tools.append(c.pod, TOOL_COMPLETED_EVENT, result, &c).await;
         }
     }
 }
@@ -1057,6 +1256,9 @@ where
         };
         if let Some(c) = step.compared {
             recorder.record(c).await;
+        }
+        if let Some(c) = step.completed {
+            recorder.complete(c).await;
         }
         if let Err(e) = w.write_all(&step.reply).await {
             return Err(ChannelError::Io(e.kind()));
@@ -1263,6 +1465,7 @@ pub(crate) async fn start_for_pod(
         Recorder {
             tally: Arc::new(ShadowTally::default()),
             log: Some(pod_dir.join(DISAGREEMENT_LOG)),
+            tools: Some(Arc::new(ToolRecord::new(pod_dir))),
         },
     )
     .await

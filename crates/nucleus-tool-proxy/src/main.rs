@@ -1982,6 +1982,12 @@ async fn main() -> Result<(), ApiError> {
 
     let app = app
         .with_state(state.clone())
+        // Inside authentication: only a call the proxy admitted is measured
+        // for the host's tool record.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            host_decide::record_completion,
+        ))
         .layer(middleware::from_fn_with_state(state, auth_middleware))
         // OUTERMOST layer (last `.layer()` wins — it receives the request first,
         // wrapping every inner layer and handler). A stray panic anywhere inside

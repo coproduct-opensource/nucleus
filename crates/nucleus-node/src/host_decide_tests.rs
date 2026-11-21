@@ -116,6 +116,7 @@ async fn listen(
             Recorder {
                 tally: Arc::new(ShadowTally::default()),
                 log: Some(dir.join(DISAGREEMENT_LOG)),
+                tools: Some(Arc::new(ToolRecord::new(dir))),
             },
         )
         .await
@@ -153,6 +154,8 @@ struct Guest<S> {
     graph: FlowGraph,
     next: Seq,
     reported: Option<LabelRaise>,
+    /// The number of the last `Decide` this guest sent.
+    last_decided: Option<Seq>,
     io: S,
 }
 
@@ -163,6 +166,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Guest<S> {
             graph: FlowGraph::new(),
             next: Seq::FIRST,
             reported: None,
+            last_decided: None,
             io,
         }
     }
@@ -207,6 +211,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Guest<S> {
         let guest = outcome_of(&decision.verdict);
         let subject = Subject::new(subject).expect("short subject");
         let decided = self.seq();
+        self.last_decided = Some(decided);
         let digest = args_digest(op, &subject);
         let verdict = match ask(
             &mut self.io,
@@ -656,6 +661,7 @@ async fn authority_owns_policy_across_listener_replacement_but_not_certificate_r
             Recorder {
                 tally: Arc::new(ShadowTally::default()),
                 log: None,
+                tools: None,
             },
         )
         .await
@@ -841,6 +847,7 @@ async fn policy_history_and_faults_survive_channel_replacement() {
         Recorder {
             tally: Arc::new(ShadowTally::default()),
             log: None,
+            tools: None,
         },
     )
     .await
@@ -1392,4 +1399,247 @@ async fn a_local_pod_under_the_nodes_own_dlc_is_decided_alike_on_both_sides() {
     let report = listener.shutdown().await;
     assert_eq!(report.tally.disagree, 0);
     assert_eq!(report.tally.agree, 3);
+}
+
+// ── the host's tool record ──────────────────────────────────────────────────
+
+/// The pod's `lifecycle.log`, as JSON lines.
+fn lifecycle(dir: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(dir.join("lifecycle.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("a lifecycle line is JSON"))
+        .collect()
+}
+
+/// Each tool line names the SHA-256 of the tool line before it.
+fn assert_chained(dir: &Path) {
+    use sha2::{Digest, Sha256};
+    let text = std::fs::read_to_string(dir.join("lifecycle.log")).unwrap_or_default();
+    let mut previous = String::new();
+    for line in text.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        if !matches!(
+            v["event"].as_str(),
+            Some(TOOL_CALL_EVENT | TOOL_COMPLETED_EVENT)
+        ) {
+            continue;
+        }
+        assert_eq!(v["previous_record_sha256"], previous.as_str(), "{line}");
+        previous = hex::encode(Sha256::digest(line.as_bytes()));
+    }
+}
+
+fn completion(exit_code: Option<i32>, output: &[u8]) -> nucleus_decision_protocol::Completion {
+    use sha2::{Digest, Sha256};
+    nucleus_decision_protocol::Completion {
+        status: 200,
+        exit_code,
+        output_sha256: Sha256::digest(output).into(),
+        output_len: output.len() as u64,
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Guest<S> {
+    /// Report what the last decided call returned, as the proxy does.
+    async fn complete(
+        &mut self,
+        decided: Seq,
+        c: nucleus_decision_protocol::Completion,
+    ) -> HostFrame {
+        let seq = self.seq();
+        ask(
+            &mut self.io,
+            &GuestFrame::Completed {
+                seq,
+                decided,
+                completion: c,
+            },
+        )
+        .await
+    }
+}
+
+/// Owner, 2026-11-01: the host held only model calls, so nothing showed which
+/// files an agent had read. Every decision the guest's tool-proxy reports, an
+/// agreed auto-approved read included, is a `tool_call` line in the pod's
+/// host lifecycle record, with the exact subject the host decided, both
+/// outcomes and the time; a completion the guest reports joins it.
+#[tokio::test]
+async fn every_reported_tool_call_is_in_the_hosts_lifecycle_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = authority(dir.path());
+    let pod = admit(&auth, no_run_bash()).await;
+    let epochs = Arc::new(EpochSource::seeded());
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
+    let mut guest = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    let calls = [
+        (Operation::ReadFiles, "repo/CLAUDE.md"),
+        (Operation::ReadFiles, "repo/docs/PROOFS.md"),
+        (Operation::GrepSearch, "proof"),
+        (Operation::RunBash, "git grep -i proof"),
+    ];
+    let mut decided = Vec::new();
+    for (op, subject) in calls {
+        guest.decide(op, subject).await;
+        decided.push(guest.last_decided.unwrap());
+    }
+    assert_eq!(
+        guest
+            .complete(decided[0], completion(None, b"# Nucleus"))
+            .await,
+        HostFrame::Recorded {
+            seq: Seq::new(guest.next.get() - 1)
+        }
+    );
+    drop(guest);
+    listener.shutdown().await;
+
+    let lines = lifecycle(dir.path());
+    let tool: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == TOOL_CALL_EVENT)
+        .collect();
+    assert_eq!(tool.len(), calls.len(), "one line per decision: {lines:#?}");
+    for ((op, subject), line) in calls.iter().zip(&tool) {
+        assert_eq!(line["actor"], "nucleus-node");
+        assert_eq!(line["subject"], format!("pod:{pod}"));
+        assert!(line["timestamp_unix"].as_u64().unwrap() > 0);
+        assert_eq!(
+            line["tool"]["operation"],
+            portcullis::grant_usage::operation_name(*op)
+        );
+        assert_eq!(
+            line["tool"]["subject"], *subject,
+            "the exact subject the host decided"
+        );
+        assert!(line["tool"]["guest"].is_string() && line["tool"]["host"].is_string());
+    }
+    assert_eq!(
+        tool[0]["tool"]["guest"], "allowed",
+        "an auto-approved read is recorded too"
+    );
+    assert_eq!(tool[3]["tool"]["guest"], "denied:not_granted");
+    let done: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|l| l["event"] == TOOL_COMPLETED_EVENT)
+        .collect();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0]["tool"]["decided"], tool[0]["tool"]["decided"]);
+    assert_eq!(done[0]["tool"]["epoch"], tool[0]["tool"]["epoch"]);
+    assert_eq!(done[0]["tool"]["output_len"], 9);
+    assert_eq!(done[0]["tool"]["reported_by"], "guest");
+    assert_chained(dir.path());
+}
+
+/// A guest cannot change the host's record after the fact. Each attempt below
+/// is a frame a compromised guest could send; each is refused, and the record
+/// file is byte-for-byte what it was before the attempt.
+#[tokio::test]
+async fn a_guest_forgery_does_not_change_the_host_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let epochs = Arc::new(EpochSource::seeded());
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
+    let mut guest = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    guest.decide(Operation::ReadFiles, "repo/CLAUDE.md").await;
+    let read = guest.last_decided.unwrap();
+    assert!(matches!(
+        guest.complete(read, completion(None, b"# Nucleus")).await,
+        HostFrame::Recorded { .. }
+    ));
+    let record = || std::fs::read(dir.path().join("lifecycle.log")).unwrap();
+    let before = record();
+
+    /// Send `frame` and expect the host to close the channel instead of answering.
+    async fn refused<S: AsyncRead + AsyncWrite + Unpin>(io: &mut S, frame: &GuestFrame) {
+        io.write_all(&frame.encode().unwrap()).await.unwrap();
+        let mut b = [0u8; 1];
+        assert_eq!(
+            io.read(&mut b).await.unwrap_or(0),
+            0,
+            "the host answered {frame:?}"
+        );
+    }
+    let forged = |seq: u64, decided: Seq| GuestFrame::Completed {
+        seq: Seq::new(seq),
+        decided,
+        completion: completion(Some(0), b"a different output"),
+    };
+
+    // 1. A second completion of the same call, to replace its output digest.
+    let seq = guest.seq().get();
+    refused(&mut guest.io, &forged(seq, read)).await;
+    assert_eq!(record(), before, "a repeated completion changed the record");
+
+    // 2. A completion of a call this channel never decided.
+    let mut io = connect(&listener).await;
+    refused(&mut io, &forged(0, Seq::new(9_999))).await;
+    assert_eq!(
+        record(),
+        before,
+        "a completion of nothing changed the record"
+    );
+
+    // 3. The old channel's decision, completed on a new channel (another epoch).
+    let mut io = connect(&listener).await;
+    refused(&mut io, &forged(0, read)).await;
+    assert_eq!(record(), before, "another channel's decision was completed");
+
+    // 4. A second report on a compared call, to rewrite the decision it enforced.
+    let mut g = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    g.decide(Operation::ReadFiles, "repo/src/lib.rs").await;
+    let decided = g.last_decided.unwrap();
+    let after_decide = record();
+    let seq = g.seq();
+    refused(
+        &mut g.io,
+        &GuestFrame::Shadow {
+            seq,
+            decided,
+            local: Outcome::Denied {
+                reason: DenyReason::NotGranted,
+            },
+        },
+    )
+    .await;
+    assert_eq!(record(), after_decide, "a second report rewrote a decision");
+
+    // 5. A completion sent while a decision is still unreported, to attach an
+    //    output to a call before its outcome is on the record.
+    let mut io = connect(&listener).await;
+    let subject = Subject::new("repo/secret").unwrap();
+    let digest = args_digest(Operation::ReadFiles, &subject);
+    assert!(matches!(
+        ask(
+            &mut io,
+            &GuestFrame::Decide {
+                seq: Seq::new(0),
+                op: Operation::ReadFiles,
+                subject,
+                args_digest: digest,
+            },
+        )
+        .await,
+        HostFrame::Verdict { .. }
+    ));
+    let held = record();
+    refused(&mut io, &forged(1, Seq::new(0))).await;
+    assert_eq!(
+        record(),
+        held,
+        "a completion attached to an unreported decision"
+    );
+
+    drop((guest, g, io));
+    listener.shutdown().await;
+    let lines = lifecycle(dir.path());
+    let done: Vec<_> = lines
+        .iter()
+        .filter(|l| l["event"] == TOOL_COMPLETED_EVENT)
+        .collect();
+    assert_eq!(done.len(), 1, "only the honest completion: {done:#?}");
+    assert_eq!(done[0]["tool"]["output_len"], 9);
+    assert_chained(dir.path());
 }

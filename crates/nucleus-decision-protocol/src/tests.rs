@@ -73,6 +73,18 @@ fn every_guest_frame() -> Vec<GuestFrame> {
             local,
         });
     }
+    for exit_code in [None, Some(0), Some(-1), Some(i32::MAX)] {
+        v.push(GuestFrame::Completed {
+            seq: Seq::new(7),
+            decided: Seq::new(4),
+            completion: Completion {
+                status: 200,
+                exit_code,
+                output_sha256: [0x5c; 32],
+                output_len: u64::MAX,
+            },
+        });
+    }
     v
 }
 
@@ -91,6 +103,7 @@ fn every_host_frame() -> Vec<HostFrame> {
             },
         },
         HostFrame::Observed { seq: Seq::new(1) },
+        HostFrame::Recorded { seq: Seq::new(8) },
     ];
     for agreement in Agreement::ALL {
         v.push(HostFrame::Compared {
@@ -857,6 +870,26 @@ fn arb_guest_frame() -> impl Strategy<Value = GuestFrame> {
                 decided: Seq::new(d),
                 local,
             }),
+        (
+            any::<u64>(),
+            any::<u64>(),
+            any::<u16>(),
+            proptest::option::of(any::<i32>()),
+            any::<[u8; 32]>(),
+            any::<u64>(),
+        )
+            .prop_map(|(s, d, status, exit_code, output_sha256, output_len)| {
+                GuestFrame::Completed {
+                    seq: Seq::new(s),
+                    decided: Seq::new(d),
+                    completion: Completion {
+                        status,
+                        exit_code,
+                        output_sha256,
+                        output_len,
+                    },
+                }
+            }),
     ]
 }
 
@@ -881,6 +914,7 @@ fn arb_host_frame() -> impl Strategy<Value = HostFrame> {
             },
         }),
         any::<u64>().prop_map(|s| HostFrame::Observed { seq: Seq::new(s) }),
+        any::<u64>().prop_map(|s| HostFrame::Recorded { seq: Seq::new(s) }),
         (any::<u64>(), prop::sample::select(Agreement::ALL.to_vec())).prop_map(|(s, agreement)| {
             HostFrame::Compared {
                 seq: Seq::new(s),
@@ -941,4 +975,31 @@ proptest! {
         // And the raise is exactly the join: it adds nothing the report did not say.
         prop_assert_eq!(after, current.join(reported));
     }
+}
+
+/// A `Completed` frame's exit-code presence byte is 0 or 1. Anything else is
+/// refused by name, so an accepted frame re-encodes to the bytes it came from.
+#[test]
+fn a_completion_exit_code_presence_byte_is_canonical() {
+    let f = GuestFrame::Completed {
+        seq: Seq::new(3),
+        decided: Seq::new(2),
+        completion: Completion {
+            status: 200,
+            exit_code: None,
+            output_sha256: [1; 32],
+            output_len: 9,
+        },
+    };
+    let mut body = body_of(&enc_g(&f));
+    // version, tag, seq, decided, status: the presence byte follows.
+    let at = 1 + 1 + 8 + 8 + 2;
+    body[at] = 2;
+    assert_eq!(
+        GuestFrame::decode(&reframe(&body)),
+        Err(FrameError::UnknownDiscriminant {
+            field: Field::ExitCode,
+            got: 2
+        })
+    );
 }

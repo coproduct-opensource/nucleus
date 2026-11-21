@@ -98,8 +98,8 @@ pub use codec::{
     EncodeError, Field, FrameError, LEN_PREFIX, MAX_BODY_LEN, Region, VERSION, body_len,
 };
 pub use frame::{
-    Agreement, ApprovalId, ArgsDigest, DecisionId, DenyReason, GuestFrame, HostFrame, LabelRaise,
-    MAX_SUBJECT_LEN, Outcome, Seq, Subject, SubjectError, Verdict,
+    Agreement, ApprovalId, ArgsDigest, Completion, DecisionId, DenyReason, GuestFrame, HostFrame,
+    LabelRaise, MAX_SUBJECT_LEN, Outcome, Seq, Subject, SubjectError, Verdict,
 };
 
 /// The vsock port the guest dials for its decision channel (P8).

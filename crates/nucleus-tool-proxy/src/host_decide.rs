@@ -36,8 +36,8 @@ use nucleus::portcullis::flow_graph::FlowGraph;
 use nucleus::portcullis::kernel::{Kernel, Verdict as KernelVerdict};
 use nucleus_decision_protocol::kernel::{args_digest, outcome_of, taint_report};
 use nucleus_decision_protocol::{
-    Agreement, GuestFrame, HostFrame, LEN_PREFIX, LabelRaise, Outcome, Seq, Subject, Verdict,
-    body_len,
+    Agreement, Completion, GuestFrame, HostFrame, LEN_PREFIX, LabelRaise, Outcome, Seq, Subject,
+    Verdict, body_len,
 };
 use nucleus_spec::host_decide_telemetry::{GuestTelemetry, LatencyHistogram, UnavailableByKind};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -52,6 +52,44 @@ const DEADLINE: Duration = Duration::from_secs(2);
 
 /// The most kernel sessions with an open channel at once.
 const MAX_SESSIONS: usize = 16;
+
+/// The most decided calls whose completion may still be reported. A call that
+/// has not finished by the time this many more were decided is not reported.
+const OPEN_CALLS: usize = 1024;
+
+/// The routes whose response is measured for the host's record: the tool
+/// calls, answered whole. Not the broker's streamed egress (the node records
+/// those calls itself, in its host-effect journals) nor the workload's logs.
+const MEASURED_ROUTES: [&str; 10] = [
+    "/v1/read",
+    "/v1/artifact",
+    "/v1/write",
+    "/v1/run",
+    "/v1/web_fetch",
+    "/v1/glob",
+    "/v1/grep",
+    "/v1/web_search",
+    "/v1/memory/write",
+    "/v1/memory/recall",
+];
+
+/// The largest response measured. Larger ones are passed on unmeasured.
+const MEASURED_BYTES: usize = 32 * 1024 * 1024;
+
+tokio::task_local! {
+    /// The tickets of the decisions made while serving one measured call.
+    static CALL: std::cell::RefCell<Vec<u64>>;
+}
+
+/// A ticket for a decision made inside a measured call, or `None` outside one.
+fn ticket_for_this_call(tickets: &std::sync::atomic::AtomicU64) -> Option<u64> {
+    CALL.try_with(|call| {
+        let t = tickets.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        call.borrow_mut().push(t);
+        t
+    })
+    .ok()
+}
 
 /// Why a decision's shadow never reached a comparison: one type, shared with
 /// the telemetry the reader parses (ADR 0007 G-1).
@@ -178,10 +216,19 @@ pub(crate) struct Question {
     local: Outcome,
     taint: LabelRaise,
     released: Released,
+    /// The call this decision belongs to, when it was made inside one
+    /// ([`record_completion`]): its completion is reported against it.
+    ticket: Option<u64>,
 }
 
 pub(crate) enum Work {
     Ask(Question),
+    /// What the call holding `ticket` returned: reported to the host against
+    /// the decision the host numbered for it.
+    Complete {
+        ticket: u64,
+        completion: Completion,
+    },
     /// Answered once everything queued before it has been handled.
     #[cfg(test)]
     Flush(tokio::sync::oneshot::Sender<()>),
@@ -197,6 +244,8 @@ pub(crate) enum HostDecide {
     On {
         queue: tokio::sync::mpsc::Sender<Work>,
         tally: Arc<GuestTally>,
+        /// Hands each decision made inside a call its ticket.
+        tickets: Arc<std::sync::atomic::AtomicU64>,
     },
 }
 
@@ -204,6 +253,7 @@ impl std::fmt::Debug for Work {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Work::Ask(q) => q.fmt(f),
+            Work::Complete { ticket, .. } => write!(f, "Complete({ticket})"),
             #[cfg(test)]
             Work::Flush(_) => f.write_str("Flush"),
         }
@@ -232,7 +282,11 @@ impl HostDecide {
         let (queue, rx) = tokio::sync::mpsc::channel(QUEUE);
         let tally = Arc::new(GuestTally::default());
         tokio::spawn(worker(rx, dial, Arc::clone(&tally), print));
-        HostDecide::On { queue, tally }
+        HostDecide::On {
+            queue,
+            tally,
+            tickets: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
     }
 
     /// Put one decision to the host as well. Never waits, never fails the
@@ -267,7 +321,12 @@ impl HostDecide {
         verdict: &KernelVerdict,
         released: Released,
     ) {
-        let HostDecide::On { queue, tally } = self else {
+        let HostDecide::On {
+            queue,
+            tally,
+            tickets,
+        } = self
+        else {
             return;
         };
         let subject = match Subject::new(subject) {
@@ -284,6 +343,7 @@ impl HostDecide {
             local: outcome_of(verdict),
             taint: taint_report(graph),
             released,
+            ticket: ticket_for_this_call(tickets),
         };
         match queue.try_send(Work::Ask(q)) {
             Ok(()) => {}
@@ -293,6 +353,16 @@ impl HostDecide {
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 tally.count(Shadowed::Unavailable(HostUnavailable::Stopped))
             }
+        }
+    }
+
+    /// Report what the call holding `ticket` returned. Never waits, never
+    /// fails the caller, like [`Self::submit`].
+    pub(crate) fn complete(&self, ticket: u64, completion: Completion) {
+        if let HostDecide::On { queue, .. } = self {
+            // A full or closed queue loses this completion; the host's record
+            // then holds the decision without one, which is what a reader sees.
+            let _ = queue.try_send(Work::Complete { ticket, completion });
         }
     }
 
@@ -373,6 +443,9 @@ struct Channel {
     io: Box<dyn Duplex>,
     next: Seq,
     reported: Option<LabelRaise>,
+    /// Which opening of its session's channel this is: a decision numbered on
+    /// an earlier one cannot be completed on this one.
+    generation: u64,
 }
 
 impl Channel {
@@ -409,7 +482,7 @@ impl Channel {
     /// Observe (if the taint moved), Decide, Shadow. Hands back the host's
     /// agreement and how long the `Decide` exchange took: the round trip an
     /// authoritative guest would wait on (ADR 0014 §8).
-    async fn shadow(&mut self, q: Question) -> Result<(Agreement, Duration), HostUnavailable> {
+    async fn shadow(&mut self, q: Question) -> Result<(Agreement, Duration, Seq), HostUnavailable> {
         let Question {
             session: _,
             op,
@@ -417,6 +490,7 @@ impl Channel {
             local,
             taint,
             released,
+            ticket: _,
         } = q;
         if self.reported != Some(taint) {
             let seq = self.seq()?;
@@ -481,9 +555,38 @@ impl Channel {
             })
             .await?
         {
-            HostFrame::Compared { seq: s, agreement } if s == seq => Ok((agreement, round_trip)),
+            HostFrame::Compared { seq: s, agreement } if s == seq => {
+                Ok((agreement, round_trip, decided))
+            }
             _ => Err(HostUnavailable::Protocol),
         }
+    }
+}
+
+/// The decided calls whose completion may still be reported: each ticket's
+/// session, the channel opening it was decided on, and the host's number for
+/// the `Decide`. Bounded at [`OPEN_CALLS`], oldest forgotten first.
+#[derive(Default)]
+struct OpenCalls {
+    by_ticket: HashMap<u64, (Uuid, u64, Seq)>,
+    order: std::collections::VecDeque<u64>,
+}
+
+impl OpenCalls {
+    fn insert(&mut self, ticket: u64, at: (Uuid, u64, Seq)) {
+        if self.order.len() >= OPEN_CALLS
+            && let Some(old) = self.order.pop_front()
+        {
+            self.by_ticket.remove(&old);
+        }
+        self.by_ticket.insert(ticket, at);
+        self.order.push_back(ticket);
+    }
+
+    fn take(&mut self, ticket: u64) -> Option<(Uuid, u64, Seq)> {
+        let at = self.by_ticket.remove(&ticket)?;
+        self.order.retain(|t| *t != ticket);
+        Some(at)
     }
 }
 
@@ -494,6 +597,8 @@ async fn worker(
     print: Printer,
 ) {
     let mut channels: HashMap<Uuid, Channel> = HashMap::new();
+    let mut open = OpenCalls::default();
+    let mut generations = 0u64;
     let mut printed: Option<GuestTelemetry> = None;
     loop {
         let work = match tokio::time::timeout(QUIET, rx.recv()).await {
@@ -509,16 +614,72 @@ async fn worker(
         };
         match work {
             Work::Ask(q) => {
-                tally.count(put(&mut channels, &dial, &tally, q).await);
+                let ticket = q.ticket;
+                let session = q.session;
+                let (shadowed, decided) =
+                    put(&mut channels, &mut generations, &dial, &tally, q).await;
+                if let (Some(ticket), Some((generation, decided))) = (ticket, decided) {
+                    open.insert(ticket, (session, generation, decided));
+                }
+                tally.count(shadowed);
                 if rx.is_empty() {
                     print_if_moved(&tally, &mut printed, &print);
                 }
+            }
+            Work::Complete { ticket, completion } => {
+                report_completion(&mut channels, &mut open, ticket, completion).await;
             }
             #[cfg(test)]
             Work::Flush(done) => {
                 let _ = done.send(());
             }
         }
+    }
+}
+
+/// Report a completion on the channel its decision was numbered on. A call
+/// whose channel has since been reopened, or whose decision the host never
+/// compared, is not reported: the host would refuse it, and the host's record
+/// then shows the decision with no completion, which is the truth.
+async fn report_completion(
+    channels: &mut HashMap<Uuid, Channel>,
+    open: &mut OpenCalls,
+    ticket: u64,
+    completion: Completion,
+) {
+    let Some((session, generation, decided)) = open.take(ticket) else {
+        return;
+    };
+    let Some(mut ch) = channels.remove(&session) else {
+        return;
+    };
+    if ch.generation != generation {
+        channels.insert(session, ch);
+        return;
+    }
+    let reported = async {
+        let seq = ch.seq()?;
+        match ch
+            .ask(GuestFrame::Completed {
+                seq,
+                decided,
+                completion,
+            })
+            .await?
+        {
+            HostFrame::Recorded { seq: s } if s == seq => Ok(()),
+            _ => Err(HostUnavailable::Protocol),
+        }
+    }
+    .await;
+    match reported {
+        Ok(()) => {
+            channels.insert(session, ch);
+        }
+        // Dropped, as `put` drops a channel whose numbering is in doubt. A
+        // node that predates completions closes the channel here; the next
+        // decision reopens it.
+        Err(why) => tracing::debug!(?why, "host-decide: a completion was not recorded"),
     }
 }
 
@@ -537,38 +698,45 @@ fn print_if_moved(tally: &GuestTally, printed: &mut Option<GuestTelemetry>, prin
 /// if there is none.
 async fn put(
     channels: &mut HashMap<Uuid, Channel>,
+    generations: &mut u64,
     dial: &Dialer,
     tally: &GuestTally,
     q: Question,
-) -> Shadowed {
+) -> (Shadowed, Option<(u64, Seq)>) {
     let session = q.session;
     let opened = match channels.remove(&session) {
         Some(ch) => Ok(ch),
         None if channels.len() >= MAX_SESSIONS => Err(HostUnavailable::TooManySessions),
         None => match tokio::time::timeout(DEADLINE, dial()).await {
-            Ok(Ok(io)) => Ok(Channel {
-                io,
-                next: Seq::FIRST,
-                reported: None,
-            }),
+            Ok(Ok(io)) => {
+                *generations = generations.wrapping_add(1);
+                Ok(Channel {
+                    io,
+                    next: Seq::FIRST,
+                    reported: None,
+                    generation: *generations,
+                })
+            }
             Ok(Err(_)) => Err(HostUnavailable::Connect),
             Err(_) => Err(HostUnavailable::Timeout),
         },
     };
-    let shadowed = match opened {
-        Err(why) => Shadowed::Unavailable(why),
+    let (shadowed, decided) = match opened {
+        Err(why) => (Shadowed::Unavailable(why), None),
         Ok(mut ch) => match ch.shadow(q).await {
-            Ok((agreement, round_trip)) => {
+            Ok((agreement, round_trip, decided)) => {
                 tally.waited(round_trip);
+                let generation = ch.generation;
                 channels.insert(session, ch);
-                match agreement {
+                let shadowed = match agreement {
                     Agreement::Agree => Shadowed::Agreed,
                     Agreement::Disagree => Shadowed::Disagreed,
-                }
+                };
+                (shadowed, Some((generation, decided)))
             }
             // The channel is dropped: its numbering is no longer known to
             // match the host's, and the next question reopens it.
-            Err(why) => Shadowed::Unavailable(why),
+            Err(why) => (Shadowed::Unavailable(why), None),
         },
     };
     if let Shadowed::Unavailable(why) = shadowed {
@@ -577,7 +745,71 @@ async fn put(
             "host-decide shadow: the host did not compare this decision"
         );
     }
-    shadowed
+    (shadowed, decided)
+}
+
+/// Measure a tool call's response for the host's record: the middleware every
+/// tool route passes through. Each decision made while serving the call holds a
+/// ticket (`CALL`); once the handler answers, the response's status, its exit
+/// code for a `/v1/run`, and its body's SHA-256 and length are reported against
+/// each of those decisions (`GuestFrame::Completed`). The body is passed on
+/// unchanged.
+pub(crate) async fn record_completion(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path().to_owned();
+    if matches!(*state.host_decide, HostDecide::Off) || !MEASURED_ROUTES.contains(&path.as_str()) {
+        return next.run(request).await;
+    }
+    let (response, tickets) = within_call(next.run(request)).await;
+    if tickets.is_empty() {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let bytes = match axum::body::to_bytes(body, MEASURED_BYTES).await {
+        Ok(bytes) => bytes,
+        // Too large to measure, or a body that failed mid-stream: the caller
+        // gets a refusal rather than a truncated answer, and nothing is
+        // reported, so the host's record shows the decision without an outcome.
+        Err(_) => {
+            return axum::response::IntoResponse::into_response(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+    let completion = measure(&path, parts.status.as_u16(), &bytes);
+    for ticket in tickets {
+        state.host_decide.complete(ticket, completion);
+    }
+    axum::response::Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+/// Run `call` as one measured call: the tickets of the decisions it made.
+pub(crate) async fn within_call<F: Future>(call: F) -> (F::Output, Vec<u64>) {
+    CALL.scope(std::cell::RefCell::new(Vec::new()), async {
+        let out = call.await;
+        (out, CALL.with(|c| c.take()))
+    })
+    .await
+}
+
+/// What one tool response says, as the host's record carries it.
+pub(crate) fn measure(path: &str, status: u16, body: &[u8]) -> Completion {
+    use sha2::{Digest, Sha256};
+    // A run's process exit code is its answer's `status` field (`RunResponse`).
+    let exit_code = (path == "/v1/run" && status == 200)
+        .then(|| serde_json::from_slice::<serde_json::Value>(body).ok())
+        .flatten()
+        .and_then(|v| v["status"].as_i64())
+        .and_then(|code| i32::try_from(code).ok());
+    Completion {
+        status,
+        exit_code,
+        output_sha256: Sha256::digest(body).into(),
+        output_len: u64::try_from(body.len()).unwrap_or(u64::MAX),
+    }
 }
 
 #[cfg(test)]
