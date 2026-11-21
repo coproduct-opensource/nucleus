@@ -1131,7 +1131,9 @@ impl PodAuthority {
 
     /// Admit a requested `credentialed_egress` list only if every entry is in the
     /// registry, and — for a pod caller — held by the parent as well. Otherwise
-    /// refuse, naming the first entry not granted and never why.
+    /// refuse, naming one entry not granted and never why: the first in request
+    /// order the registry refuses, else the first the parent refuses (so not
+    /// always the first in request order).
     ///
     /// Both ceilings for a pod caller, not just the parent's: the parent's set
     /// was a subset of the registry when it was admitted, but it may have been
@@ -1144,19 +1146,16 @@ impl PodAuthority {
         parent: Option<&[CredentialedEgressSpec]>,
         child_id: Uuid,
     ) -> Result<Vec<CredentialedEgressSpec>, ApiError> {
-        let registry = loaded
-            .upstreams
-            .as_deref()
-            .map_or(&[][..], UpstreamRegistry::entries);
-        let (mut kept, mut dropped) = CredentialedEgressSpec::clamp(requested.to_vec(), registry);
-        if let Some(parent) = parent {
-            let (narrowed, beyond_parent) = CredentialedEgressSpec::clamp(kept, parent);
-            kept = narrowed;
-            dropped.extend(beyond_parent);
-        }
-        match dropped.first() {
-            None => Ok(kept),
-            Some(up) => {
+        // Decided by `nucleus_cred_protocol::extracted::admission::admit_upstreams`
+        // (ADR 0007 G-1): no registry is an empty ceiling, and the entry it names
+        // on refusal is the first the registry refused, else the first the
+        // parent refused.
+        let registry = loaded.upstreams.as_deref().map(UpstreamRegistry::entries);
+        match nucleus_cred_protocol::extracted::admission::admit_upstreams(
+            registry, requested, parent,
+        ) {
+            Ok(kept) => Ok(kept),
+            Err(up) => {
                 // By NAME, never by the variable's value — and not by the variable's
                 // name either, which is the caller's text and may be a probe.
                 tracing::warn!(
@@ -1932,6 +1931,14 @@ impl PodAuthority {
     /// previous node life, which no longer runs (`previous_life`).
     pub(crate) async fn of_previous_life(&self, pod_id: Uuid) -> bool {
         self.inner.lock().await.previous_life.contains(&pod_id)
+    }
+
+    /// What `pod_id`'s release charged the ledger above it, in micro-USD: its metered
+    /// spend when its binding settles `metered`, else its whole allocation. Kept on
+    /// disk at release, so it is read for a pod of this life or of a previous one.
+    /// `None` is unknown: not yet released, no ledger above it, or no readable record.
+    pub(crate) async fn settled_spend(&self, pod_id: Uuid) -> Option<u64> {
+        settle::settled_spend(&self.state_dir, pod_id).await
     }
 
     /// Rebuild the registry from `pods/<id>/authority.json` after a restart,
