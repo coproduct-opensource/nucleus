@@ -531,6 +531,16 @@ enum Command {
         #[command(subcommand)]
         cmd: CiSpecCmd,
     },
+    /// How many of the broker's egress decisions have an Aeneas-extracted Lean
+    /// theorem stating a `Pa.Egress.1` law and a Rust–Lean parity test? Reads
+    /// ci/egress-decisions.toml against the tracked tree and prints
+    /// `{"decisions": N, "proved": M, "pct": P}`; an obligation that is present
+    /// but does not hold is refused. `--check` holds the count to
+    /// ci/egress-proofs.json in both directions. See docs/egress-as-olog.md.
+    EgressProofs {
+        #[arg(long)]
+        check: bool,
+    },
     /// What network egress do live-boot pods make today, and through which
     /// path? Reads downloaded `live-boot-evidence` bundles (one directory per
     /// run) and reports declared egress, the guest's direct connects and their
@@ -667,6 +677,7 @@ mod convergence;
 mod coverage_floor;
 mod econ_boundary;
 mod egress_census;
+mod egress_proofs;
 mod escape_lane;
 mod exemplar_scoreboard;
 mod fly_pools;
@@ -968,6 +979,7 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::EgressProofs { check } => egress_proofs::run(&std::env::current_dir()?, check),
         Command::ExemplarScoreboard { out } => exemplar_scoreboard::run(&out),
         Command::ScoreboardRatchet { current, baseline } => {
             scoreboard::scoreboard_ratchet(current.as_deref(), &baseline)

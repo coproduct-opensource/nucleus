@@ -9,6 +9,7 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![scorecard](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fci%2Fbadges%2Fscorecard.json)](docs/adr/0007-make-the-defect-unwritable.md)
 [![sealed mediation](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fci%2Fbadges%2Fmediation.json)](crates/xtask/src/mediate.rs)
+[![egress proofs](https://nucleus.coproduct.one/public/goals/nucleus-egress-proofs/badge.svg)](https://nucleus.coproduct.one/public/goals/nucleus-egress-proofs)
 
 The scorecard badge names the **weakest** of its defect families, not an average —
 `cargo xtask scorecard` reports how much of what this repo declares is actually
@@ -22,6 +23,13 @@ on the path, but the effect does not need its result) or *unchecked*;
 `cargo xtask mediation` prints which is which. It measures wiring, not whether the
 decisions are right, and not the VM isolation that keeps the tool-proxy the pod's
 only way out.
+
+The egress-proofs badge counts the broker's egress decisions (8 today) that have
+an Aeneas-extracted Lean theorem stating a `Pa.Egress.1` law and a Rust–Lean
+parity test. Today that is 0 of 8. `cargo xtask egress-proofs` re-derives the
+count from the tree and refuses a proof that holds a `sorry`, is vacuous, or
+states something other than its pinned statement. It does not build the Lean;
+see [docs/egress-as-olog.md](docs/egress-as-olog.md).
 
 **Nucleus expands the frontier of safely delegatable machine agency: any agent should be able to do as much useful real-world work as its principal is willing to authorize, while being structurally incapable of exceeding that authorization.**
 

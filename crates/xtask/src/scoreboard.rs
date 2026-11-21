@@ -23,11 +23,12 @@ const LOWER: [&str; 6] = [
     "effect_stubs",
     "unsafe_blocks",
 ];
-const HIGHER: [&str; 4] = [
+const HIGHER: [&str; 5] = [
     "extracted_proofs",
     "crates_lints_workspace",
     "extraction_ratio_pct",
     "lints_adoption_pct",
+    "egress_proved",
 ];
 
 /// Flatten nested objects to dotted keys; numbers only (booleans excluded).

@@ -21,5 +21,9 @@
     "bypass_sites": 1,
     "disallow_sites": 1,
     "effect_stubs": 10
+  },
+  "egress_proofs": {
+    "egress_proved": 0,
+    "egress_decisions_GUARD": 8
   }
 }

@@ -1,0 +1,131 @@
+# The broker's egress decisions, and the Pa.Egress.1 laws each one decides.
+#
+# Read by `cargo xtask egress-proofs` (crates/xtask/src/egress_proofs.rs), which counts a decision
+# as PROVED only when, for every law it cites, an `[[decision.obligation]]` names:
+#   lean        the proof file (tracked)
+#   theorem     the theorem's name, declared once in that file
+#   statement   the theorem's signature (binders and type, between its name and `:=`), pinned
+#               verbatim up to whitespace; it must mention `lean_def`
+#   extracted   the Aeneas `generated/**/Funs.lean` the extracted definition lives in
+#   lean_def    the extracted def's name, as `def <lean_def>` spells it there
+#   parity      a tracked Rust test file that names the production fn
+#   parity_test the Rust–Lean parity test in it
+# An obligation that is present but does not hold (sorry/admit/native_decide in the proof, a
+# vacuous statement, a signature that is not the pinned one, a missing def or parity test, an
+# axiom in the proof file) makes the command fail, naming it. No decision has an obligation
+# today: the measured value is 0 of 8. The public summary is docs/egress-as-olog.md.
+#
+# A law's `falsifier` names existing Rust tests (`path::test_fn`) that would fail if the law broke;
+# the command checks each one is a `fn` in a tracked file. A law no decision cites must have status
+# "code not on main", and its decision is added in the change that lands that code.
+
+[[law]]
+id = "Pa.Egress.1.L1"
+statement = """Every credentialed request maps to exactly one declared effect (one EgressOperation) \
+or is refused. A push is GitPush whatever the operator's effect table says, and a table whose effects \
+could disagree about a request (overlapping patterns, one method, different operations) is refused \
+when it is built."""
+falsifier = [
+  "crates/nucleus-cred-protocol/src/egress.rs::a_forge_write_is_what_the_operator_declared_or_refused",
+  "crates/nucleus-cred-protocol/src/egress.rs::a_push_is_classified_by_what_it_does",
+  "crates/nucleus-cred-protocol/src/egress.rs::an_effect_table_is_valid_or_refused",
+]
+# Gap, 2026-10-31: no fixture table DECLARES the push service (`git-receive-pack`) as another
+# operation, so "whatever the table says" is falsified only for tables that are silent about it.
+# Moving the push check after the table lookup in `operation_for` would pass these tests.
+status = "stated; enforced by Rust tests; not proved"
+
+[[law]]
+id = "Pa.Egress.1.L2"
+statement = "A push's ref updates all lie within the grant's push_refs."
+# `push_refs` is not on main (2026-10-31); it is on the unmerged branch broker/push-ref-scope.
+falsifier = []
+status = "code not on main"
+
+[[law]]
+id = "Pa.Egress.1.L3"
+statement = """A pod egress entry is admitted only if it equals, as a whole struct, an entry of the \
+registry projection, and, for a pod caller, an entry of the parent's admitted set."""
+falsifier = [
+  "crates/nucleus-spec/src/credentialed_egress_fixity_tests.rs::admission_is_whole_struct_equality",
+  "crates/nucleus-node/src/pod_authority/tests/mod.rs::a_pod_caller_is_refused_an_upstream_its_parent_lacks",
+  "crates/nucleus-node/src/pod_authority/tests/mod.rs::root_and_external_callers_are_refused_what_the_registry_lacks",
+]
+status = "stated; enforced by Rust tests; not proved"
+
+[[law]]
+id = "Pa.Egress.1.L4"
+statement = """Host fixed_headers cannot be overridden by the guest: for every fixed name the \
+forwarded value is the operator's. A fixed header may not be a credential, secret, framing or \
+forwarding header."""
+falsifier = [
+  "crates/nucleus-node/src/upstreams.rs::fixed_and_secret_headers_are_never_the_guests",
+  "crates/nucleus-node/src/broker_stream/tests/headers.rs::a_fixed_header_reaches_the_upstream_and_a_guest_cannot_choose_it",
+  "crates/nucleus-node/src/broker_perform.rs::a_buffered_call_carries_the_fixed_headers_and_binds_them",
+]
+status = "stated; enforced by Rust tests; not proved"
+
+[[law]]
+id = "Pa.Egress.1.L5"
+statement = """An unclassified write (a body-carrying method) to a forge upstream is refused \
+(Unclassified), never decided as a fetch."""
+falsifier = [
+  "crates/nucleus-cred-protocol/src/egress.rs::a_forge_write_is_what_the_operator_declared_or_refused",
+]
+status = "stated; enforced by Rust tests; not proved"
+
+[[decision]]
+id = "operation_for"
+crate = "nucleus-cred-protocol"
+file = "crates/nucleus-cred-protocol/src/egress.rs"
+fn = "operation_for"
+laws = ["Pa.Egress.1.L1", "Pa.Egress.1.L5"]
+
+[[decision]]
+id = "effect_table_declared"
+crate = "nucleus-cred-protocol"
+file = "crates/nucleus-cred-protocol/src/egress/effects.rs"
+fn = "EffectTable::declared"
+laws = ["Pa.Egress.1.L1"]
+
+[[decision]]
+id = "effect_table_from_parts"
+crate = "nucleus-cred-protocol"
+file = "crates/nucleus-cred-protocol/src/egress/effects.rs"
+fn = "EffectTable::from_parts"
+laws = ["Pa.Egress.1.L1"]
+
+[[decision]]
+id = "credentialed_egress_admitted_by"
+crate = "nucleus-spec"
+file = "crates/nucleus-spec/src/lib.rs"
+fn = "CredentialedEgressSpec::admitted_by"
+laws = ["Pa.Egress.1.L3"]
+
+[[decision]]
+id = "credentialed_egress_clamp"
+crate = "nucleus-spec"
+file = "crates/nucleus-spec/src/lib.rs"
+fn = "CredentialedEgressSpec::clamp"
+laws = ["Pa.Egress.1.L3"]
+
+[[decision]]
+id = "admit_upstreams"
+crate = "nucleus-node"
+file = "crates/nucleus-node/src/pod_authority.rs"
+fn = "PodAuthority::admit_upstreams"
+laws = ["Pa.Egress.1.L3"]
+
+[[decision]]
+id = "header_policy"
+crate = "nucleus-node"
+file = "crates/nucleus-node/src/upstreams.rs"
+fn = "header_policy"
+laws = ["Pa.Egress.1.L4"]
+
+[[decision]]
+id = "forwarded_headers"
+crate = "nucleus-node"
+file = "crates/nucleus-node/src/broker_stream.rs"
+fn = "forwarded_headers"
+laws = ["Pa.Egress.1.L4"]
