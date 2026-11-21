@@ -1,0 +1,32 @@
+[package]
+name = "nucleus-generation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generation certificates: the signed, offline-verifiable chain by which a runtime and the CI that judges it release each other, each generation strictly improving"
+publish = false
+
+# The format and the one verifier of a generation chain. Public on purpose: a
+# relying party must be able to check every release back to the seed with this
+# crate alone, no control plane and no secret. The control plane that ISSUES
+# certificates pins this crate by git revision rather than restating the
+# encoding (ADR 0007 G-1).
+
+[lints]
+workspace = true
+
+[dependencies]
+nucleus-receipt = { path = "../nucleus-receipt" }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-signed-decision = { path = "../nucleus-signed-decision" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+# Verified with `verify_strict` only (scripts/check-verify-strict.sh).
+ed25519-dalek = { workspace = true }
+
