@@ -54,13 +54,7 @@ fn mint_with(
     nonces: &ApprovalNonceCache,
 ) -> Result<VerifiedApproval, ApiError> {
     let verifier = verifier_for(key);
-    VerifiedApproval::verify_request(
-        headers,
-        body,
-        ApprovalKeys::Ed25519(&verifier),
-        nonces,
-        now_unix(),
-    )
+    VerifiedApproval::verify_request(headers, body, ApprovalKeys(&verifier), nonces, now_unix())
 }
 
 fn mint(key: &SigningKey, body: &[u8]) -> Result<VerifiedApproval, ApiError> {
@@ -470,46 +464,46 @@ fn expiry_is_clamped_to_ttl() {
     assert!(err.to_string().contains("in the past"), "got {err}");
 }
 
-/// The legacy HMAC tier mints when signed with the approval secret, and the
-/// Ed25519 tier refuses that same HMAC signature: configuring keys removes
-/// the secret as a way in.
+/// **The deleted HMAC approval tier, driven to refusal at the mint.** An
+/// approval signed the way the legacy tier's clients signed it — the same
+/// headers and framing, MAC'd with a shared approval key — mints nothing,
+/// burns no nonce, and leaves the registry empty. Until 2026-11-21 a proxy
+/// with no approver keys minted exactly this request (the deleted
+/// `hmac_signs_only_where_no_keys_are_configured` pinned that it did).
 #[test]
-fn hmac_signs_only_where_no_keys_are_configured() {
-    let secret = b"approval-secret-for-tests-only-32b";
-    let config = AuthConfig::new(secret, SKEW);
+fn an_hmac_signed_approval_is_refused() {
+    let shared = b"approval-secret-for-tests-only-32b";
     let body = approve_body("run_bash", 1, None, "n-hmac");
-    let headers = signed_headers(|m| auth::sign_message(secret, m), &body);
+    let headers = signed_headers(|m| auth::sign_message(shared, m), &body);
+    let nonces = ApprovalNonceCache::default();
 
-    let _minted = VerifiedApproval::verify_request(
-        &headers,
-        &body,
-        ApprovalKeys::Hmac(&config),
-        &ApprovalNonceCache::default(),
-        now_unix(),
-    )
-    .expect("the HMAC tier mints from an HMAC signature");
-
-    let key = approver();
-    let err = mint_with(&headers, &body, &key, &ApprovalNonceCache::default()).unwrap_err();
+    let err = mint_with(&headers, &body, &approver(), &nonces).unwrap_err();
     assert!(
         matches!(err, ApiError::Auth(AuthError::InvalidSignature)),
         "got {err:?}"
     );
+    assert!(
+        nonces.check_and_insert("n-hmac", now_unix() + 60, now_unix()),
+        "a refused HMAC approval burns no nonce"
+    );
+    let registry = ApprovalRegistry::default();
+    if let Ok(v) = mint_with(&headers, &body, &approver(), &ApprovalNonceCache::default()) {
+        registry.approve(v);
+    }
+    assert!(!registry.is_granted("run_bash"));
 }
 
 /// The bypass, end to end at the layer that decides it. A caller holding an
-/// SVID asks `/v1/approve` for a grant with no signature. The tier is an
+/// SVID asks `/v1/approve` for a grant with no signature. The tier is the
 /// approval tier — the certificate does not stand in for a person — and the
 /// mint refuses, so the registry has nothing to hold.
 #[test]
 fn an_svid_without_a_signature_grants_nothing() {
-    for pubkeys in [false, true] {
-        let tier = auth::select_auth_tier(true, true, pubkeys, false, false);
-        assert!(
-            matches!(
-                tier,
-                auth::AuthTier::ApprovalEd25519Drand | auth::AuthTier::ApprovalHmacDrand
-            ),
+    for host in [false, true] {
+        let tier = auth::select_auth_tier(true, true, host, false);
+        assert_eq!(
+            tier,
+            auth::AuthTier::ApprovalEd25519Drand,
             "an SVID on /v1/approve selected {tier:?}"
         );
     }

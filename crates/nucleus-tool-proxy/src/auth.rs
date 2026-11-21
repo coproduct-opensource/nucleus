@@ -8,75 +8,25 @@
 //!    [`AuthTier::PodPeer`]), or the workload door.
 //! 2. **SPIFFE mTLS**: the caller's identity comes from its certificate's
 //!    SPIFFE URI SAN, attested by the CA.
-//! 3. **Approvals**: `/v1/approve` needs an approver's signature, Ed25519
-//!    against configured public keys (or, for a pod provisioned that way, the
-//!    legacy drand-anchored approval HMAC).
+//! 3. **Approvals**: `/v1/approve` needs an approver's Ed25519 signature
+//!    against configured public keys. The legacy approval HMAC, a key the
+//!    tool-proxy, the approver and (through the guest command line) the
+//!    workload all held, is deleted (2026-11-21, zero static secrets item 1);
+//!    a request signed with it is refused like any other bad signature, and
+//!    `--approval-secret` is refused by name at startup
+//!    (`retired::refuse_approval_secret`).
 //!
 //! A request that arrives by none of these ([`AuthTier::Unproven`]) is refused.
 
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
-use hmac::{Hmac, Mac, digest::KeyInit};
 use nucleus_client::drand::{self, DrandConfig, DrandFailMode};
-use sha2::Sha256;
 
 const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
 const HEADER_SIGNATURE: &str = "x-nucleus-signature";
 const HEADER_ACTOR: &str = "x-nucleus-actor";
 const HEADER_DRAND_ROUND: &str = "x-nucleus-drand-round";
-/// Configuration for request authentication.
-#[derive(Clone, Debug)]
-pub struct AuthConfig {
-    secret: Arc<Vec<u8>>,
-    max_skew: Duration,
-    drand_config: Option<DrandConfig>,
-}
-
-impl AuthConfig {
-    /// Create a new auth config with the given secret and maximum timestamp skew.
-    pub fn new(secret: impl AsRef<[u8]>, max_skew: Duration) -> Self {
-        Self {
-            secret: Arc::new(secret.as_ref().to_vec()),
-            max_skew,
-            drand_config: None,
-        }
-    }
-
-    /// Add drand configuration for anchored signature verification.
-    ///
-    /// When drand is configured, the verifier will check for and validate
-    /// drand round numbers in approval requests.
-    pub fn with_drand(mut self, config: DrandConfig) -> Self {
-        self.drand_config = Some(config);
-        self
-    }
-
-    /// Get the maximum allowed timestamp skew.
-    pub fn max_skew(&self) -> Duration {
-        self.max_skew
-    }
-
-    /// Get the HMAC secret.
-    pub fn secret(&self) -> &[u8] {
-        &self.secret
-    }
-
-    /// Get the drand configuration, if any.
-    #[allow(dead_code)]
-    pub fn drand_config(&self) -> Option<&DrandConfig> {
-        self.drand_config.as_ref()
-    }
-
-    /// Check if drand anchoring is enabled.
-    #[allow(dead_code)]
-    pub fn drand_enabled(&self) -> bool {
-        self.drand_config
-            .as_ref()
-            .is_some_and(|config| config.enabled)
-    }
-}
 
 /// Context extracted from a verified request.
 #[derive(Clone, Debug)]
@@ -100,10 +50,6 @@ pub struct AuthContext {
 /// The method used to authenticate the request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthMethod {
-    /// HMAC-based signature verification (legacy).
-    Hmac,
-    /// HMAC with drand anchoring (prevents pre-computation).
-    HmacDrand,
     /// SPIFFE mTLS certificate (no shared secrets).
     SpiffeMtls,
     /// The request arrived on a host-verified transport: a vsock listener that
@@ -125,10 +71,10 @@ pub enum AuthMethod {
     PodPeer,
     /// Ed25519 signature against a configured PUBLIC key, drand-anchored.
     ///
-    /// The signature-based approval tier: the guest holds only verification
-    /// keys, so — unlike the HMAC tiers — nothing the guest stores lets anyone
-    /// FORGE an approval. This is what lets `nucleus.approval_secret` leave
-    /// the world-readable kernel command line.
+    /// The only approval tier: the guest holds only verification keys, so —
+    /// unlike the deleted HMAC tier — nothing the guest stores lets anyone
+    /// FORGE an approval. This is what let `nucleus.approval_secret` leave
+    /// the world-readable kernel command line, and then be deleted.
     Ed25519Drand,
     /// The request arrived on the workload door (`workload_door`): a Unix
     /// socket whose peer the kernel identifies by `SO_PEERCRED`, admitted only
@@ -172,7 +118,8 @@ pub enum AuthError {
     #[error("invalid header: {0}")]
     InvalidHeader(&'static str),
 
-    /// The HMAC signature is invalid.
+    /// The signature does not verify against any configured key. This
+    /// includes a signature made with the deleted approval HMAC key.
     #[error("invalid signature")]
     InvalidSignature,
 
@@ -203,125 +150,6 @@ pub enum AuthError {
          /v1/health is answered here"
     )]
     UnprovenTransport,
-}
-
-/// Verify an HTTP request with optional drand anchoring.
-///
-/// This function checks for a drand round header and validates accordingly:
-///
-/// - If drand is enabled and a round is provided: Validates the round is current
-///   and verifies the drand-anchored signature.
-/// - If drand is enabled but no round is provided: Behavior depends on fail mode.
-/// - If drand is disabled: Falls back to standard verification.
-///
-/// # Message Formats
-///
-/// - **With drand**: `"{round}.{timestamp}.{actor}.{body}"`
-/// - **Without drand**: `"{timestamp}.{actor}.{body}"`
-///
-/// # Security Note
-///
-/// Drand anchoring prevents pre-computation attacks. Even if an attacker extracts
-/// the HMAC secret, they cannot pre-compute valid signatures because they don't
-/// know future drand rounds. The attack window is limited to ~60 seconds.
-pub fn verify_http_with_drand(
-    headers: &HeaderMap,
-    body: &[u8],
-    auth: &AuthConfig,
-) -> Result<AuthContext, AuthError> {
-    let ts = header_value(headers, HEADER_TIMESTAMP)?;
-    let sig = header_value(headers, HEADER_SIGNATURE)?;
-    let actor = headers
-        .get(HEADER_ACTOR)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let actor_value = actor.clone().unwrap_or_default();
-
-    let timestamp = parse_timestamp(ts)?;
-    ensure_skew(timestamp, auth.max_skew())?;
-
-    // Check for drand round header
-    let drand_round = headers
-        .get(HEADER_DRAND_ROUND)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok());
-
-    // Handle drand verification if configured
-    if let Some(ref drand_config) = auth.drand_config
-        && drand_config.enabled
-    {
-        match drand_round {
-            Some(round) => {
-                // Validate round is current
-                let expected = drand::current_expected_round();
-                if !drand::validate_round(round, drand_config.round_tolerance) {
-                    return Err(AuthError::DrandRoundExpired {
-                        provided: round,
-                        expected,
-                        tolerance: drand_config.round_tolerance,
-                    });
-                }
-
-                // Build message with drand round prefix
-                let round_str = round.to_string();
-                let mut message = Vec::with_capacity(
-                    round_str.len() + ts.len() + actor_value.len() + 3 + body.len(),
-                );
-                message.extend_from_slice(round_str.as_bytes());
-                message.push(b'.');
-                message.extend_from_slice(ts.as_bytes());
-                message.push(b'.');
-                message.extend_from_slice(actor_value.as_bytes());
-                message.push(b'.');
-                message.extend_from_slice(body);
-
-                verify_signature(auth.secret(), &message, sig)?;
-
-                return Ok(AuthContext {
-                    actor,
-                    timestamp,
-                    drand_round: Some(round),
-                    spiffe_id: None,
-                    auth_method: AuthMethod::HmacDrand,
-                    identity_binding: IdentityBinding::PolicyOnly,
-                });
-            }
-            None => {
-                // No round provided - behavior depends on fail mode
-                match drand_config.fail_mode {
-                    DrandFailMode::Strict => {
-                        return Err(AuthError::DrandRequired);
-                    }
-                    DrandFailMode::Cached => {
-                        // In cached mode, we allow fallback to non-drand verification
-                        // but this should only happen during brief drand outages
-                        tracing::warn!(
-                            "drand anchoring enabled but no round provided, accepting without anchoring (cached mode)"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Fall back to non-drand verification
-    let mut message = Vec::with_capacity(ts.len() + actor_value.len() + 2 + body.len());
-    message.extend_from_slice(ts.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(actor_value.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(body);
-
-    verify_signature(auth.secret(), &message, sig)?;
-
-    Ok(AuthContext {
-        actor,
-        timestamp,
-        drand_round: None,
-        spiffe_id: None,
-        auth_method: AuthMethod::Hmac,
-        identity_binding: IdentityBinding::PolicyOnly,
-    })
 }
 
 /// The approval verifier's key set plus the freshness policy it inherits.
@@ -389,8 +217,8 @@ impl ApprovalVerifier {
 
 /// Verify an approval request signed with an approver's Ed25519 key.
 ///
-/// Same message formats and drand semantics as [`verify_http_with_drand`] —
-/// with drand: `"{round}.{timestamp}.{actor}.{body}"`, without:
+/// The message formats and drand semantics are those the deleted HMAC tier
+/// used — with drand: `"{round}.{timestamp}.{actor}.{body}"`, without:
 /// `"{timestamp}.{actor}.{body}"` (the latter only in `Cached` fail mode or
 /// with drand disabled; `Strict` requires the round). The signature header
 /// carries 128 hex chars (64 bytes), verified with `verify_strict` (M-3:
@@ -466,8 +294,10 @@ pub fn verify_http_with_ed25519_drand(
 }
 
 /// The signed message: a text prefix (`"round.ts.actor."` or `"ts.actor."`)
-/// followed by the raw body bytes — byte-identical to what the HMAC tiers
-/// sign, so the host-side signer changes only its primitive, not its framing.
+/// followed by the raw body bytes — byte-identical to what the deleted HMAC
+/// tier signed, so a signer moved over by changing only its primitive, not
+/// its framing. That is also why an old HMAC signature over the same framing
+/// is refused here only by its signature (`an_hmac_signed_approval_is_refused`).
 fn signed_message(prefix: String, body: &[u8]) -> Vec<u8> {
     let mut message = prefix.into_bytes();
     message.extend_from_slice(body);
@@ -626,16 +456,12 @@ pub enum AuthTier {
     /// approval: `/v1/approve` never selects this tier (see
     /// [`select_auth_tier`]).
     SpiffeMtls,
-    /// The approval endpoint with approver PUBLIC keys configured: Ed25519 +
-    /// drand. Takes precedence over the HMAC approval tier — when the guest
-    /// holds verifying keys, a shared-secret signature must not be an
-    /// alternative way in, or the readable-key forgery the keys exist to
-    /// remove is silently reinstated.
+    /// The approval endpoint: an approver's Ed25519 signature against the
+    /// configured PUBLIC keys, drand-anchored. The only approval tier. The
+    /// HMAC approval tier beside it (`ApprovalHmacDrand`) was deleted
+    /// 2026-11-21: its key was held by the verifier and readable by the
+    /// workload, so anyone checking an approval could also forge one.
     ApprovalEd25519Drand,
-    /// The approval endpoint, which has its own drand-anchored HMAC. The
-    /// legacy tier, for pods provisioned with a secret instead of keys (the
-    /// env-delivered container path).
-    ApprovalHmacDrand,
     /// An in-pod process over the peer-verified Unix socket (#2988). Ranked
     /// under the certificate and approval tiers and above `HostVsock`: the
     /// connect-info names a specific process, which is more than "the host".
@@ -671,7 +497,6 @@ pub fn tier_of(
     ingress: Ingress,
     has_spiffe_identity: bool,
     is_approval_path: bool,
-    has_approval_pubkeys: bool,
     host_verified_transport: bool,
     in_pod_peer: bool,
 ) -> AuthTier {
@@ -680,7 +505,6 @@ pub fn tier_of(
         Ingress::Listener => select_auth_tier(
             has_spiffe_identity,
             is_approval_path,
-            has_approval_pubkeys,
             host_verified_transport,
             in_pod_peer,
         ),
@@ -690,8 +514,11 @@ pub fn tier_of(
 /// Choose the tier from facts about the request and the binding.
 ///
 /// `host_verified_transport` is a property of how the server was STARTED, never
-/// of the request — see `AppState::host_verified_transport`. Likewise
-/// `has_approval_pubkeys` is startup configuration, not request content.
+/// of the request — see `AppState::host_verified_transport`. Whether approver
+/// keys are configured is no longer an input: since the HMAC approval tier was
+/// deleted (2026-11-21) a proxy does not start without them
+/// (`retired::require_approval_pubkeys`), so there is one approval tier and
+/// nothing to choose.
 /// `in_pod_peer` is the one per-CONNECTION fact: the Unix listener stamped this
 /// request with an in-namespace peer (`host_socket::PodPeer::is_in_pod`), which
 /// the kernel reported and no request can claim.
@@ -705,14 +532,11 @@ pub fn tier_of(
 pub fn select_auth_tier(
     has_spiffe_identity: bool,
     is_approval_path: bool,
-    has_approval_pubkeys: bool,
     host_verified_transport: bool,
     in_pod_peer: bool,
 ) -> AuthTier {
-    if is_approval_path && has_approval_pubkeys {
+    if is_approval_path {
         AuthTier::ApprovalEd25519Drand
-    } else if is_approval_path {
-        AuthTier::ApprovalHmacDrand
     } else if has_spiffe_identity {
         AuthTier::SpiffeMtls
     } else if in_pod_peer {
@@ -759,21 +583,13 @@ fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
     Ok(())
 }
 
-fn verify_signature(secret: &[u8], message: &[u8], signature_hex: &str) -> Result<(), AuthError> {
-    let signature = hex::decode(signature_hex).map_err(|_| AuthError::InvalidSignature)?;
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(secret).map_err(|_| AuthError::InvalidSignature)?;
-    mac.update(message);
-    mac.verify_slice(&signature)
-        .map_err(|_| AuthError::InvalidSignature)
-}
-
-/// Sign a message with HMAC-SHA256, as a test client of the shared-secret tier.
-///
-/// Test-only: since the Article 12 log is signed by the audit signer (#3309),
-/// nothing in this process MACs anything it writes.
+/// Sign a message with HMAC-SHA256, as a client of the deleted approval HMAC
+/// tier signed one. Test-only, and kept for one purpose: to drive an
+/// old-format, shared-key approval to refusal.
 #[cfg(test)]
 pub fn sign_message(secret: &[u8], message: &[u8]) -> String {
+    use hmac::{Hmac, Mac, digest::KeyInit};
+    use sha2::Sha256;
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");
     mac.update(message);
     let result = mac.finalize().into_bytes();
@@ -783,168 +599,6 @@ pub fn sign_message(secret: &[u8], message: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
-
-    fn make_headers(timestamp: i64, signature: &str, actor: Option<&str>) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HEADER_TIMESTAMP,
-            HeaderValue::from_str(&timestamp.to_string()).unwrap(),
-        );
-        headers.insert(HEADER_SIGNATURE, HeaderValue::from_str(signature).unwrap());
-        if let Some(a) = actor {
-            headers.insert(HEADER_ACTOR, HeaderValue::from_str(a).unwrap());
-        }
-        headers
-    }
-
-    fn make_drand_headers(
-        timestamp: i64,
-        round: u64,
-        signature: &str,
-        actor: Option<&str>,
-    ) -> HeaderMap {
-        let mut headers = make_headers(timestamp, signature, actor);
-        headers.insert(
-            HEADER_DRAND_ROUND,
-            HeaderValue::from_str(&round.to_string()).unwrap(),
-        );
-        headers
-    }
-
-    fn current_timestamp() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-    }
-
-    #[test]
-    fn test_verify_http_with_drand_success() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-        let round = drand::current_expected_round();
-
-        // Build drand-anchored message: "{round}.{timestamp}.{actor}.{body}"
-        let message = format!(
-            "{}.{}.{}.{}",
-            round,
-            ts,
-            actor,
-            String::from_utf8_lossy(body)
-        );
-        let signature = sign_message(secret, message.as_bytes());
-
-        let headers = make_drand_headers(ts, round, &signature, Some(actor));
-        let auth =
-            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::default());
-
-        let result = verify_http_with_drand(&headers, body, &auth);
-        assert!(result.is_ok(), "expected success, got {:?}", result);
-
-        let ctx = result.unwrap();
-        assert_eq!(ctx.actor, Some("test-actor".to_string()));
-        assert_eq!(ctx.timestamp, ts);
-        assert_eq!(ctx.drand_round, Some(round));
-    }
-
-    #[test]
-    fn test_verify_http_with_drand_expired_round() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-        let old_round = 1u64; // Very old round
-
-        let message = format!(
-            "{}.{}.{}.{}",
-            old_round,
-            ts,
-            actor,
-            String::from_utf8_lossy(body)
-        );
-        let signature = sign_message(secret, message.as_bytes());
-
-        let headers = make_drand_headers(ts, old_round, &signature, Some(actor));
-        let auth =
-            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::default());
-
-        let result = verify_http_with_drand(&headers, body, &auth);
-        assert!(matches!(result, Err(AuthError::DrandRoundExpired { .. })));
-    }
-
-    #[test]
-    fn test_verify_http_with_drand_required_but_missing() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-
-        // Non-drand message format
-        let message = format!("{}.{}.{}", ts, actor, String::from_utf8_lossy(body));
-        let signature = sign_message(secret, message.as_bytes());
-
-        // No drand round header
-        let headers = make_headers(ts, &signature, Some(actor));
-        let auth = AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig {
-            enabled: true,
-            fail_mode: DrandFailMode::Strict,
-            ..Default::default()
-        });
-
-        let result = verify_http_with_drand(&headers, body, &auth);
-        assert!(matches!(result, Err(AuthError::DrandRequired)));
-    }
-
-    #[test]
-    fn test_verify_http_with_drand_cached_mode() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-
-        // Non-drand message format
-        let message = format!("{}.{}.{}", ts, actor, String::from_utf8_lossy(body));
-        let signature = sign_message(secret, message.as_bytes());
-
-        // No drand round header, but cached mode allows fallback
-        let headers = make_headers(ts, &signature, Some(actor));
-        let auth = AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig {
-            enabled: true,
-            fail_mode: DrandFailMode::Cached,
-            ..Default::default()
-        });
-
-        let result = verify_http_with_drand(&headers, body, &auth);
-        assert!(
-            result.is_ok(),
-            "cached mode should accept without drand during fallback"
-        );
-
-        let ctx = result.unwrap();
-        assert!(ctx.drand_round.is_none());
-    }
-
-    #[test]
-    fn test_verify_http_with_drand_disabled() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-
-        // Non-drand message format
-        let message = format!("{}.{}.{}", ts, actor, String::from_utf8_lossy(body));
-        let signature = sign_message(secret, message.as_bytes());
-
-        let headers = make_headers(ts, &signature, Some(actor));
-        let auth =
-            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::disabled());
-
-        let result = verify_http_with_drand(&headers, body, &auth);
-        assert!(result.is_ok());
-    }
 
     #[test]
     fn test_verify_spiffe_mtls() {
@@ -959,37 +613,9 @@ mod tests {
 
     #[test]
     fn test_auth_method_equality() {
-        assert_eq!(AuthMethod::Hmac, AuthMethod::Hmac);
-        assert_eq!(AuthMethod::HmacDrand, AuthMethod::HmacDrand);
         assert_eq!(AuthMethod::SpiffeMtls, AuthMethod::SpiffeMtls);
-        assert_ne!(AuthMethod::Hmac, AuthMethod::SpiffeMtls);
-        assert_ne!(AuthMethod::HmacDrand, AuthMethod::SpiffeMtls);
-    }
-
-    #[test]
-    fn test_verify_http_with_drand_returns_hmac_drand_auth_method() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-        let round = drand::current_expected_round();
-
-        let message = format!(
-            "{}.{}.{}.{}",
-            round,
-            ts,
-            actor,
-            String::from_utf8_lossy(body)
-        );
-        let signature = sign_message(secret, message.as_bytes());
-
-        let headers = make_drand_headers(ts, round, &signature, Some(actor));
-        let auth =
-            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::default());
-
-        let ctx = verify_http_with_drand(&headers, body, &auth).unwrap();
-        assert_eq!(ctx.auth_method, AuthMethod::HmacDrand);
-        assert!(ctx.spiffe_id.is_none());
+        assert_eq!(AuthMethod::Ed25519Drand, AuthMethod::Ed25519Drand);
+        assert_ne!(AuthMethod::Ed25519Drand, AuthMethod::SpiffeMtls);
     }
 }
 
@@ -1008,14 +634,13 @@ mod host_vsock_auth_tests {
         assert!(ctx.drand_round.is_none(), "no drand anchoring is involved");
     }
 
-    /// `HostVsock` must be a DISTINCT method, not an alias of the HMAC path.
-    /// Collapsing them would make an audit record unable to say whether a
-    /// request was proven by the kernel or by a key the agent could read.
+    /// `HostVsock` must be a DISTINCT method, not an alias of a signature or
+    /// certificate path. Collapsing them would make an audit record unable to
+    /// say whether a request was proven by the kernel or by a credential.
     #[test]
-    fn host_vsock_is_distinguishable_from_the_secret_based_methods() {
+    fn host_vsock_is_distinguishable_from_the_credential_based_methods() {
         let ctx = verify_host_vsock();
-        assert_ne!(ctx.auth_method, AuthMethod::Hmac);
-        assert_ne!(ctx.auth_method, AuthMethod::HmacDrand);
+        assert_ne!(ctx.auth_method, AuthMethod::Ed25519Drand);
         assert_ne!(ctx.auth_method, AuthMethod::SpiffeMtls);
     }
 
@@ -1039,35 +664,30 @@ mod auth_tier_precedence_tests {
 
     /// On the workload door the tier is the door's, for every combination of
     /// the facts that pick a tier on the main listener, including the approval
-    /// path with keys configured and a host-verified transport. The door's
-    /// caller is the workload; it is never authenticated as the host or as an
-    /// approver.
+    /// path and a host-verified transport. The door's caller is the workload;
+    /// it is never authenticated as the host or as an approver.
     #[test]
     fn the_workload_door_outranks_every_listener_tier() {
         for spiffe in [false, true] {
             for approval in [false, true] {
-                for pubkeys in [false, true] {
-                    for host in [false, true] {
-                        for peer in [false, true] {
-                            assert_eq!(
-                                tier_of(
-                                    Ingress::WorkloadDoor { uid: 65534 },
-                                    spiffe,
-                                    approval,
-                                    pubkeys,
-                                    host,
-                                    peer
-                                ),
-                                AuthTier::WorkloadDoor { uid: 65534 },
-                                "spiffe={spiffe} approval={approval} pubkeys={pubkeys} \
-                                 host={host} pod_peer={peer}"
-                            );
-                            assert_eq!(
-                                tier_of(Ingress::Listener, spiffe, approval, pubkeys, host, peer),
-                                select_auth_tier(spiffe, approval, pubkeys, host, peer),
-                                "the main listener is still decided by select_auth_tier alone"
-                            );
-                        }
+                for host in [false, true] {
+                    for peer in [false, true] {
+                        assert_eq!(
+                            tier_of(
+                                Ingress::WorkloadDoor { uid: 65534 },
+                                spiffe,
+                                approval,
+                                host,
+                                peer
+                            ),
+                            AuthTier::WorkloadDoor { uid: 65534 },
+                            "spiffe={spiffe} approval={approval} host={host} pod_peer={peer}"
+                        );
+                        assert_eq!(
+                            tier_of(Ingress::Listener, spiffe, approval, host, peer),
+                            select_auth_tier(spiffe, approval, host, peer),
+                            "the main listener is still decided by select_auth_tier alone"
+                        );
                     }
                 }
             }
@@ -1091,36 +711,32 @@ mod auth_tier_precedence_tests {
     #[test]
     fn a_host_verified_transport_is_not_the_unproven_tier() {
         assert_eq!(
-            select_auth_tier(false, false, false, true, false),
+            select_auth_tier(false, false, true, false),
             AuthTier::HostVsock,
             "a request on a host-only vsock listener is the host's"
         );
     }
 
     /// An in-pod peer over the Unix socket is its own tier (#2988): above the
-    /// host transport, below a certificate and below the approval tiers.
+    /// host transport, below a certificate and below the approval tier.
     #[test]
     fn an_in_pod_peer_is_named_as_such_and_outranks_only_the_host_tier() {
         assert_eq!(
-            select_auth_tier(false, false, false, true, true),
+            select_auth_tier(false, false, true, true),
             AuthTier::PodPeer
         );
         assert_eq!(
-            select_auth_tier(true, false, false, true, true),
+            select_auth_tier(true, false, true, true),
             AuthTier::SpiffeMtls
         );
         assert_eq!(
-            select_auth_tier(false, true, false, true, true),
-            AuthTier::ApprovalHmacDrand
-        );
-        assert_eq!(
-            select_auth_tier(false, true, true, true, true),
+            select_auth_tier(false, true, true, true),
             AuthTier::ApprovalEd25519Drand
         );
         // A peer without a host-verified transport cannot arise (the socket IS
         // one), but the tier is decided by the peer, not by the flag.
         assert_eq!(
-            select_auth_tier(false, false, false, false, true),
+            select_auth_tier(false, false, false, true),
             AuthTier::PodPeer
         );
     }
@@ -1131,7 +747,7 @@ mod auth_tier_precedence_tests {
     #[test]
     fn other_transports_are_unproven() {
         assert_eq!(
-            select_auth_tier(false, false, false, false, false),
+            select_auth_tier(false, false, false, false),
             AuthTier::Unproven
         );
     }
@@ -1143,11 +759,11 @@ mod auth_tier_precedence_tests {
     #[test]
     fn mtls_outranks_the_transport() {
         assert_eq!(
-            select_auth_tier(true, false, false, true, false),
+            select_auth_tier(true, false, true, false),
             AuthTier::SpiffeMtls
         );
         assert_eq!(
-            select_auth_tier(true, false, true, false, false),
+            select_auth_tier(true, false, false, false),
             AuthTier::SpiffeMtls
         );
     }
@@ -1161,101 +777,74 @@ mod auth_tier_precedence_tests {
     /// been told to ask a human for.
     #[test]
     fn the_approval_path_outranks_spiffe() {
-        for (pubkeys, host) in [(false, false), (false, true), (true, false), (true, true)] {
+        for host in [false, true] {
             for peer in [false, true] {
-                let tier = select_auth_tier(true, true, pubkeys, host, peer);
-                assert!(
-                    matches!(
-                        tier,
-                        AuthTier::ApprovalEd25519Drand | AuthTier::ApprovalHmacDrand
-                    ),
+                assert_eq!(
+                    select_auth_tier(true, true, host, peer),
+                    AuthTier::ApprovalEd25519Drand,
                     "an SVID on /v1/approve must still need the approver's signature \
-                     (pubkeys={pubkeys} host_verified={host} pod_peer={peer}), got {tier:?}"
+                     (host_verified={host} pod_peer={peer})"
                 );
             }
         }
     }
 
-    /// The approval path keeps its drand anchoring even on a host-verified
-    /// transport. Being from the host proves origin, not freshness — drand is
-    /// what stops pre-computation, and the transport says nothing about that.
+    /// The approval path keeps its signature and drand anchoring even on a
+    /// host-verified transport. Being from the host proves origin, not that a
+    /// person agreed, and not freshness.
     #[test]
-    fn the_approval_path_keeps_drand_even_on_a_host_verified_transport() {
+    fn the_approval_path_keeps_its_signature_on_a_host_verified_transport() {
         assert_eq!(
-            select_auth_tier(false, true, false, true, false),
-            AuthTier::ApprovalHmacDrand,
-            "origin is not freshness — approvals must stay drand-anchored"
-        );
-    }
-
-    /// **When approver public keys are configured, the shared-secret approval
-    /// tier must be UNREACHABLE.** If HMAC stayed accepted alongside, any
-    /// residual copy of the old secret would still forge approvals and the
-    /// keys would have removed nothing.
-    #[test]
-    fn configured_pubkeys_make_the_hmac_approval_tier_unreachable() {
-        assert_eq!(
-            select_auth_tier(false, true, true, false, false),
-            AuthTier::ApprovalEd25519Drand
-        );
-        assert_eq!(
-            select_auth_tier(false, true, true, true, false),
+            select_auth_tier(false, true, true, false),
             AuthTier::ApprovalEd25519Drand,
-            "the signature tier must win even on a host-verified transport"
+            "origin is not approval — the signature tier must win on the host's transport"
         );
     }
 
-    /// Pubkeys configured but the request is NOT for the approval path: the
-    /// keys authorize approvals, nothing else — other paths keep their tiers.
+    /// Off the approval path, the approver keys authorize nothing: other
+    /// paths keep their tiers.
     #[test]
-    fn approval_pubkeys_do_not_leak_into_other_paths() {
+    fn approval_keys_do_not_leak_into_other_paths() {
         assert_eq!(
-            select_auth_tier(false, false, true, true, false),
+            select_auth_tier(false, false, true, false),
             AuthTier::HostVsock
         );
         assert_eq!(
-            select_auth_tier(false, false, true, false, false),
+            select_auth_tier(false, false, false, false),
             AuthTier::Unproven
         );
     }
 
-    /// Exhaustive over all thirty-two inputs, so no combination is
-    /// unconsidered. An in-pod peer replaces exactly the two transport tiers
-    /// (`Unproven`, `HostVsock`); every identity and approval tier outranks it.
+    /// Exhaustive over all sixteen inputs, so no combination is unconsidered.
+    /// An in-pod peer replaces exactly the two transport tiers (`Unproven`,
+    /// `HostVsock`); every identity and approval tier outranks it. There is
+    /// one approval tier: the HMAC one is deleted, and no input selects it.
     #[test]
     fn every_combination_is_pinned() {
         let cases = [
-            ((false, false, false, false), AuthTier::Unproven),
-            ((false, false, false, true), AuthTier::HostVsock),
-            ((false, false, true, false), AuthTier::Unproven),
-            ((false, false, true, true), AuthTier::HostVsock),
-            ((false, true, false, false), AuthTier::ApprovalHmacDrand),
-            ((false, true, false, true), AuthTier::ApprovalHmacDrand),
-            ((false, true, true, false), AuthTier::ApprovalEd25519Drand),
-            ((false, true, true, true), AuthTier::ApprovalEd25519Drand),
-            ((true, false, false, false), AuthTier::SpiffeMtls),
-            ((true, false, false, true), AuthTier::SpiffeMtls),
-            ((true, false, true, false), AuthTier::SpiffeMtls),
-            ((true, false, true, true), AuthTier::SpiffeMtls),
-            ((true, true, false, false), AuthTier::ApprovalHmacDrand),
-            ((true, true, false, true), AuthTier::ApprovalHmacDrand),
-            ((true, true, true, false), AuthTier::ApprovalEd25519Drand),
-            ((true, true, true, true), AuthTier::ApprovalEd25519Drand),
+            ((false, false, false), AuthTier::Unproven),
+            ((false, false, true), AuthTier::HostVsock),
+            ((false, true, false), AuthTier::ApprovalEd25519Drand),
+            ((false, true, true), AuthTier::ApprovalEd25519Drand),
+            ((true, false, false), AuthTier::SpiffeMtls),
+            ((true, false, true), AuthTier::SpiffeMtls),
+            ((true, true, false), AuthTier::ApprovalEd25519Drand),
+            ((true, true, true), AuthTier::ApprovalEd25519Drand),
         ];
-        for ((spiffe, approval, pubkeys, host), expected) in cases {
+        for ((spiffe, approval, host), expected) in cases {
             assert_eq!(
-                select_auth_tier(spiffe, approval, pubkeys, host, false),
+                select_auth_tier(spiffe, approval, host, false),
                 expected,
-                "spiffe={spiffe} approval={approval} pubkeys={pubkeys} host_verified={host}"
+                "spiffe={spiffe} approval={approval} host_verified={host}"
             );
             let with_peer = match expected {
                 AuthTier::Unproven | AuthTier::HostVsock => AuthTier::PodPeer,
                 other => other,
             };
             assert_eq!(
-                select_auth_tier(spiffe, approval, pubkeys, host, true),
+                select_auth_tier(spiffe, approval, host, true),
                 with_peer,
-                "spiffe={spiffe} approval={approval} pubkeys={pubkeys} host_verified={host} pod_peer"
+                "spiffe={spiffe} approval={approval} host_verified={host} pod_peer"
             );
         }
     }
@@ -1394,19 +983,36 @@ mod ed25519_approval_tests {
         assert!(matches!(result, Err(AuthError::InvalidSignature)));
     }
 
-    /// An HMAC-shaped signature (32 bytes, the old primitive) is refused by
-    /// length before any curve math — the legacy secret cannot approve here.
+    /// **The deleted tier, driven to refusal.** An approval exactly as a
+    /// client of the legacy HMAC tier signed it — the same headers, the same
+    /// `"{round}.{ts}.{actor}.{body}"` framing (and the drand-less
+    /// `"{ts}.{actor}.{body}"` one), MAC'd with a shared approval key — is
+    /// refused. It is a 32-byte MAC, not a 64-byte signature, so it fails by
+    /// length before any curve math; there is no verifier left that would
+    /// recompute it. Before 2026-11-21 a proxy started with
+    /// `--approval-secret` and no keys accepted exactly these bytes.
     #[test]
-    fn an_hmac_signature_is_not_a_valid_ed25519_signature() {
+    fn an_hmac_signed_approval_is_refused() {
+        let shared = b"the-old-approval-secret";
         let key = signing_key(1);
-        let round = drand::current_expected_round();
         let ts = now();
-        let body = b"body";
-        let mut headers = signed_headers(&key, Some(round), ts, body);
-        let hmac_sig = sign_message(b"the-old-approval-secret", b"whatever");
-        headers.insert(HEADER_SIGNATURE, HeaderValue::from_str(&hmac_sig).unwrap());
-        let result = verify_http_with_ed25519_drand(&headers, body, &verifier_for(&[&key], true));
-        assert!(matches!(result, Err(AuthError::InvalidSignature)));
+        let body = br#"{"operation":"bash rm","count":1,"nonce":"n-1"}"#;
+        let round = drand::current_expected_round();
+        for (round, drand) in [(Some(round), true), (None, false)] {
+            let mut headers = signed_headers(&key, round, ts, body);
+            let prefix = match round {
+                Some(r) => format!("{r}.{ts}.approver."),
+                None => format!("{ts}.approver."),
+            };
+            let hmac_sig = sign_message(shared, &signed_message(prefix, body));
+            headers.insert(HEADER_SIGNATURE, HeaderValue::from_str(&hmac_sig).unwrap());
+            let result =
+                verify_http_with_ed25519_drand(&headers, body, &verifier_for(&[&key], drand));
+            assert!(
+                matches!(result, Err(AuthError::InvalidSignature)),
+                "drand={drand}: {result:?}"
+            );
+        }
     }
 
     /// **Malformed keys stop startup, they are not skipped.** A typo'd entry
@@ -1498,30 +1104,6 @@ mod client_signer_interop {
         assert!(
             verify_http_with_ed25519_drand(&headers_from(&signed), body, &verifier).is_err(),
             "a key the operator did not configure must not approve anything"
-        );
-    }
-
-    /// The HMAC helper must NOT satisfy the Ed25519 verifier. This pins the gap
-    /// that motivated the new function: `sign_approval_headers` looks like the
-    /// way to sign an approval and cannot approve on a Firecracker pod, where
-    /// approver pubkeys are always configured.
-    #[test]
-    fn the_hmac_helper_does_not_satisfy_the_ed25519_verifier() {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
-        let body = b"body";
-        let round = drand::current_expected_round();
-
-        let hmac_signed = nucleus_client::sign_approval_headers(b"shared", round, Some("a"), body);
-        let verifier = ApprovalVerifier::from_hex_list(
-            &hex::encode(key.verifying_key().to_bytes()),
-            Duration::from_secs(60),
-            Some(DrandConfig::default()),
-        )
-        .expect("one well-formed key");
-
-        assert!(
-            verify_http_with_ed25519_drand(&headers_from(&hmac_signed), body, &verifier).is_err(),
-            "an HMAC signature must not pass an Ed25519 approval gate"
         );
     }
 }

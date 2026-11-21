@@ -1740,8 +1740,6 @@ mod tests {
         use crate::pod_cert::{DelegationAuthority, delegation_authority};
 
         for method in [
-            AuthMethod::Hmac,
-            AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
             AuthMethod::PodPeer,
             AuthMethod::Ed25519Drand,

@@ -93,7 +93,6 @@ use approval::{
 };
 use attestation::AttestationVerifier;
 use audit_log::AuditLog;
-use auth::AuthConfig;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use policy::PolicyEngine;
@@ -240,17 +239,22 @@ struct Args {
     /// See `art12_shipper` for why this is fail-closed and why it matters.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ART12_SHIP_URL")]
     art12_ship_url: Option<String>,
-    /// Approval authority secret (separate from tool auth). Legacy: superseded
-    /// by `--approval-pubkeys` wherever that is set. Empty means "not
-    /// provisioned", which is fatal at startup unless pubkeys are.
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", default_value = "")]
-    approval_secret: String,
-    /// Comma-separated 64-char-hex Ed25519 approver PUBLIC keys. When set,
-    /// `/v1/approve` accepts ONLY an approver's signature (drand-anchored);
-    /// no approval secret exists in the guest to steal. This is how
-    /// Firecracker pods are provisioned (`nucleus.approval_pubkeys` — a
-    /// verification key is safe on the world-readable cmdline, and it is
-    /// per-node config, so it does not block a snapshot base).
+    /// RETIRED (2026-11-21, zero static secrets item 1). It keyed the legacy
+    /// approval HMAC, which the tool-proxy could recompute and so forge, and
+    /// which the workload could read from the guest command line. Declared
+    /// only so that a launcher still passing it (flag or env) is refused by
+    /// name at startup (`retired::refuse_approval_secret`) instead of being
+    /// silently ignored.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", hide = true)]
+    approval_secret: Option<String>,
+    /// Comma-separated 64-char-hex Ed25519 approver PUBLIC keys. Required:
+    /// `/v1/approve` accepts ONLY an approver's signature (drand-anchored),
+    /// and a proxy without keys does not start
+    /// (`retired::require_approval_pubkeys`). No approval secret exists in
+    /// the guest to steal. This is how Firecracker pods are provisioned
+    /// (`nucleus.approval_pubkeys` — a verification key is safe on the
+    /// world-readable cmdline, and it is per-node config, so it does not block
+    /// a snapshot base).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS")]
     approval_pubkeys: Option<String>,
     /// Optional webhook URL for remote audit log delivery.
@@ -597,13 +601,11 @@ pub(crate) struct AppState {
     /// expressible. It becomes real when the log gains durable backing. See
     /// `docs/production-delta.md`, "Receipt log resilience (FM-3)".
     receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
-    approval_auth: AuthConfig,
-    /// Approver PUBLIC keys for signature-based approvals. `Some` makes the
-    /// Ed25519 tier the ONLY way into `/v1/approve` (the HMAC approval tier
-    /// becomes unreachable — see `auth::select_auth_tier`); `None` keeps the
-    /// legacy shared-secret tier for env-provisioned container pods. Holding
-    /// only verifying keys, the guest cannot forge what it checks.
-    approval_verifier: Option<auth::ApprovalVerifier>,
+    /// Approver PUBLIC keys: the only way into `/v1/approve`. Not an
+    /// `Option`: the legacy shared-secret tier that `None` used to select is
+    /// deleted, and a proxy without keys does not start. Holding only
+    /// verifying keys, the guest cannot forge what it checks.
+    approval_verifier: auth::ApprovalVerifier,
     /// True when this server was started on a vsock listener that accepts only
     /// the host (`pod_mgmt::peer_is_host`).
     ///
@@ -1154,6 +1156,13 @@ async fn main() -> Result<(), ApiError> {
         eprintln!("FATAL: {why}");
         std::process::exit(78);
     }
+    // === Retired approval HMAC (2026-11-21) ===
+    // The same for the approval tier's shared key: refused by name, before
+    // anything could hold it.
+    if let Err(why) = retired::refuse_approval_secret(args.approval_secret.as_deref()) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
     // On stderr, like the other startup notices: it must reach the boot log
     // whatever the tracing filter is.
     if let Some(notice) = sandbox_proof::retired_token_notice(
@@ -1358,55 +1367,34 @@ async fn main() -> Result<(), ApiError> {
         None
     };
 
-    let approval_auth = {
-        let config = AuthConfig::new(
-            args.approval_secret.as_bytes(),
-            Duration::from_secs(args.auth_max_skew_secs),
-        );
-        if let Some(ref drand) = drand_config {
-            config.with_drand(drand.clone())
-        } else {
-            config
-        }
-    };
-
-    // Signature-based approvals: approver PUBLIC keys, drand-anchored. A
-    // malformed key list is fatal HERE, not skipped — silently verifying
-    // against fewer keys than configured surfaces as unexplained refusals far
-    // from the cause. And a pod with NEITHER pubkeys nor a secret has an
-    // approval endpoint nobody can authenticate to; that is a provisioning
-    // error, and startup is where it should stop.
-    let approval_verifier = match args.approval_pubkeys.as_deref() {
-        Some(raw) if !raw.trim().is_empty() => {
-            match auth::ApprovalVerifier::from_hex_list(
+    // Approvals: approver PUBLIC keys, drand-anchored, and nothing else (the
+    // shared-key tier is deleted, and its key was refused above). A pod with
+    // no keys has an approval endpoint nobody can authenticate to; that is a
+    // provisioning error, and startup is where it should stop. A malformed
+    // key list is fatal HERE too, not skipped — silently verifying against
+    // fewer keys than configured surfaces as unexplained refusals far from
+    // the cause.
+    let verifier =
+        retired::require_approval_pubkeys(args.approval_pubkeys.as_deref()).and_then(|raw| {
+            auth::ApprovalVerifier::from_hex_list(
                 raw,
                 Duration::from_secs(args.auth_max_skew_secs),
-                drand_config.clone(),
-            ) {
-                Ok(v) => {
-                    eprintln!(
-                        "approvals are signature-based: {} approver key(s), no shared secret \
-                         in this guest",
-                        v.key_count()
-                    );
-                    Some(v)
-                }
-                Err(e) => {
-                    eprintln!("FATAL: NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS: {e}");
-                    std::process::exit(78);
-                }
-            }
+                drand_config,
+            )
+            .map_err(|e| format!("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS: {e}"))
+        });
+    let approval_verifier = match verifier {
+        Ok(v) => {
+            eprintln!(
+                "approvals are signature-based: {} approver key(s), no shared secret in this \
+                 guest",
+                v.key_count()
+            );
+            v
         }
-        _ => {
-            if args.approval_secret.trim().is_empty() {
-                eprintln!(
-                    "FATAL: no approval authority is provisioned — set \
-                     NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS (signature-based) or \
-                     NUCLEUS_TOOL_PROXY_APPROVAL_SECRET (legacy shared secret)"
-                );
-                std::process::exit(78);
-            }
-            None
+        Err(why) => {
+            eprintln!("FATAL: {why}");
+            std::process::exit(78);
         }
     };
 
@@ -1789,7 +1777,6 @@ async fn main() -> Result<(), ApiError> {
         runtime: Arc::new(runtime),
         approvals,
         audit,
-        approval_auth,
         approval_verifier,
         host_verified_transport: host_verified,
         workload_network: args.workload_network_isolated,
@@ -2297,7 +2284,6 @@ async fn auth_middleware(
         evidence.ingress(),
         spiffe_id.is_some(),
         parts.uri.path() == APPROVE_PATH,
-        state.approval_verifier.is_some(),
         state.host_verified_transport,
         pod_peer.is_some(),
     );
@@ -2318,11 +2304,12 @@ async fn auth_middleware(
             ));
         }
         // An approver's signature, on every transport and whatever certificate
-        // the caller holds. `ApprovalKeys::of` picks the Ed25519 keys whenever
-        // they are configured, so the HMAC secret is then no way in. This is
-        // authentication only: the handler mints its `VerifiedApproval` from
-        // the same check — see `approval`'s module doc.
-        (auth::AuthTier::ApprovalEd25519Drand | auth::AuthTier::ApprovalHmacDrand, _) => {
+        // the caller holds, checked against the approver PUBLIC keys: the
+        // shared-key HMAC tier is deleted, so an HMAC-signed request fails here
+        // as an invalid signature. This is authentication only: the handler
+        // mints its `VerifiedApproval` from the same check — see `approval`'s
+        // module doc.
+        (auth::AuthTier::ApprovalEd25519Drand, _) => {
             let ctx = approval::ApprovalKeys::of(&state).authenticate(&parts.headers, &bytes)?;
             if ctx.drand_round.is_some() {
                 tracing::info!(

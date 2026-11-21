@@ -105,7 +105,8 @@ pub(crate) fn held(args: &crate::Args, matches: &clap::ArgMatches, facts: &Facts
         art12_log,
         // A URL; the channel's key is `audit_secret`.
         art12_ship_url: _,
-        approval_secret,
+        // Refused by name before this runs (`retired::refuse_approval_secret`).
+        approval_secret: _,
         // Verification keys: public, and a child cannot change this
         // process's argv or environment.
         approval_pubkeys: _,
@@ -211,14 +212,6 @@ pub(crate) fn held(args: &crate::Args, matches: &clap::ArgMatches, facts: &Facts
     held.extend(
         sourced(matches, "audit_secret", "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")
             .filter(|_| audit_secret.as_deref().is_some_and(|s| !s.is_empty())),
-    );
-    held.extend(
-        sourced(
-            matches,
-            "approval_secret",
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
-        )
-        .filter(|_| !approval_secret.trim().is_empty()),
     );
     if let Some(log) = art12_log.as_deref() {
         held.push(path("--art12-log", Exposure::Session, log));
