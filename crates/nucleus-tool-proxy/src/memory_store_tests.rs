@@ -397,10 +397,18 @@ fn each_live_write_is_one_commit_on_the_head_and_a_v1_journal_is_migrated() {
         vec![1, 2, 3],
         "migration, then one commit per distinct write"
     );
-    let reopened = args
-        .open(workspace.path(), &TransformRegistry::new(), &separated())
-        .unwrap();
-    assert_eq!(reopened.records().unwrap().len(), 3);
+    // Read without the writer's lock, as the replay test below does: the journal's flock is held
+    // by any child a sibling test forks between its fork and exec, so a locked reopen here fails
+    // with `Locked` now and then under a single-process runner (merge queue, 2026-11-19,
+    // llvm-cov). The unlocked read re-verifies every record, which is what this check is for.
+    let location = nucleus_provenance_memory::JournalLocation::new(&path, "project-a").unwrap();
+    let reread = nucleus_provenance_memory::read_unlocked(
+        &location,
+        &separated(),
+        &TransformRegistry::new(),
+    )
+    .unwrap();
+    assert_eq!(reread.len(), 3);
 }
 
 /// Program C, C1, the write half through the handler's own path: a session reads a Secret
