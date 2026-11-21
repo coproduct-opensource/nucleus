@@ -226,6 +226,7 @@ jobs:
             ConfidentialityOracleMirror
             IntegrityOracleMirror
             ChannelOracleMirror
+            Statements
 
       # Only reached when the build above succeeded, so a failed build never
       # becomes the next run's starting point.

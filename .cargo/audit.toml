@@ -32,4 +32,44 @@ ignore = [
     # i18n-embed-impl (proc-macros) -> i18n-config. cargo-deny already scopes
     # unmaintained to workspace deps and does not flag it.
     "RUSTSEC-2026-0374",
+
+    # EXPIRES 2027-01-31. chrono unmaintained (RUSTSEC-2026-0543), published
+    # 2026-11-17: informational, no vulnerability. A direct workspace dependency
+    # (chrono 0.4.45; Cargo.toml [workspace.dependencies] and more than a dozen
+    # crates), so leaving it is a migration to `jiff` or `time`. Mirrors the
+    # deny.toml ignore.
+    "RUSTSEC-2026-0543",
+    # EXPIRES 2027-01-31. Nine `unsound` advisories against heapless < 0.9.4,
+    # published 2026-11-18, owner-approved as dated ignores on 2026-11-20. Same
+    # path as RUSTSEC-2023-0089 above: iroh-blobs / iroh-relay -> postcard 1.1.3
+    # (default feature `heapless-cas`) -> heapless 0.7.17. No upgrade removes
+    # it: postcard 1.1.3 is the latest release and requires heapless ^0.7, and
+    # iroh 1.5.0 / iroh-blobs 0.105.0 / iroh-gossip 0.103.0 (the latest of each,
+    # resolved and checked 2026-11-20) still pull postcard with its defaults.
+    #
+    # What was checked about reach, and what was not:
+    # - postcard 1.1.3 names two heapless types, `Vec` and `String`. Eight of
+    #   the nine advisories are about other types: SortedLinkedList (-0574,
+    #   -0578), spsc (-0575), IndexMap (-0576, -0582), Deque (-0579, -0581) and
+    #   the pools (-0580).
+    # - -0577 lists `vec::IntoIter::drop` among its functions: undefined
+    #   behaviour if an ELEMENT's destructor panics. postcard's heapless vectors
+    #   hold bytes, which have no destructor.
+    # - iroh 1.3.0, iroh-relay 1.3.0 and iroh-blobs 0.103.1 call postcard's
+    #   alloc, slice and io entry points and do not name heapless in their
+    #   manifests. No nucleus crate depends on heapless.
+    # - Not checked: every transitive dependent of postcard, and whether a
+    #   later iroh release starts using the heapless flavours.
+    # Drop these when postcard moves to heapless >= 0.9.4 or iroh stops enabling
+    # postcard's default features. cargo-deny scopes `unsound` to workspace
+    # dependencies and does not flag a transitive one, so deny.toml is unchanged.
+    "RUSTSEC-2026-0574",
+    "RUSTSEC-2026-0575",
+    "RUSTSEC-2026-0576",
+    "RUSTSEC-2026-0577",
+    "RUSTSEC-2026-0578",
+    "RUSTSEC-2026-0579",
+    "RUSTSEC-2026-0580",
+    "RUSTSEC-2026-0581",
+    "RUSTSEC-2026-0582",
 ]
