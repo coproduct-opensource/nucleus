@@ -6,16 +6,22 @@ certificates and CSRs. Replay claims are committed to a durable ledger before
 authority is returned. The directory requires one exclusive writer and
 owner-only access.
 
-**The public build has no durable ledger, so it refuses request proofs.**
-Opening a gate fails with `Error::NoDurableLedger`, and
-`replay_ledger_available()` reports it so adapters refuse at configuration time:
-the node refuses to start with the request-proof origins set, and refuses to
-admit a pod labelled `nucleus.tool-proof`. A ledger that forgot spent proofs on
-restart would make a replayed proof valid again, so a weaker store is not
-offered. The durable ledger is supplied by a separate build. The
+**The durable ledger is the vendored native Olog store** (`vendor/olog-store`,
+`vendor/olog-ledger`, MIT; `vendor/OLOG-PROVENANCE.md`): the `request-proof`
+workspace of an `olog_ledger::Ledgered` in the gate's directory, one exclusive
+writer, each commit recorded with its principal and hash-chained, the chain
+verified on open. There is no SQLite or other database engine under it. A
+ledger that forgot spent proofs on restart would make a replayed proof valid
+again, so no weaker store is offered in a release build. The
 `volatile-test-ledger` feature (debug builds only) provides an in-process
-ledger so this crate and its adapters stay tested; it survives a gate being
-reopened within one process, not a process restart.
+ledger for the tests of this crate's dependents; it survives a gate being
+reopened within one process, not a process restart. This crate's own tests
+run against the durable ledger.
+
+Until this ledger was vendored, the public build had none and refused request
+proofs (`Error::NoDurableLedger`; the node refused to start with the origins
+set). Nodes built from the branch this ledger came from already run with it,
+and it opens their existing ledger directories unchanged.
 
 The HTTP node integration is enabled by configuring both:
 

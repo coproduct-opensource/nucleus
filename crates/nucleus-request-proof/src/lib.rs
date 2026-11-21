@@ -1,7 +1,6 @@
-//! Sender-constrained request verification with durable replay persistence.
-//! The caller supplies a key from independently verified mTLS or issuer+CSR.
-//! The public build ships no durable ledger, so opening a gate refuses with
-//! [`Error::NoDurableLedger`].
+//! Sender-constrained request verification with durable replay persistence
+//! (the native Olog ledger, `ledger.rs`). The caller supplies a key from
+//! independently verified mTLS or issuer+CSR.
 #![forbid(unsafe_code)]
 #![cfg_attr(
     not(test),
@@ -30,8 +29,10 @@ pub enum Error {
     Unavailable,
     #[error("invalid request proof configuration")]
     Configuration,
-    /// This build has no durable replay ledger. Request proofs are refused,
+    /// The build has no durable replay ledger. Request proofs are refused,
     /// never verified against storage that forgets spent proofs on restart.
+    /// This crate always has one (the native Olog ledger), so it does not
+    /// return this; the variant stays so adapters' refusal arms stay total.
     #[error("request proofs need a durable replay ledger, and this build has none")]
     NoDurableLedger,
 }
@@ -44,9 +45,9 @@ pub fn unix_now() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
 }
 
-/// Whether this build has a replay ledger. When it does not, every
-/// [`ProofGate`] and [`LoopbackGate`] open fails with
-/// [`Error::NoDurableLedger`].
+/// Whether this build has a replay ledger. It does: the native Olog ledger.
+/// A build without one would fail every [`ProofGate`] and [`LoopbackGate`]
+/// open with [`Error::NoDurableLedger`].
 #[must_use]
 pub const fn replay_ledger_available() -> bool {
     ledger::AVAILABLE
@@ -260,7 +261,7 @@ impl ProofGate {
                 }
                 let mut batch = Batch::new();
                 batch.put(b"format", b"nucleus-request-proof-v1");
-                db.commit("node", batch)?;
+                db.commit("node", "local-initialize", batch)?;
             }
         }
         Ok(Self {
@@ -414,7 +415,11 @@ impl ProofGate {
             key.as_bytes(),
             &serde_json::to_vec(&expires).map_err(|_| Error::Unavailable)?,
         );
-        if replay.db.commit(&thumbprint, batch).is_err() {
+        if replay
+            .db
+            .commit(&thumbprint, "verified-request-proof", batch)
+            .is_err()
+        {
             replay.poisoned = true;
             return Err(Error::Unavailable);
         }
