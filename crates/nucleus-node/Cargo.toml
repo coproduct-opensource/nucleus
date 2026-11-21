@@ -55,7 +55,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # RFC 8785 JCS, for the snapshot derivation name. The same crate nucleus-spec
 # uses for `program_digest` — one canonical form, not a second one.
-serde_json_canonicalizer = "0.3"
+serde_json_canonicalizer = "0.4"
 ipnet = "2.12"
 
 reqwest = { workspace = true, features = ["json", "rustls-no-provider", "stream"] }
