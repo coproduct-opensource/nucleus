@@ -27,7 +27,7 @@ hex = { workspace = true }
 # the same canonicalization, and pin, nucleus-receipt signs with. Plain
 # `serde_json::to_vec` follows `serde_json/preserve_order`, which feature
 # unification turns on in some builds and not others.
-serde_json_canonicalizer = "0.3"
+serde_json_canonicalizer = "0.4"
 # `jcs_inexact_integer`: the one decider for "this integer has no exact JCS
 # form" — the receipt refuses such a value on the same rule.
 nucleus-receipt = { path = "../nucleus-receipt" }
