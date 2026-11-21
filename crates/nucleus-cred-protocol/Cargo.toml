@@ -44,6 +44,7 @@ io = ["dep:tokio"]
 
 [dev-dependencies]
 serde_json = { workspace = true }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
 
 [lints]

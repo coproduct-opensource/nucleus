@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e527e6a010f66bbdc6c0ec8cda50cc9ad7bc8858321449efed18ddc0d35f729f # shrinks to credential = "authorization", fixed = [("x-api-version", "v 1"), ("X-Api-Version", "2026-01-01")], secret = []
