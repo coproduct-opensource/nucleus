@@ -181,7 +181,7 @@ fn options() -> serde_saphyr::Options {
         ignore_binary_tag_for_string: false,
         no_schema: false,
         reject_unsupported_tags: true,
-        reject_non_finite_typeless_float: true,
+        non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::Reject,
         with_snippet: false,
         crop_radius: 0,
     }
@@ -190,7 +190,9 @@ fn options() -> serde_saphyr::Options {
 /// The writer settings. The ONLY place they are chosen.
 fn ser_options() -> serde_saphyr::SerializerOptions {
     serde_saphyr::ser_options! {
-        empty_as_braces: true,
+        // Empty collections are `{}` and `[]`: serde-saphyr 2.1 deprecates `empty_as_braces` and
+        // asks callers to leave it at that default, so a test pins it
+        // (`empty_collections_are_written_as_flow_markers`).
         indent_step: 2,
         compact_list_indent: true,
         tagged_enums: false,

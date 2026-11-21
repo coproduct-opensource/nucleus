@@ -289,3 +289,33 @@ fn bytes_must_be_utf8() {
     assert_eq!(from_slice::<Value>(b"a: \xff\n"), Err(Error::NotUtf8));
     assert_eq!(from_slice::<Value>(b"a: 1\n").unwrap(), json!({"a": 1}));
 }
+
+/// `.nan` / `.inf` in an untyped position are refused rather than read: a
+/// `serde_json::Value` would otherwise turn them into `null` without an error.
+#[test]
+fn non_finite_floats_are_refused_in_untyped_positions() {
+    for word in [".nan", ".inf", "-.inf", ".NaN"] {
+        let doc = format!("x: {word}\n");
+        assert!(
+            from_str::<Value>(&doc).is_err(),
+            "`x: {word}` must not read into a Value"
+        );
+    }
+}
+
+/// An empty map and an empty list are written as `{}` and `[]`, which read back
+/// as the empty collections they were, not as `null`.
+#[test]
+fn empty_collections_are_written_as_flow_markers() {
+    #[derive(Serialize)]
+    struct Doc {
+        map: BTreeMap<&'static str, u32>,
+        list: Vec<u32>,
+    }
+    let text = to_string(&Doc {
+        map: BTreeMap::new(),
+        list: vec![],
+    })
+    .unwrap();
+    assert_eq!(text, "map: {}\nlist: []\n");
+}
