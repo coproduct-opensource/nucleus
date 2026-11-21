@@ -32,3 +32,6 @@ portcullis-core = { path = "../portcullis-core", features = ["serde"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }
