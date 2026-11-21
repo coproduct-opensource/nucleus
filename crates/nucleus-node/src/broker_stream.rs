@@ -1006,23 +1006,26 @@ fn describe_stream(
 /// value is the operator's, whatever the guest sent. Everything dropped is
 /// counted in the call's record, which names the forwarded headers (fixed
 /// ones included) and never a value.
+///
+/// Decided by `nucleus_cred_protocol::extracted::headers::forwarded_headers`
+/// (ADR 0007 G-1), over the proposals in their map order and
+/// [`RegistryEntry::header_entry`]; the names and values it returns are the
+/// guest's or the operator's own text.
 fn forwarded_headers(req: &StreamRequest, entry: &RegistryEntry) -> BTreeMap<String, String> {
-    let mut forwarded: BTreeMap<String, String> = req
+    let guest: Vec<(Vec<u8>, Vec<u8>)> = req
         .headers
         .iter()
-        .filter(|(name, value)| {
-            entry.forwards_header(name)
-                && nucleus_spec::workload_egress::header_value_admissible(value)
-        })
-        .map(|(name, value)| (name.clone(), value.clone()))
+        .map(|(name, value)| (name.as_bytes().to_vec(), value.as_bytes().to_vec()))
         .collect();
-    forwarded.extend(
-        entry
-            .fixed_headers()
-            .iter()
-            .map(|(name, value)| (name.clone(), value.clone())),
-    );
-    forwarded
+    nucleus_cred_protocol::extracted::headers::forwarded_headers(&guest, &entry.header_entry())
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                String::from_utf8_lossy(&name).into_owned(),
+                String::from_utf8_lossy(&value).into_owned(),
+            )
+        })
+        .collect()
 }
 
 /// Guest-chosen bytes in the open frame that reach the upstream, charged as
@@ -1098,6 +1101,7 @@ mod tests {
 
     mod approval_wait;
     mod forge;
+    mod forwarded_parity;
     mod git;
     mod headers;
     mod paced;
