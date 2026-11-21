@@ -69,7 +69,7 @@ before it.
 | 2 | Patch manifest | editor | the grant, the base digest, the program digest, the declared writes, the expected output digest |
 | 3 | Apply receipt | runner | the manifest, the measured writes, the output digest, an outcome |
 | 4 | Evaluation receipt | evaluator | the apply receipt, the base and candidate digests, the suite digest and version, the decoding configuration, the seed list, the harness image, the transcripts, the results |
-| 5 | Approval | deployer | the candidate digest, the evaluation receipt, the policy digest, a single-use id, an expiry |
+| 5 | Approval | deployer | the candidate digest, the evaluation receipt, the policy digest, the pointer generation it replaces, an expiry |
 | 6 | Promotion or rollback receipt | registry | the previous and new digests, a generation number, receipts 1–5 |
 
 The runner signs a refusal as well as a success. A patch that wrote outside its declaration
@@ -81,13 +81,17 @@ with its own cost (the verifier SDK pin).
 
 ### D4. The gate consumes a right, and has three answers
 
-Promotion takes a `PromotionRight` **by value** (C-4). Only the chain verifier mints one
-(C-1). The verdict is `Promoted`, `Refused(reason)` or `CouldNotLook` (A-1, A-2), and the
+Moving the pointer takes a `PointerMove` **by value** (C-4). Only the chain walk and the
+rollback check mint one (C-1). It names one pointer generation and one deadline, and the
+pointer has each generation once, so an approval moves it at most once without a separate
+store of spent approvals. The verdict is `Promoted`, `Refused(reason)` or `CouldNotLook` (A-1, A-2), and the
 reasons are a closed enum matched without a wildcard (B-3, E-2).
 
 The registry keeps the current digest, the previous digest and a generation. A promotion is a
-compare-and-swap on the generation. Rollback promotes the retained previous digest and writes
-its own receipt. The server loads only the digest the pointer names, measures what it loaded,
+compare-and-swap on the generation. Rollback returns to the retained previous digest on a
+deployer's signed order and writes its own receipt; the promotion's evidence cannot be
+replayed afterwards, because nothing in it cites the rollback. A refused attempt leaves a
+registry-signed notice. The server loads only the digest the pointer names, measures what it loaded,
 and reports digest and generation with every response.
 
 ### D5. Authority to propose is issued per base and does not carry over
