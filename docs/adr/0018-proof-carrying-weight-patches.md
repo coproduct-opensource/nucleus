@@ -1,4 +1,4 @@
-# ADR 0017 — Proof-carrying weight patches: a model may propose a change to its own checkpoint; it may not release one
+# ADR 0018 — Proof-carrying weight patches: a model may propose a change to its own checkpoint; it may not release one
 
 - Status: Proposed (2026-11-20). The implementation plan was approved by the owner on
   2026-11-20; this record's status is the owner's to change.

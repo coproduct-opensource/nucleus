@@ -1,6 +1,6 @@
 # Prior art: editing weights directly, and attesting what was edited
 
-Recorded 2026-11-20 for ADR 0017. Sources were read through search summaries and, for the
+Recorded 2026-11-20 for ADR 0018. Sources were read through search summaries and, for the
 first item, a partial read of the full text; where a figure comes from a summary and not the
 text, it is marked. Model and organization names are left out on purpose (this repository
 names no model vendor); the identifiers below are enough to find each source.
