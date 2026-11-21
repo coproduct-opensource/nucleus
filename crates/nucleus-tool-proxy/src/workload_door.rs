@@ -82,11 +82,15 @@ pub(crate) enum DoorRoute {
     MemoryWrite,
     MemoryRecall,
     Egress,
+    /// The pod's own command and path rules and named compartments, read-only, so an in-pod
+    /// executor can apply the same rules before it spawns (a guardrail: the decisions on
+    /// every effect stay the proxy's and the node's).
+    Policy,
 }
 
 impl DoorRoute {
     /// Every door route. [`table`] folds over this and nothing else.
-    pub(crate) const ALL: [DoorRoute; 9] = [
+    pub(crate) const ALL: [DoorRoute; 10] = [
         DoorRoute::Read,
         DoorRoute::Write,
         DoorRoute::WebFetch,
@@ -96,6 +100,7 @@ impl DoorRoute {
         DoorRoute::MemoryWrite,
         DoorRoute::MemoryRecall,
         DoorRoute::Egress,
+        DoorRoute::Policy,
     ];
 
     /// The path, identical to the main listener's for the same tool.
@@ -110,6 +115,7 @@ impl DoorRoute {
             DoorRoute::MemoryWrite => "/v1/memory/write",
             DoorRoute::MemoryRecall => "/v1/memory/recall",
             DoorRoute::Egress => "/v1/egress/{name}/{*path}",
+            DoorRoute::Policy => "/v1/policy",
         }
     }
 }
@@ -143,6 +149,7 @@ fn handler(route: DoorRoute) -> MethodRouter<crate::AppState> {
         DoorRoute::Egress => {
             get(crate::egress::credentialed_egress).post(crate::egress::credentialed_egress)
         }
+        DoorRoute::Policy => post(crate::pod_policy),
     }
 }
 
