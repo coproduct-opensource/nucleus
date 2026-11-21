@@ -11,6 +11,9 @@ mod credentialed_egress_fixity;
 pub mod decision_gate;
 pub mod dlc_admission;
 pub mod egress_budget;
+#[cfg(test)]
+#[path = "egress_decisions_parity_tests.rs"]
+mod egress_decisions_parity;
 pub mod egress_fence;
 pub mod exit_report_auth;
 pub mod guest_layout;
@@ -1289,9 +1292,12 @@ impl CredentialedEgressSpec {
     /// would let a field added later (another header, a prefix, a credential
     /// source) silently widen what may be inherited. The derived `PartialEq`
     /// covers every field, including ones not yet written.
+    ///
+    /// Decided by `nucleus_cred_protocol::extracted::admission::admitted_by`,
+    /// generic over the entry, which is the definition extracted to Lean.
     #[must_use]
     pub fn admitted_by(&self, ceiling: &[Self]) -> bool {
-        ceiling.iter().any(|granted| granted == self)
+        nucleus_cred_protocol::extracted::admission::admitted_by(self, ceiling)
     }
 
     /// Split `requested` into what the `ceiling` grants and what it does not.
@@ -1299,11 +1305,12 @@ impl CredentialedEgressSpec {
     /// Dropping rather than refusing is the caller's policy, not this
     /// function's: it returns both halves so each caller can log what it
     /// removed (by `name`, never by `credential_env`) and keep what survived.
+    ///
+    /// Decided by `nucleus_cred_protocol::extracted::admission::clamp`, which
+    /// copies each entry into its half; `requested` is dropped after.
     #[must_use]
     pub fn clamp(requested: Vec<Self>, ceiling: &[Self]) -> (Vec<Self>, Vec<Self>) {
-        requested
-            .into_iter()
-            .partition(|up| up.admitted_by(ceiling))
+        nucleus_cred_protocol::extracted::admission::clamp(&requested, ceiling)
     }
 }
 
