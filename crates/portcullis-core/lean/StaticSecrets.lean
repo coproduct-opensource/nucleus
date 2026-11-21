@@ -22,8 +22,9 @@
 
   What this file does NOT claim:
     * that the instance is complete — it lists the boundaries traced on
-      2026-11-20 (docs/design/zero-static-secrets.md), and a boundary nobody
-      listed is not checked. The SDKs' client-side `HmacAuth` is named there as
+      2026-11-20 (docs/design/zero-static-secrets.md), re-read for the approval
+      path after the 2026-11-21 deletion, and a boundary nobody listed is not
+      checked. The SDKs' client-side `HmacAuth` is named there as
       untraced;
     * anything about long-lived *asymmetric* keys held by one party (the node's
       approval key, the operator's federation key). Those are not shared secrets;
@@ -163,7 +164,9 @@ theorem zero_static_iff_no_violations (sys : List Boundary) :
 /-! ## Nucleus, traced 2026-11-20 on `main` (5fab70962)
 
   Each entry names where it was read. Producers are who can make an accepted
-  proof, including parties the material reached in transit.
+  proof, including parties the material reached in transit. Two instances
+  follow: `nucleusBefore20261121`, the trace as read, and `nucleusMain`, the
+  same boundaries after the approval HMAC was deleted.
 -/
 
 /-- The node's API: mTLS with the provisioned client identity alone (#3297). -/
@@ -200,7 +203,8 @@ def approvalSignature : Credential :=
   { name := "Ed25519 approval signature", check := .publicKey,
     producers := [.approver], presentedExpires := true }
 
-/-- The legacy approval HMAC: `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET`, from
+/-- The legacy approval HMAC, deleted 2026-11-21 and kept here for
+    `nucleusBefore20261121`: `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET`, from
     `nucleus.approval_secret` on the kernel command line or
     `/etc/nucleus/approval.secret`. The tool-proxy recomputes it, and the
     command line is world-readable inside the guest, so the workload holds it
@@ -219,34 +223,66 @@ def operatorFederation : Boundary :=
   { name := "operator federation", verifier := .node, claimant := .operator,
     accepts := [{ name := "operator assertion", check := .publicKey,
                   producers := [.operator], presentedExpires := true }] }
+/-! ### Before the deletion: `main` at 5fab70962, 2026-11-20
 
-def nucleusMain : List Boundary :=
+  Kept under a dated name so the violation the deletion removed stays on the
+  record, decided rather than remembered. -/
+
+def nucleusBefore20261121 : List Boundary :=
   [nodeApi, podIdentity, nodeToProxy, workloadDoor,
    approvals [approvalSignature, approvalHmac], operatorFederation]
 
-/-- The target: the same boundaries with the approval HMAC retired. -/
-def nucleusTarget : List Boundary :=
+example : WellFormed nucleusBefore20261121 = true := by decide
+
+/-- Before 2026-11-21 nucleus was not zero-static, and the approval HMAC was
+    the only reason. -/
+theorem before_violations :
+    violations nucleusBefore20261121 =
+      [("tool-proxy approvals", "legacy approval HMAC")] := by
+  decide
+
+theorem before_not_zero_static : ZeroStatic nucleusBefore20261121 = false := by decide
+
+/-- And the workload, in particular, could forge an approval then: the property
+    the deletion removed, stated for the party it mattered for. -/
+theorem workload_forged_approvals_before_20261121 :
+    Party.workload ∈ approvalHmac.producers ∧
+      approvalHmac ∈ (approvals [approvalSignature, approvalHmac]).accepts := by
+  decide
+
+/-! ### After the deletion: this branch, 2026-11-21
+
+  The tool-proxy's `/v1/approve` accepts only the Ed25519 approval signature
+  (`auth::select_auth_tier` has one approval tier; `ApprovalKeys` wraps the
+  Ed25519 verifier alone), refuses `--approval-secret` /
+  `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET` by name at startup
+  (`retired::refuse_approval_secret`), and `guest-init` no longer exports
+  `nucleus.approval_secret` or `/etc/nucleus/approval.secret`. The other
+  boundaries are unchanged from the 2026-11-20 trace. -/
+
+def nucleusMain : List Boundary :=
   [nodeApi, podIdentity, nodeToProxy, workloadDoor,
    approvals [approvalSignature], operatorFederation]
 
 example : WellFormed nucleusMain = true := by decide
-example : WellFormed nucleusTarget = true := by decide
 
-/-- Main today is not zero-static, and the approval HMAC is the only reason. -/
-theorem main_violations :
-    violations nucleusMain = [("tool-proxy approvals", "legacy approval HMAC")] := by
+/-- The traced boundaries are zero-static: no violations. -/
+theorem main_violations : violations nucleusMain = [] := by decide
+
+theorem main_zero_static : ZeroStatic nucleusMain = true := by decide
+
+/-- `main` is exactly the 2026-11-20 instance with the approval HMAC retired
+    and nothing else changed, so `retire_preserves` is the shape of the step. -/
+theorem main_is_before_with_hmac_retired :
+    nucleusMain =
+      nucleusBefore20261121.map fun b =>
+        { b with accepts := b.accepts.filter fun c => c != approvalHmac } := by
   decide
 
-theorem main_not_zero_static : ZeroStatic nucleusMain = false := by decide
-
-/-- Retiring that one credential is enough. -/
-theorem target_zero_static : ZeroStatic nucleusTarget = true := by decide
-
-/-- And the workload, in particular, can forge an approval today: the property
-    the deletion removes, stated for the party it matters for. -/
-theorem workload_forges_approvals_on_main :
-    Party.workload ∈ approvalHmac.producers ∧
-      approvalHmac ∈ (approvals [approvalSignature, approvalHmac]).accepts := by
+/-- No approval on `main` can be produced by the workload, or by the
+    tool-proxy that checks it: only the approver. -/
+theorem only_the_approver_approves_on_main :
+    ∀ c ∈ (approvals [approvalSignature]).accepts, c.producers = [.approver] := by
   decide
 
 end StaticSecrets
