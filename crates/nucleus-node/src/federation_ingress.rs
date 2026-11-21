@@ -335,8 +335,6 @@ pub(crate) struct CallerBinding {
     /// what pods spent rather than what they reserved. Default: the whole
     /// allocation, which also stands for what nothing meters (compute time).
     settle_metered: bool,
-    /// The named compartment key every delegation carries, if the binding names one.
-    compartment: Option<portcullis::ExtensionOperation>,
 }
 
 impl std::fmt::Debug for CallerBinding {
@@ -524,32 +522,26 @@ impl CallerBindings {
                 .ceiling
                 .resolve()
                 .map_err(|e| at(&format!("ceiling: {e}")))?;
-            let compartment = match &f.compartment {
-                None => None,
-                Some(name) => {
-                    let (def, digest) = compartments.get(name).ok_or_else(|| {
-                        at(&format!("compartment {name:?} is not in [[compartment]]"))
-                    })?;
-                    // The definition bounds every named dimension, the commands, paths, budget
-                    // and obligations; the binding's own extension keys (its tool surface) are
-                    // kept, as the built-in compartments' clamp keeps them.
-                    // Nor does it govern time: the binding's window (renewed by its operator) is
-                    // kept, since a profile-resolved definition would bring a window of its own.
-                    let (extensions, time) = (
-                        ceiling.capabilities.extensions.clone(),
-                        ceiling.time.clone(),
-                    );
-                    ceiling = ceiling.meet(def);
-                    ceiling.capabilities.extensions = extensions;
-                    ceiling.time = time;
-                    portcullis::cert_compartment::set_named(
-                        &mut ceiling.capabilities,
-                        name,
-                        digest,
-                    );
-                    Some(portcullis::cert_compartment::named_key(name, digest))
-                }
-            };
+            // A named compartment lives in the ceiling alone: its signed key is one of the
+            // ceiling's extension keys, which is where the exchange inherits it from.
+            if let Some(name) = &f.compartment {
+                let (def, digest) = compartments.get(name).ok_or_else(|| {
+                    at(&format!("compartment {name:?} is not in [[compartment]]"))
+                })?;
+                // The definition bounds every named dimension, the commands, paths, budget
+                // and obligations; the binding's own extension keys (its tool surface) are
+                // kept, as the built-in compartments' clamp keeps them.
+                // Nor does it govern time: the binding's window (renewed by its operator) is
+                // kept, since a profile-resolved definition would bring a window of its own.
+                let (extensions, time) = (
+                    ceiling.capabilities.extensions.clone(),
+                    ceiling.time.clone(),
+                );
+                ceiling = ceiling.meet(def);
+                ceiling.capabilities.extensions = extensions;
+                ceiling.time = time;
+                portcullis::cert_compartment::set_named(&mut ceiling.capabilities, name, digest);
+            }
             let mut upstreams = Vec::with_capacity(f.upstreams.len());
             for name in &f.upstreams {
                 let entry = registry
@@ -587,7 +579,6 @@ impl CallerBindings {
                 svid_ttl,
                 daily_max_micro,
                 settle_metered,
-                compartment,
             });
         }
         Ok(Self { bindings })
