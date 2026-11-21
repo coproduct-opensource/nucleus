@@ -233,6 +233,7 @@ pub struct PerformReply {
 }
 
 pub mod egress;
+pub mod extracted;
 pub mod stream;
 
 pub use egress::{EffectTable, EgressMethod, EgressOperation, UpstreamKind};
@@ -456,6 +457,10 @@ mod tests {
             include_str!("stream.rs"),
             include_str!("egress.rs"),
             include_str!("egress/effects.rs"),
+            include_str!("extracted/mod.rs"),
+            include_str!("extracted/admission.rs"),
+            include_str!("extracted/classify.rs"),
+            include_str!("extracted/headers.rs"),
         ]
         .iter()
         .flat_map(|src| {
