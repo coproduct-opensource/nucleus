@@ -1935,19 +1935,13 @@ async fn spawn_container_pod(
     )?;
 
     let size = pod_resources::PodSize::of(spec);
-    let container_memory = i64::try_from(size.memory_bytes()).unwrap_or(i64::MAX);
     let host_config = bollard::models::HostConfig {
         network_mode: Some(network_mode.clone()),
         binds: Some(binds),
-        // Always the admitted size (#3130); an absent spec field is the node's default, never
-        // unlimited. Swap equal to memory means none beyond it.
-        memory: Some(container_memory),
-        memory_swap: Some(container_memory),
-        nano_cpus: Some(i64::from(size.vcpus()) * 1_000_000_000),
-        pids_limit: Some(pod_resources::CONTAINER_PIDS_MAX),
         // The proxy must be the container's init: its broker admits that pid alone.
         init: proxy_mode.then_some(false),
-        ..Default::default()
+        // Always the admitted size (#3130), and the admitted accelerators or none.
+        ..container_resources::host_limits(size)
     };
 
     let config = bollard::models::ContainerCreateBody {

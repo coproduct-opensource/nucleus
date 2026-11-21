@@ -98,7 +98,7 @@ fn maximal(policy: &str) -> PodSpec {
             "work_dir":"/work","timeout_seconds":60,
             "policy":{policy},
             "budget_model":{{"base_cost_usd":0.5,"cost_per_second_usd":0.25}},
-            "resources":{{"cpu_cores":2,"memory_mib":512,"huge_pages":"2M"}},
+            "resources":{{"cpu_cores":2,"memory_mib":512,"huge_pages":"2M","accelerators":1}},
             "network":{{"allow":["10.0.0.0/8:443"],"deny":["10.1.0.0/16"],
                        "dns_allow":["example.com"],"url_allow":["https://example.com/a"],
                        "mime_allow":["text/plain"],"max_response_bytes":4096,

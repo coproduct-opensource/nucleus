@@ -431,6 +431,17 @@ pub struct ResourceSpec {
     /// program identity minted to date unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub huge_pages: Option<HugePages>,
+    /// Accelerator devices the pod asks for. Absent means none: a pod is never
+    /// given a device it did not name, and zero cannot be written.
+    ///
+    /// A node offers none unless its operator says otherwise, and only a
+    /// driver that can attach one honours the request; every other driver
+    /// refuses the spec at create. A pod that asked for a device is never run
+    /// without it.
+    ///
+    /// Skipped when absent, for the reason `huge_pages` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accelerators: Option<std::num::NonZeroU32>,
 }
 
 /// Network hints for the pod.

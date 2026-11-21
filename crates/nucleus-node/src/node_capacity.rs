@@ -155,10 +155,17 @@ pub(crate) struct Capacity(Arc<Mutex<Available>>);
 struct Available {
     memory_mib: u64,
     vcpus: u32,
+    /// Whether a pod holds the node's accelerators. The container runtime gives the first N
+    /// devices to every asker, so they are lent to one pod at a time, whole.
+    accelerators_lent: bool,
 }
 impl Capacity {
     pub(crate) fn new(memory_mib: u64, vcpus: u32) -> Self {
-        Self(Arc::new(Mutex::new(Available { memory_mib, vcpus })))
+        Self(Arc::new(Mutex::new(Available {
+            memory_mib,
+            vcpus,
+            accelerators_lent: false,
+        })))
     }
     pub(crate) fn reserve(&self, spec: &nucleus_spec::PodSpec) -> Result<Reservation, ApiError> {
         let size = PodSize::of(spec);
@@ -176,12 +183,22 @@ impl Capacity {
                 available.memory_mib, available.vcpus
             )));
         }
+        let accelerators = size.accelerators() > 0;
+        if accelerators && available.accelerators_lent {
+            return Err(ApiError::CapacityExhausted(
+                "requested accelerators; another pod holds this node's, and they are lent to one \
+                 pod at a time"
+                    .into(),
+            ));
+        }
         available.memory_mib -= memory_mib;
         available.vcpus -= vcpus;
+        available.accelerators_lent |= accelerators;
         Ok(Reservation {
             capacity: self.clone(),
             memory_mib,
             vcpus,
+            accelerators,
         })
     }
 }
@@ -194,12 +211,17 @@ pub(crate) struct Reservation {
     capacity: Capacity,
     memory_mib: u64,
     vcpus: u32,
+    /// Whether this reservation holds the node's accelerators.
+    accelerators: bool,
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
         if let Ok(mut available) = self.capacity.0.lock() {
             available.memory_mib += self.memory_mib;
             available.vcpus += self.vcpus;
+            if self.accelerators {
+                available.accelerators_lent = false;
+            }
         }
     }
 }
@@ -210,6 +232,32 @@ mod tests {
     fn spec() -> nucleus_spec::PodSpec {
         serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#).unwrap()
     }
+    /// The runtime gives the first N devices to every asker, so a second accelerator pod would
+    /// be handed the first one's device. The node lends them to one pod at a time, and a pod
+    /// that asks for none is never held up by one that does.
+    #[test]
+    fn accelerators_are_lent_to_one_pod_at_a_time() {
+        let asking: nucleus_spec::PodSpec = serde_json::from_str(
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"resources":{"accelerators":1},"policy":{"type":"profile","name":"default"}}}"#,
+        )
+        .unwrap();
+        let capacity = Capacity::new(8192, 8);
+        let holder = capacity.reserve(&asking).unwrap();
+        let refused = capacity.reserve(&asking).unwrap_err();
+        assert!(
+            matches!(&refused, ApiError::CapacityExhausted(why) if why.contains("accelerators")),
+            "{refused:?}"
+        );
+        let plain = capacity.reserve(&spec()).unwrap();
+        drop(plain);
+        assert!(
+            capacity.reserve(&asking).is_err(),
+            "a pod that held none must not return the lease"
+        );
+        drop(holder);
+        let _again = capacity.reserve(&asking).unwrap();
+    }
+
     #[test]
     fn cpu_quotas_preserve_whole_cpu_capacity() {
         for (input, expected) in [
