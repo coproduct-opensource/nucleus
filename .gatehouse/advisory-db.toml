@@ -1,0 +1,9 @@
+# The RustSec advisory snapshot the `cargo-deny` gate checks against. Written by
+# `cargo run --manifest-path tools/advisory-gate/Cargo.toml -- vendor --from <checkout>`;
+# do not edit by hand. Each id is `git rev-parse <commit>:<entry>` in a clone of
+# https://github.com/rustsec/advisory-db, recomputed from the vendored bytes on every gate run.
+commit = "472a4c9a785030434f15d7da84964d60fbe789ab"
+committed = "2026-11-18T10:14:42+01:00"
+crates = "56cecea2c1f2ed41bbaaf3dfb498249b5aab6784"
+rust = "02fa679467e675e68e1d645af3b4891a1e00835b"
+license = "46a771e12be5240551e733b66daeb9c51acc997e"
