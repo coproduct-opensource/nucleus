@@ -1,0 +1,6 @@
+# Here, not in package.json's `pnpm` field: pnpm 11 ignores that field, and a lockfile
+# update run under it (Dependabot's, #3504/#3509/#3530/#3539) dropped this override and
+# moved the SDK back to 1.30.0. `cargo xtask pnpm-lock-floors` holds the floor in CI.
+overrides:
+  # GHSA-6qxp-vccf-f47h: openclaw asks for ^1.25.2, which alone resolves 1.30.0.
+  '@modelcontextprotocol/sdk': ^1.31.0

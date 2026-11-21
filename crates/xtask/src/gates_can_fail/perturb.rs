@@ -506,6 +506,16 @@ pub fn perturb_lean_toolchain_split(_: &Path, t: &str) -> Perturbed {
     ))
 }
 
+/// The real defect of #3504/#3509/#3530/#3539: a lockfile update that drops the `overrides:`
+/// block. The block is removed whole, up to the blank line that ends it.
+pub fn perturb_pnpm_lock_drop_overrides(_: &Path, t: &str) -> Perturbed {
+    let re = rx(r"(?m)^overrides:\n(?:[ ].*\n)*\n?");
+    if !re.is_match(t) {
+        return moved(t.to_string(), "no top-level overrides: block found");
+    }
+    ok(re.replace(t, "").into_owned())
+}
+
 pub fn perturb_self_pin_sha(_: &Path, t: &str) -> Perturbed {
     ok(sed_s(
         t,

@@ -256,6 +256,9 @@ enum Command {
     /// checksum, the aeneas/charon pins, the first-party lean-toolchain files. Decided
     /// from committed declarations alone — no source tree, no toolchain.
     PinParity,
+    /// A pnpm lockfile keeps the overrides its project declares, and resolves each floored
+    /// package at or above its floor (`examples/openclaw-nucleus-plugin`: the MCP SDK, #3530).
+    PnpmLockFloors,
     /// A gate that is not running looks exactly like a gate that is passing.
     /// GitHub drops scheduled runs entirely under load -- not failed, not
     /// cancelled, never created -- and on 2026-09-09 `ci-assurance` lost about
@@ -696,6 +699,7 @@ mod node_reference;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
+mod pnpm_lock_floors;
 mod portability;
 mod prepush;
 mod proof_obligations;
@@ -837,6 +841,7 @@ fn main() -> Result<()> {
             self_pin::Outcome::Clean => Ok(()),
         },
         Command::PinParity => pin_parity::check(&std::env::current_dir()?),
+        Command::PnpmLockFloors => pnpm_lock_floors::check(&repo_root()?),
         Command::ScheduleLiveness {
             repo,
             workflow,
