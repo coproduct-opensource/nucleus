@@ -28,6 +28,13 @@ ignore = [
     # age::scrypt::Identity only (keystore/file.rs), so no secret ever reaches
     # crypto-bigint 0.5.
     { id = "RUSTSEC-2026-0387", reason = "only via age 0.12 p256tag recipients, unused by nucleus (scrypt only); expires 2027-01-31" },
+    # EXPIRES 2027-01-31. chrono unmaintained (RUSTSEC-2026-0543), published
+    # 2026-11-17: an informational advisory, no vulnerability. chrono 0.4.45 is a
+    # direct dependency of the workspace (Cargo.toml [workspace.dependencies],
+    # ck-kernel, ck-types, and more than a dozen nucleus-* crates), so leaving it
+    # needs a migration (to `jiff` or `time`), not a lockfile bump. Mirrors
+    # .cargo/audit.toml.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no vulnerability; direct workspace dependency, migration needed; expires 2027-01-31" },
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"

@@ -116,6 +116,13 @@ impl EgressMethod {
 /// policy cannot name, so it is refused ([`Unclassified`]) rather than
 /// decided as a fetch (ADR 0007 B).
 ///
+/// # One decider
+///
+/// Decided by `crate::extracted::classify::operation_for`, over the bytes of
+/// the path and query and the table's effects; this converts and calls it,
+/// so the classification is written once and is the code extracted to Lean
+/// (`lean/generated/NucleusCredProtocol`).
+///
 /// # Errors
 /// [`Unclassified`] for a write to a forge that no declared effect matches.
 pub fn operation_for(
@@ -124,19 +131,13 @@ pub fn operation_for(
     path: &str,
     query: Option<&str>,
 ) -> Result<EgressOperation, Unclassified> {
-    let names_push = |text: &str| decoded_lowercase(text).contains(RECEIVE_SERVICE);
-    // A bodiless call carries nothing of the session upstream, so a query
-    // naming the push service (the ref advertisement) does not make it a push.
-    if names_push(path) || (method.carries_body() && query.is_some_and(names_push)) {
-        return Ok(EgressOperation::GitPush);
-    }
-    if let Some(declared) = table.declared(method, path) {
-        return Ok(declared);
-    }
-    match (table.kind(), method.carries_body()) {
-        (UpstreamKind::Forge, true) => Err(Unclassified),
-        (UpstreamKind::Forge, false) | (UpstreamKind::Api, _) => Ok(EgressOperation::WebFetch),
-    }
+    crate::extracted::classify::operation_for(
+        table.kind(),
+        &table.views(),
+        method,
+        path.as_bytes(),
+        query.map(str::as_bytes),
+    )
 }
 
 /// A write to a forge upstream that no declared effect classifies: refused
@@ -181,55 +182,6 @@ impl EgressOperation {
             Self::CreatePr => "CreatePr",
         }
     }
-}
-
-/// The smart-HTTP push service, without its `git-` prefix so a path that
-/// spells it differently (`receive-pack` under another prefix) still matches.
-const RECEIVE_SERVICE: &str = "receive-pack";
-
-/// `text` with percent-escapes decoded until none remain (bounded), lowercased.
-///
-/// Decoded repeatedly because a double-encoded escape (`%252d`) is decoded
-/// once by each layer it passes, and the classifier must see what the last
-/// layer sees. Bounded, because each pass shortens the text or stops.
-fn decoded_lowercase(text: &str) -> String {
-    let mut current = text.to_ascii_lowercase();
-    for _ in 0..4 {
-        let next = percent_decode_once(&current).to_ascii_lowercase();
-        if next == current {
-            break;
-        }
-        current = next;
-    }
-    current
-}
-
-/// One pass of `%XX` decoding. A malformed escape is kept verbatim; a decoded
-/// byte that is not ASCII is dropped, because no service name contains one.
-fn percent_decode_once(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = String::with_capacity(bytes.len());
-    let mut i = 0;
-    while let Some(&b) = bytes.get(i) {
-        let escape = (b == b'%')
-            .then(|| bytes.get(i + 1..i + 3))
-            .flatten()
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-        match escape {
-            Some(decoded) => {
-                if decoded.is_ascii() {
-                    out.push(char::from(decoded));
-                }
-                i += 3;
-            }
-            None => {
-                out.push(char::from(b));
-                i += 1;
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -449,6 +401,45 @@ mod tests {
                     Ok(EgressOperation::WebFetch),
                     "{query}"
                 );
+            }
+        }
+    }
+
+    /// **A push is a push whatever the operator's table declares** (olog Pa.Egress.1
+    /// L1). A table that names the push service as a fetch, or as a pull request,
+    /// on a forge or an api, cannot weaken it: the receive-service check runs
+    /// before the table is consulted. No other test declares an effect for
+    /// `git-receive-pack`, so before this one, consulting the table first passed
+    /// every classification test.
+    #[test]
+    fn a_declaration_cannot_turn_a_push_into_a_fetch() {
+        use EgressMethod::Post;
+        use EgressOperation::{CreatePr, GitPush, WebFetch};
+        let effect = |path: &str, operation| DeclaredEffect {
+            method: Post,
+            path: path.into(),
+            operation,
+        };
+        for kind in [UpstreamKind::Forge, UpstreamKind::Api] {
+            for weaker in [WebFetch, CreatePr] {
+                let table = EffectTable::from_parts(
+                    Some(kind),
+                    vec![
+                        effect("*/*/git-receive-pack", weaker),
+                        effect("*/*/info/refs", weaker),
+                    ],
+                )
+                .expect("a valid table");
+                for (path, query) in [
+                    ("org/repo.git/git-receive-pack", None),
+                    ("org/repo.git/info/refs", Some("service=git-receive-pack")),
+                ] {
+                    assert_eq!(
+                        operation_for(&table, Post, path, query),
+                        Ok(GitPush),
+                        "{kind:?} declaring {weaker:?}: {path} {query:?}"
+                    );
+                }
             }
         }
     }
