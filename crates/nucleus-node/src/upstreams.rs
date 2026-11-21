@@ -529,11 +529,6 @@ impl RegistryEntry {
         matches!(self.credential, CredentialSource::Federated(_))
     }
 
-    /// Whether a guest-proposed request header `name` is forwarded to this
-    /// upstream: the operator listed it, the shared rule lets a guest propose
-    /// it at all, and it is not the header this entry injects the credential
-    /// in. All three, every call: the load-time check is not relied on alone,
-    /// so a rule tightened later applies to a registry loaded earlier.
     /// Whether the guest may call `path` on this upstream: any path when the operator listed
     /// none, otherwise exactly a listed one (a leading `/` is not significant).
     pub fn admits_path(&self, path: &str) -> bool {
@@ -562,12 +557,41 @@ impl RegistryEntry {
         self
     }
 
+    /// Whether a guest-proposed request header `name` is forwarded to this
+    /// upstream: the operator listed it, the shared rule lets a guest propose
+    /// it at all, and it is not the header this entry injects the credential
+    /// in. All three, every call: the load-time check is not relied on alone,
+    /// so a rule tightened later applies to a registry loaded earlier.
+    /// Nor is it withheld (`secret_headers`) or fixed.
+    ///
+    /// Decided by
+    /// `nucleus_cred_protocol::extracted::headers::forwards_header`
+    /// over [`Self::header_entry`]. A call reaches that decider through
+    /// `broker_stream::forwarded_headers`; this is the same question for one
+    /// name, for the tests that ask it on its own.
+    #[cfg(test)]
     pub fn forwards_header(&self, name: &str) -> bool {
-        self.request_headers.contains(name)
-            && nucleus_spec::workload_egress::guest_may_propose_header(name)
-            && !name.eq_ignore_ascii_case(&self.spec.header)
-            && !self.header_policy.secret.contains(name)
-            && !self.header_policy.fixed.contains_key(name)
+        nucleus_cred_protocol::extracted::headers::forwards_header(
+            &self.header_entry(),
+            name.as_bytes(),
+        )
+    }
+
+    /// What this entry says about a call's headers, as the deciders
+    /// (`nucleus_cred_protocol::extracted::headers`) read it.
+    pub fn header_entry(&self) -> nucleus_cred_protocol::extracted::headers::HeaderEntry {
+        let bytes = |s: &String| s.as_bytes().to_vec();
+        nucleus_cred_protocol::extracted::headers::HeaderEntry {
+            listed: self.request_headers.iter().map(bytes).collect(),
+            credential_header: self.spec.header.as_bytes().to_vec(),
+            withheld: self.header_policy.secret.iter().map(bytes).collect(),
+            fixed: self
+                .header_policy
+                .fixed
+                .iter()
+                .map(|(n, v)| (bytes(n), bytes(v)))
+                .collect(),
+        }
     }
 
     /// The headers the host adds to every call to this upstream, lower-case
@@ -842,62 +866,71 @@ fn request_headers(
 /// client. It may not be the credential header or a secret name, and its value
 /// must be a non-empty admissible header value. The node refuses to START on a
 /// violation, naming it.
+///
+/// Decided by `nucleus_cred_protocol::extracted::headers::header_policy`
+/// (ADR 0007 G-1); this converts the entry's map and list to bytes, in their
+/// iteration order, and words the refusal it returns.
 fn header_policy(
     name: &str,
     credential_header: &str,
     fixed: BTreeMap<String, String>,
     secret: Vec<String>,
 ) -> Result<HeaderPolicy, String> {
-    let mut secret_names = BTreeSet::new();
-    for header in secret {
-        let lower = header.to_ascii_lowercase();
-        if lower.is_empty()
-            || lower.len() > 64
-            || !lower
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        {
-            return Err(format!(
+    use nucleus_cred_protocol::extracted::headers::{self as rules, PolicyRefusal};
+    let fixed: Vec<(String, String)> = fixed.into_iter().collect();
+    let fixed_bytes: Vec<(Vec<u8>, Vec<u8>)> = fixed
+        .iter()
+        .map(|(h, v)| (h.as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect();
+    let withheld: Vec<Vec<u8>> = secret.iter().map(|h| h.as_bytes().to_vec()).collect();
+    let fixed_name = |i: usize| fixed.get(i).map_or("", |(h, _)| h.as_str());
+    match rules::header_policy(credential_header.as_bytes(), &fixed_bytes, &withheld) {
+        Ok(rules) => Ok(HeaderPolicy {
+            fixed: rules
+                .fixed
+                .iter()
+                .map(|(h, v)| (text(h), text(v)))
+                .collect(),
+            secret: rules.withheld.iter().map(|h| text(h)).collect(),
+        }),
+        Err(PolicyRefusal::WithheldNotAName(i)) => {
+            let header = secret.get(i).map_or("", String::as_str);
+            Err(format!(
                 "upstream {name:?}: secret_headers lists {header:?}, which is not a header name"
-            ));
+            ))
         }
-        secret_names.insert(lower);
-    }
-    let mut fixed_headers = BTreeMap::new();
-    for (header, value) in fixed {
-        let lower = header.to_ascii_lowercase();
-        if lower.eq_ignore_ascii_case(credential_header)
-            || secret_names.contains(&lower)
-            || !nucleus_spec::workload_egress::guest_may_propose_header(&lower)
-        {
-            return Err(format!(
+        Err(PolicyRefusal::FixedForbidden(i)) => {
+            let header = fixed_name(i);
+            Err(format!(
                 "upstream {name:?}: fixed_headers may not set {header:?}: a fixed header is \
                  not secret, so it may not be a credential, secret, framing or forwarding header"
-            ));
+            ))
         }
-        if value.is_empty() || !nucleus_spec::workload_egress::header_value_admissible(&value) {
-            return Err(format!(
+        Err(PolicyRefusal::FixedValue(i)) => {
+            let header = fixed_name(i);
+            Err(format!(
                 "upstream {name:?}: fixed_headers sets {header:?} to a value that is not a \
                  non-empty visible-ASCII header value"
-            ));
+            ))
         }
-        if fixed_headers.insert(lower, value).is_some() {
-            return Err(format!(
+        Err(PolicyRefusal::FixedTwice(i)) => {
+            let header = fixed_name(i);
+            Err(format!(
                 "upstream {name:?}: fixed_headers sets {header:?} twice, in different cases"
-            ));
+            ))
         }
-    }
-    if fixed_headers.len() > nucleus_spec::workload_egress::MAX_PROPOSED_HEADERS {
-        return Err(format!(
-            "upstream {name:?}: fixed_headers sets {} headers, above the {} a call may carry",
-            fixed_headers.len(),
+        Err(PolicyRefusal::TooManyFixed(count)) => Err(format!(
+            "upstream {name:?}: fixed_headers sets {count} headers, above the {} a call may carry",
             nucleus_spec::workload_egress::MAX_PROPOSED_HEADERS
-        ));
+        )),
     }
-    Ok(HeaderPolicy {
-        fixed: fixed_headers,
-        secret: secret_names,
-    })
+}
+
+/// Bytes the deciders returned, as text. Every name and value they return
+/// is a validated header token or visible-ASCII value, so this is the text
+/// they were made from; the lossy conversion is only so it cannot fail.
+fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// Validate one `federated` table.
@@ -1058,6 +1091,10 @@ fn paths(name: &str, listed: Vec<String>) -> Result<BTreeSet<String>, String> {
     }
     Ok(paths)
 }
+
+#[cfg(test)]
+#[path = "upstreams_parity_tests.rs"]
+mod parity_tests;
 
 #[cfg(test)]
 mod tests {

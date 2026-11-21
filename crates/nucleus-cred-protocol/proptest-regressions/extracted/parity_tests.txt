@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 51b4c6d02f9a2c107492c1a1f08acb4e26062fc716c3bd00ca3c051d010e3347 # shrinks to table = EffectTable { kind: Api, effects: [] }, method = Get, path = "", query = Some("receive-pack")
+cc 04c4fbb35692654cce8879a4f837d1ae8bbd72b1b88115465b27922f33b7689a # shrinks to table = EffectTable { kind: Api, effects: [DeclaredEffect { method: Get, path: "*", operation: GitPush }] }, method = Post, path = "%", query = None
+cc c3dc3bad7a061969f512839357b9745886421a8b7ddcb27a359c9fbc72911d99 # shrinks to table = EffectTable { kind: Api, effects: [DeclaredEffect { method: Post, path: "*", operation: WebFetch }] }, method = Get, path = "%2e"
+cc 5ffcdd2c8cec30f891910c9ba4f8fd8aa8e6290a8dd6e2a78cc52e77522ab1af # shrinks to table = EffectTable { kind: Api, effects: [] }, method = Get, path = "git-%25252572eceive-pack", query = None

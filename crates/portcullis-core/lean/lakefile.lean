@@ -253,6 +253,17 @@ lean_lib «PortcullisCoreDecide» where
   roots := #[`PortcullisCoreDecide.Types, `PortcullisCoreDecide.Funs]
   srcDir := "generated-decide"
 
+-- Open statements: one module per row of the repository root's
+-- open-statements.toml, `Statements/S<id>.lean`, each holding its claim as a
+-- `def claim : Prop` (never a `theorem` with a proof hole). The root module
+-- `Statements.lean` imports every row's module, so building this lib builds
+-- them all. An explicit root, not `globs`: crates/xtask/src/lean_tier.rs
+-- derives the audited tier from roots and refuses a lib declaring globs, so a
+-- new row adds an import to Statements.lean rather than an edit here.
+-- Convention: Statements/README.md.
+lean_lib «Statements» where
+  roots := #[`Statements]
+
 -- Declassification rule safety proofs
 lean_lib «DeclassifyProofs» where
   roots := #[`DeclassifyProofs]
