@@ -6830,6 +6830,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-release-server"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "nucleus-receipt",
+ "nucleus-release-gate",
+ "nucleus-weight-patch",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "nucleus-request-proof"
 version = "0.1.0"
 dependencies = [

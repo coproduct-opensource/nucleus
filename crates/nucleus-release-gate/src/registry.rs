@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::body::{OpenError, Opened, RefusalNotice, ReleaseReceipt, SealError, open, seal};
 use crate::chain::{
-    Head, PointerMove, PointerState, Previous, Refusal, ReleaseChain, verify_chain, verify_rollback,
+    ChainFacts, Head, PointerMove, PointerState, Previous, Refusal, ReleaseChain, verify_chain,
+    verify_rollback, walk,
 };
 use crate::keys::RoleKey;
 use crate::policy::ReleasePolicy;
@@ -453,7 +454,25 @@ pub enum AuditError {
     },
 }
 
-/// Replays a release log from `genesis` and returns the pointer it leads to.
+/// What one record of a log did, as replayed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Replayed {
+    /// A promotion, with what its chain says was done.
+    Promotion(ChainFacts),
+    /// A rollback.
+    Rollback,
+}
+
+/// One replayed record: the pointer after it, and what it did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditStep {
+    /// The pointer after the move.
+    pub pointer: PointerState,
+    /// What the move was.
+    pub replayed: Replayed,
+}
+
+/// Replays a release log from `genesis`, one step per record.
 ///
 /// This is the stranger's check. It takes the policy, the registry's public
 /// key and the records; it reads no registry state. Each record's evidence is
@@ -464,23 +483,30 @@ pub enum AuditError {
 /// # Errors
 ///
 /// [`AuditError`] at the first record that does not replay.
-pub fn audit(
+pub fn audit_steps(
     genesis: CheckpointDigest,
     policy: &ReleasePolicy,
     registry: RoleKey,
     records: &[ReleaseRecord],
-) -> Result<PointerState, AuditError> {
+) -> Result<Vec<AuditStep>, AuditError> {
     let mut pointer = PointerState::genesis(genesis);
+    let mut steps = Vec::with_capacity(records.len());
     for (index, record) in records.iter().enumerate() {
         let ReleaseRecord { release, evidence } = record;
         let opened = open::<ReleaseReceipt>(release, registry)
             .map_err(|error| AuditError::NotTheRegistrys { index, error })?;
         let at = opened.issued_at_micros();
-        let justified = match evidence {
-            Evidence::Promotion { chain } => verify_chain(chain, policy, &pointer, at),
-            Evidence::Rollback { order } => verify_rollback(order, policy, &pointer, at),
-        }
-        .map_err(|refusal| AuditError::Unjustified { index, refusal })?;
+        let unjustified = |refusal| AuditError::Unjustified { index, refusal };
+        let (justified, replayed) = match evidence {
+            Evidence::Promotion { chain } => {
+                let (granted, facts) = walk(chain, policy, &pointer, at).map_err(unjustified)?;
+                (granted, Replayed::Promotion(facts))
+            }
+            Evidence::Rollback { order } => (
+                verify_rollback(order, policy, &pointer, at).map_err(unjustified)?,
+                Replayed::Rollback,
+            ),
+        };
         let PointerMove {
             from,
             to,
@@ -500,8 +526,26 @@ pub fn audit(
             return Err(AuditError::WrongMove { index });
         }
         pointer = left_by(&opened);
+        steps.push(AuditStep { pointer, replayed });
     }
-    Ok(pointer)
+    Ok(steps)
+}
+
+/// Replays a release log from `genesis` and returns the pointer it leads to.
+///
+/// # Errors
+///
+/// [`AuditError`] at the first record that does not replay.
+pub fn audit(
+    genesis: CheckpointDigest,
+    policy: &ReleasePolicy,
+    registry: RoleKey,
+    records: &[ReleaseRecord],
+) -> Result<PointerState, AuditError> {
+    let steps = audit_steps(genesis, policy, registry, records)?;
+    Ok(steps
+        .last()
+        .map_or_else(|| PointerState::genesis(genesis), |step| step.pointer))
 }
 
 #[cfg(test)]

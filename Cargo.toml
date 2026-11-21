@@ -45,6 +45,7 @@ members = [
     "crates/nucleus-calibration",        # recomputable Brier/ECE receipts with the noise floor beside the estimate; "could not look" is an arm
     "crates/nucleus-weight-patch",       # a change to a tensor checkpoint as a replayable program: per-tensor digests, bit-exact apply, the write set measured from bytes
     "crates/nucleus-release-gate",       # the gate between a proposed checkpoint and the served one: a receipt chain walked against a deployer's policy, a pointer that moves only for a minted right
+    "crates/nucleus-release-server",     # the serving side of a weight-patch release: a measuring checkpoint store, an HTTP surface that says which digest answered, and a record verifier that replays from files
     "crates/nucleus-permission-market", # Lagrangian permission pricing oracle
     "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
     "crates/ctf-server",               # HTTP API server for The Vault CTF

@@ -132,6 +132,17 @@ separate fixture repository, linked from `docs/evidence/`.
   hardware. Matched seeds make base and candidate comparable on one machine; they do not make
   the text reproducible on another.
 
+**Taken by the gate on a role's word, and checked only by replay:**
+
+- that the runner's output digest is what the program produces from the base;
+- that the evaluator's counts are the counts of the transcript it bound.
+
+A runner and editor who agree to misreport an output, or an evaluator who signs inflated
+counts, produce a chain in which every signature is genuine, and the gate promotes it. The
+record verifier, which applies the program and recounts the transcript, refutes it. The
+record is therefore the control on the roles, and it works only if someone other than the
+roles runs it. (`a_misreported_output_and_inflated_scores_pass_the_gate_and_fail_replay`.)
+
 **Not claimed:**
 
 - That the candidate is better, or safe. The chain establishes what changed, what was
