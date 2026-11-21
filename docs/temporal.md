@@ -48,5 +48,5 @@ workflow AgentFlow(input) {
 
 ## Signer helpers
 
-- Rust: `crates/nucleus-client` provides `sign_approval_headers_ed25519` for approvals; `sign_http_headers` / `sign_grpc_headers` remain only for a pod provisioned with a legacy approval secret.
+- Rust: `crates/nucleus-client` provides `sign_approval_headers_ed25519`, the only approval signer: the HMAC approval signer and the tool-proxy tier that accepted it were deleted on 2026-11-21. `sign_http_headers` / `sign_grpc_headers` remain for the SDKs' `HmacAuth`, whose server boundaries are not yet traced (`docs/design/zero-static-secrets.md`, item 2).
 - TypeScript: `examples/sign_request.ts` contains a minimal signer.

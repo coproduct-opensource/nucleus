@@ -1680,7 +1680,10 @@ async fn spawn_local_pod(
         // host-side proxy. Bound only when the pod has a workload.
         .arg("--workload-door")
         .arg(lifecycle::local_workload_door(pod_dir)?);
-    // No shared secret, and none inherited from the node's own environment.
+    // No shared secret, and none inherited from the node's own environment:
+    // the proxy refuses either variable by name at startup (#2446; the
+    // approval secret since 2026-11-21), so a leftover in the node's
+    // environment would stop every local pod.
     command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
     command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
     command.envs(local_transport::proxy_env(state));

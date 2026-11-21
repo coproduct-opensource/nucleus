@@ -377,8 +377,9 @@ pub(crate) async fn serve_unix(app: Router, bound: BoundUnix) -> Result<(), ApiE
 
 /// The host-verified transports a proxy serves on: vsock in a microVM (the
 /// host's path), a peer-verified Unix socket (the host's path in a container,
-/// and the in-pod processes' path everywhere). Either, or both (#2988). The
-/// HMAC tier is unreachable on both (`auth::select_auth_tier`).
+/// and the in-pod processes' path everywhere). Either, or both (#2988). No
+/// HMAC tier exists to reach on either: the request tier was deleted in #2446
+/// and the approval tier on 2026-11-21 (`auth::select_auth_tier`).
 pub(crate) struct HostBound {
     vsock: Option<BoundVsock>,
     unix: Option<BoundUnix>,
