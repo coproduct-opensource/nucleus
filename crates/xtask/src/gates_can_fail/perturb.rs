@@ -610,6 +610,19 @@ pub fn perturb_exemplar_baseline(_: &Path, t: &str) -> Perturbed {
     ))
 }
 
+/// More proved decisions than the tree has: a `9` before the pinned count.
+pub fn perturb_egress_proofs_pin(_: &Path, t: &str) -> Perturbed {
+    let bumped = perl_first(
+        t,
+        r#"("proved"[[:space:]]*:[[:space:]]*)([0-9]+)"#,
+        "${1}9${2}",
+    );
+    if bumped == t {
+        return moved(bumped, r#"no "proved": <n> in the pin"#);
+    }
+    ok(bumped)
+}
+
 /// Since #3057 the build pool legitimately requires a volume with all its volumes listed, so the
 /// refused state is reached by dropping the volume list.
 pub fn perturb_fly_pool_volumes(_: &Path, t: &str) -> Perturbed {

@@ -306,6 +306,17 @@ pub fn probes() -> Vec<Probe> {
             desc: "a baseline claiming a score the tree does not have",
             perturb: pert!(perturb_exemplar_baseline),
         },
+        // The count's pin, claimed higher than the tree has: `--check` must refuse a rise
+        // nobody earned exactly as it refuses a fall.
+        Probe {
+            family: Family::XtaskFlagged {
+                sub: "egress-proofs",
+                flags: "--check",
+            },
+            target: "ci/egress-proofs.json",
+            desc: "a committed egress-proof count the tree does not have",
+            perturb: pert!(perturb_egress_proofs_pin),
+        },
         // An unroutable job looks exactly like a busy pool: "waiting" is the normal state.
         Probe {
             family: xtask("fly-pools"),
