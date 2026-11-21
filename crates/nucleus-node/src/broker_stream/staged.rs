@@ -64,6 +64,17 @@ impl StagedBody {
         self.digest
     }
 
+    /// The first `max` bytes of the owned upload (all of it when shorter),
+    /// then rewind: what a push's command list is read from, so the bytes
+    /// checked are the bytes later sent.
+    pub(super) async fn head(&mut self, max: usize) -> Result<Vec<u8>, ()> {
+        let n = usize::try_from(self.len).unwrap_or(usize::MAX).min(max);
+        let mut head = vec![0; n];
+        self.file.read_exact(&mut head).await.map_err(|_| ())?;
+        self.file.rewind().await.map_err(|_| ())?;
+        Ok(head)
+    }
+
     /// Read review bytes, then rewind the owned upload for a possible approved resume.
     pub(super) async fn review_bytes(&mut self) -> Result<Vec<u8>, String> {
         if self.len > crate::host_decide::effects::review::MAX_REVIEW_BYTES {
