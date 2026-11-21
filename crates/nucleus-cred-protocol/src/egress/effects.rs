@@ -38,12 +38,10 @@
 use serde::{Deserialize, Serialize};
 
 use super::{EgressMethod, EgressOperation};
+use crate::extracted::classify::{self, Effect, TableRefusal};
 
-/// The most effects one upstream may declare.
-pub const MAX_EFFECTS: usize = 64;
-
-/// The most segments one pattern may have.
-pub const MAX_PATTERN_SEGMENTS: usize = 32;
+// The bounds are the deciders', so they are declared there, once.
+pub use crate::extracted::classify::{MAX_EFFECTS, MAX_PATTERN_SEGMENTS};
 
 /// What kind of upstream an entry is, for the writes no declared effect
 /// classifies.
@@ -174,10 +172,18 @@ impl EffectTable {
         &self.effects
     }
 
+    /// The effects as the deciders read them (`crate::extracted::classify`).
+    pub(crate) fn views(&self) -> Vec<Effect> {
+        views(&self.effects)
+    }
+
     /// Validate a registry entry's `kind` and `effects`. The one place an
     /// absent kind is read, as [`UpstreamKind::Api`]: the node's registry and
     /// `nucleus run --egress` both build their table here, so the projection
     /// they compare cannot differ on it.
+    ///
+    /// Decided by `crate::extracted::classify::from_parts`; this converts the
+    /// effects to its view and names the patterns it refused.
     ///
     /// # Errors
     /// See [`EffectTableError`].
@@ -185,77 +191,35 @@ impl EffectTable {
         kind: Option<UpstreamKind>,
         effects: Vec<DeclaredEffect>,
     ) -> Result<Self, EffectTableError> {
-        if effects.len() > MAX_EFFECTS {
-            return Err(EffectTableError::TooMany(effects.len()));
-        }
-        let mut parsed: Vec<(&DeclaredEffect, Vec<String>)> = Vec::with_capacity(effects.len());
-        for effect in &effects {
-            let segments = pattern_segments(&effect.path)
-                .ok_or_else(|| EffectTableError::BadPattern(effect.path.clone()))?;
-            for (other, other_segments) in &parsed {
-                if other.method == effect.method
-                    && other.operation != effect.operation
-                    && overlap(other_segments, &segments)
-                {
-                    return Err(EffectTableError::Ambiguous(
-                        other.path.clone(),
-                        effect.path.clone(),
-                    ));
-                }
+        let path = |i: usize| effects.get(i).map_or_else(String::new, |e| e.path.clone());
+        match classify::from_parts(kind, &views(&effects)) {
+            Ok(kind) => Ok(Self { kind, effects }),
+            Err(TableRefusal::TooMany(count)) => Err(EffectTableError::TooMany(count)),
+            Err(TableRefusal::BadPattern(i)) => Err(EffectTableError::BadPattern(path(i))),
+            Err(TableRefusal::Ambiguous(earlier, later)) => {
+                Err(EffectTableError::Ambiguous(path(earlier), path(later)))
             }
-            parsed.push((effect, segments));
         }
-        Ok(Self {
-            kind: kind.unwrap_or(UpstreamKind::Api),
-            effects,
+    }
+
+    /// The declared operation for a request, if an effect matches it: the
+    /// first, in the operator's order, with this method whose pattern matches
+    /// the path. Decided by `crate::extracted::classify::declared`, which
+    /// [`super::operation_for`] reaches through `classify::operation_for`.
+    #[must_use]
+    pub fn declared(&self, method: EgressMethod, path: &str) -> Option<EgressOperation> {
+        classify::declared(&self.views(), method, path.as_bytes())
+    }
+}
+
+/// `effects` as the deciders read them: each pattern's bytes, unparsed.
+fn views(effects: &[DeclaredEffect]) -> Vec<Effect> {
+    effects
+        .iter()
+        .map(|e| Effect {
+            method: e.method,
+            path: e.path.as_bytes().to_vec(),
+            operation: e.operation,
         })
-    }
-
-    /// The declared operation for a request, if an effect matches it.
-    pub(super) fn declared(&self, method: EgressMethod, path: &str) -> Option<EgressOperation> {
-        let request = request_segments(path);
-        self.effects
-            .iter()
-            .filter(|e| e.method == method)
-            .find(|e| pattern_segments(&e.path).is_some_and(|pattern| matches(&pattern, &request)))
-            .map(|e| e.operation)
-    }
-}
-
-/// A pattern's segments, lower-cased, or `None` if it is not a pattern.
-fn pattern_segments(pattern: &str) -> Option<Vec<String>> {
-    let segments: Vec<String> = pattern
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect();
-    let valid = !segments.is_empty()
-        && segments.len() <= MAX_PATTERN_SEGMENTS
-        && segments.iter().all(|s| {
-            s == "*"
-                || (!s.contains(['*', '%', '?', '#', '\\'])
-                    && s != ".."
-                    && s != "."
-                    && s.bytes().all(|b| b.is_ascii_graphic()))
-        });
-    valid.then_some(segments)
-}
-
-/// A request path's segments, percent-decoded to a fixed point and
-/// lower-cased, empty segments dropped.
-fn request_segments(path: &str) -> Vec<String> {
-    super::decoded_lowercase(path)
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
         .collect()
-}
-
-fn matches(pattern: &[String], request: &[String]) -> bool {
-    pattern.len() == request.len() && pattern.iter().zip(request).all(|(p, r)| p == "*" || p == r)
-}
-
-/// Whether some path matches both patterns.
-fn overlap(a: &[String], b: &[String]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x == "*" || y == "*" || x == y)
 }
