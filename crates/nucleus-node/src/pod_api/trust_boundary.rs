@@ -831,14 +831,14 @@ impl Host for Node {
         .map_err(|e| e.to_string())?;
         // What `create_pod_internal` decides from the spec and the node's
         // driver (`StartingLabel::of`), given here as its result.
-        let starting = match workspace {
+        let starting = crate::host_decide::HostStart::unreviewed(match workspace {
             Workspace::Clean => crate::host_decide::StartingLabel::Clean,
             Workspace::Untrusted => crate::host_decide::StartingLabel::Untrusted(
                 crate::host_decide::Untrusted::Workspace {
                     field: "image.scratch_path",
                 },
             ),
-        };
+        });
         st.authority
             .admit_kept_as(
                 &crate::pod_authority::Admission {

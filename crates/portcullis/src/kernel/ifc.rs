@@ -29,6 +29,71 @@ use crate::Operation;
 /// guest's tool calls.
 const ACTION_BOUND_SINKS: [Operation; 2] = [Operation::GitPush, Operation::CreatePr];
 
+/// What the pod's operator declared about its workspace, fixed when the kernel
+/// is built (ADR 0014 §10, amended 2026-10-29). No `Default` (ADR 0007 B-1):
+/// every constructor but [`Kernel::from_certificate_in_workspace`] states
+/// [`WorkspaceReview::Unreviewed`], the reading that grants nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceReview {
+    /// Nothing declared. A written file may become code a person runs outside
+    /// any sandbox, so a write or an edit is an outbound sink: once the session
+    /// is tainted, the egress gate refuses it.
+    Unreviewed,
+    /// The operator promises the workspace is the cell's own private copy and
+    /// that nothing in it is used outside a sandbox until a person has reviewed
+    /// it. A write or an edit then stays in the cell, and the egress gate does
+    /// not treat it as a sink. Every other check still applies to it.
+    ReviewGated,
+}
+
+impl WorkspaceReview {
+    /// Whether `op` stays in the cell under this declaration. Exhaustive over
+    /// [`Operation`] (ADR 0007 E-2): a new operation is a build error here until
+    /// someone decides whether it leaves the pod.
+    pub const fn keeps_in_cell(self, op: Operation) -> bool {
+        let writes_the_workspace = match op {
+            Operation::WriteFiles | Operation::EditFiles => true,
+            Operation::ReadFiles
+            | Operation::GlobSearch
+            | Operation::GrepSearch
+            | Operation::WebFetch
+            | Operation::WebSearch
+            | Operation::RunBash
+            | Operation::GitCommit
+            | Operation::GitPush
+            | Operation::CreatePr
+            | Operation::ManagePods
+            | Operation::SpawnAgent => false,
+        };
+        match self {
+            WorkspaceReview::Unreviewed => false,
+            WorkspaceReview::ReviewGated => writes_the_workspace,
+        }
+    }
+}
+
+/// The proved gate ([`ifc_flow_gate`], unchanged), narrowed for an operation
+/// the workspace declaration keeps in the cell: its integrity and
+/// confidentiality refusals do not apply, because the bytes do not leave. A
+/// poisoned session still refuses it. For every other operation, and for every
+/// operation under [`WorkspaceReview::Unreviewed`], this is `ifc_flow_gate`.
+fn workspace_flow_gate<F: EgressAggregates + ?Sized>(
+    flow: &F,
+    operation: Operation,
+    graded: bool,
+    workspace: WorkspaceReview,
+) -> exposure_core::EgressDisposition {
+    use exposure_core::EgressDisposition as D;
+    match (
+        workspace.keeps_in_cell(operation),
+        ifc_flow_gate(flow, operation, graded),
+    ) {
+        (true, D::Tainted | D::TaintedApproval | D::Confidentiality) => D::Pass,
+        (true, d @ (D::Pass | D::Poisoned)) => d,
+        (false, d) => d,
+    }
+}
+
 /// What a decision does with an action whose every check passes but whose
 /// session carries an integrity taint. Private to the kernel: the only way to
 /// ask for a hold is [`Kernel::decide_effect_with_flow`].
@@ -140,7 +205,8 @@ impl Kernel {
         let flow = flow?;
         let operation = term.operation();
 
-        match ifc_flow_gate(flow, operation, Self::graded_taint_enabled()).render(operation) {
+        let graded = Self::graded_taint_enabled();
+        match workspace_flow_gate(flow, operation, graded, self.workspace).render(operation) {
             exposure_core::EgressVerdict::Deny(detail) => {
                 tracing::warn!(
                     ?operation,
@@ -489,6 +555,142 @@ mod effect_hold_tests {
             assert_eq!(held.decision.verdict, Verdict::RequiresApproval);
             assert!(held.token.is_none());
         }
+    }
+}
+
+/// ADR 0014 §10 (amended 2026-10-29): a declared review-gated workspace keeps a
+/// tainted session's writes in the cell, and changes nothing else.
+#[cfg(test)]
+mod workspace_review_tests {
+    use super::*;
+    use crate::flow_graph::FlowGraph;
+    use crate::PermissionLattice;
+    use portcullis_core::flow::NodeKind;
+
+    fn tainted() -> FlowGraph {
+        let mut g = FlowGraph::new();
+        g.insert_observation(NodeKind::WebContent, &[], 1).unwrap();
+        g
+    }
+
+    fn kernel(policy: PermissionLattice, workspace: WorkspaceReview) -> Kernel {
+        let mut k = Kernel::new(policy);
+        k.workspace = workspace;
+        k
+    }
+
+    fn decide(k: &mut Kernel, op: Operation, flow: &FlowGraph) -> Verdict {
+        k.decide_effect_with_flow(
+            ActionTerm::from_operation(op, "/work/src/main.rs"),
+            Some(flow),
+        )
+        .decision
+        .verdict
+    }
+
+    fn ifc_refused(v: &Verdict) -> bool {
+        matches!(v, Verdict::Deny(DenyReason::IfcUnsafe { .. }))
+    }
+
+    /// Pinned: with nothing declared, a tainted session's write is refused by
+    /// the flow gate, as it always was.
+    #[test]
+    fn an_unreviewed_workspace_still_refuses_a_tainted_write() {
+        for op in [Operation::WriteFiles, Operation::EditFiles] {
+            let mut k = kernel(PermissionLattice::permissive(), WorkspaceReview::Unreviewed);
+            assert!(ifc_refused(&decide(&mut k, op, &tainted())), "{op:?}");
+        }
+    }
+
+    /// Declared review-gated, the same write passes the flow gate, and the
+    /// rest of the decision runs: a permissive profile allows it.
+    #[test]
+    fn a_review_gated_workspace_keeps_a_tainted_write_in_the_cell() {
+        for op in [Operation::WriteFiles, Operation::EditFiles] {
+            let mut k = kernel(
+                PermissionLattice::permissive(),
+                WorkspaceReview::ReviewGated,
+            );
+            assert_eq!(decide(&mut k, op, &tainted()), Verdict::Allow, "{op:?}");
+        }
+    }
+
+    /// The write's approval obligation still holds it; only an approval
+    /// releases it. And a capability of `Never` still refuses it.
+    #[test]
+    fn obligations_and_capabilities_still_apply_to_a_review_gated_write() {
+        let mut obliged = PermissionLattice::permissive();
+        obliged.obligations.insert(Operation::WriteFiles);
+        let mut k = kernel(obliged, WorkspaceReview::ReviewGated);
+        assert_eq!(
+            decide(&mut k, Operation::WriteFiles, &tainted()),
+            Verdict::RequiresApproval
+        );
+        k.grant_approval(Operation::WriteFiles, 1);
+        assert_eq!(
+            decide(&mut k, Operation::WriteFiles, &tainted()),
+            Verdict::Allow
+        );
+
+        let mut never = PermissionLattice::permissive();
+        never.capabilities.write_files = CapabilityLevel::Never;
+        let mut k = kernel(never, WorkspaceReview::ReviewGated);
+        let v = decide(&mut k, Operation::WriteFiles, &tainted());
+        assert!(v.is_denied() && !ifc_refused(&v), "{v:?}");
+    }
+
+    /// Every operation but a write or an edit is decided exactly as it is in
+    /// an unreviewed workspace: a shell, a commit, a push, a pull request, a
+    /// sub-agent, a pod, a fetch.
+    #[test]
+    fn every_other_operation_is_unchanged_under_review_gating() {
+        for op in Operation::ALL {
+            if WorkspaceReview::ReviewGated.keeps_in_cell(op) {
+                assert!(matches!(op, Operation::WriteFiles | Operation::EditFiles));
+                continue;
+            }
+            let mut gated = kernel(
+                PermissionLattice::permissive(),
+                WorkspaceReview::ReviewGated,
+            );
+            let mut plain = kernel(PermissionLattice::permissive(), WorkspaceReview::Unreviewed);
+            assert_eq!(
+                decide(&mut gated, op, &tainted()),
+                decide(&mut plain, op, &tainted()),
+                "{op:?}"
+            );
+        }
+        let mut k = kernel(
+            PermissionLattice::permissive(),
+            WorkspaceReview::ReviewGated,
+        );
+        for op in [
+            Operation::RunBash,
+            Operation::GitCommit,
+            Operation::SpawnAgent,
+        ] {
+            assert!(ifc_refused(&decide(&mut k, op, &tainted())), "{op:?}");
+        }
+        // The governed exit is still the only exit for a push or a PR.
+        for op in [Operation::GitPush, Operation::CreatePr] {
+            assert_eq!(decide(&mut k, op, &tainted()), Verdict::RequiresApproval);
+        }
+    }
+
+    /// A poisoned session refuses a write whatever the workspace declares.
+    #[test]
+    fn a_poisoned_session_still_refuses_a_review_gated_write() {
+        let mut poisoned = tainted();
+        poisoned.poison();
+        let mut k = kernel(
+            PermissionLattice::permissive(),
+            WorkspaceReview::ReviewGated,
+        );
+        assert!(ifc_refused(&decide(
+            &mut k,
+            Operation::WriteFiles,
+            &poisoned
+        )));
     }
 }
 

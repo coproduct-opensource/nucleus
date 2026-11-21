@@ -20,9 +20,13 @@
 
 use nucleus_decision_protocol::kernel::HostTaint;
 use nucleus_decision_protocol::{IFCLabel, LabelRaise};
+use nucleus_spec::PodSpec;
 use nucleus_spec::isolation_profile::IsolationProfile;
+use portcullis::kernel::WorkspaceReview;
 
-use crate::workspace_scan::Source;
+use crate::ApiError;
+use crate::driver::DriverKind;
+use crate::workspace_scan::{Form, Source};
 
 /// Why a pod starts untrusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +89,57 @@ impl StartingLabel {
             ) => taint.raise(LabelRaise::new(IFCLabel::web_content(now))),
         }
         taint
+    }
+}
+
+/// What the host decides about a pod at admission and holds for its whole
+/// life: the label it starts at, and what its operator declared about its
+/// workspace (ADR 0014 §3 and §10). Decided once, by [`HostStart::of`], before
+/// any authority is issued; the host's kernel for the pod is built from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HostStart {
+    pub(crate) label: StartingLabel,
+    pub(crate) workspace: WorkspaceReview,
+}
+
+impl HostStart {
+    /// The one decider. Refuses a malformed declaration, and a review-gated one
+    /// where the workspace is a host directory the pod shares (the Container
+    /// and Local drivers' `work_dir`): a write there lands outside the cell, so
+    /// nothing keeps it there.
+    pub(crate) fn of(
+        profile: IsolationProfile,
+        spec: &PodSpec,
+        driver: &DriverKind,
+    ) -> Result<Self, ApiError> {
+        let workspace = nucleus_spec::workspace_review::of(spec)
+            .map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
+        let sources = crate::workspace_scan::sources(spec, driver);
+        let shared = sources.iter().find(|s| s.form == Form::Directory);
+        match (workspace, shared) {
+            (WorkspaceReview::ReviewGated, Some(dir)) => Err(ApiError::InvalidSpec(format!(
+                "{} is declared, but on this node's driver the pod's `{}` ({}) is a host \
+                 directory it shares read-write, not the cell's own disk: a write there is not \
+                 pod-local, so it cannot be kept in the cell (ADR 0014 §10). Run the pod on a \
+                 microVM driver, or drop the declaration.",
+                nucleus_spec::workspace_review::REVIEW_GATED_LABEL,
+                dir.field,
+                dir.path.display(),
+            ))),
+            (WorkspaceReview::ReviewGated, None) | (WorkspaceReview::Unreviewed, _) => Ok(Self {
+                label: StartingLabel::of(profile, &sources),
+                workspace,
+            }),
+        }
+    }
+
+    /// A label decided elsewhere, with nothing declared about the workspace:
+    /// the reading that grants nothing (a restored pod, a test).
+    pub(crate) fn unreviewed(label: StartingLabel) -> Self {
+        Self {
+            label,
+            workspace: WorkspaceReview::Unreviewed,
+        }
     }
 }
 
@@ -158,6 +213,74 @@ mod tests {
             container,
             StartingLabel::Untrusted(Untrusted::Workspace { field: "work_dir" })
         );
+    }
+
+    fn declaring(mut s: nucleus_spec::PodSpec, value: &str) -> nucleus_spec::PodSpec {
+        s.metadata.labels.insert(
+            nucleus_spec::workspace_review::REVIEW_GATED_LABEL.into(),
+            value.into(),
+        );
+        s
+    }
+
+    /// ADR 0014 §10: a review-gated workspace is the cell's own disk or it is
+    /// not declared. Where the pod shares the caller's `work_dir` (a container),
+    /// the declaration is refused by name; on a microVM it is admitted.
+    #[test]
+    fn a_review_gated_workspace_must_be_the_cells_own_disk() {
+        let gated = declaring(bare(), "true");
+        let refused = HostStart::of(IsolationProfile::Standard, &gated, &DriverKind::Container)
+            .expect_err("a shared work_dir is not pod-local");
+        let message = refused.to_string();
+        assert!(
+            message.contains(nucleus_spec::workspace_review::REVIEW_GATED_LABEL)
+                && message.contains("`work_dir`"),
+            "{message}"
+        );
+        let admitted = HostStart::of(IsolationProfile::Standard, &gated, &DriverKind::Firecracker)
+            .expect("a microVM's disk is the cell's own");
+        assert_eq!(admitted.workspace, WorkspaceReview::ReviewGated);
+        // Undeclared, a container pod is admitted as it always was.
+        let plain = HostStart::of(IsolationProfile::Standard, &bare(), &DriverKind::Container)
+            .expect("nothing declared");
+        assert_eq!(plain.workspace, WorkspaceReview::Unreviewed);
+        // A spelling that is neither is refused, not read as either.
+        assert!(
+            HostStart::of(
+                IsolationProfile::Standard,
+                &declaring(bare(), "yes"),
+                &DriverKind::Firecracker
+            )
+            .is_err()
+        );
+    }
+
+    /// The carry-forward: a review-gated workspace that arrives on a caller's
+    /// disk (a previous session's edits) starts untrusted, so the declaration
+    /// cannot launder those edits into a clean label. Only a disk the node made
+    /// itself starts clean.
+    #[test]
+    fn a_review_gated_workspace_on_a_caller_disk_starts_untrusted() {
+        let carried = HostStart::of(
+            IsolationProfile::Standard,
+            &declaring(with_scratch(), "true"),
+            &DriverKind::Firecracker,
+        )
+        .expect("admitted");
+        assert_eq!(
+            carried.label,
+            StartingLabel::Untrusted(Untrusted::Workspace {
+                field: "image.scratch_path"
+            })
+        );
+        assert!(carried.label.taint(0).is_tainted());
+        let fresh = HostStart::of(
+            IsolationProfile::Standard,
+            &declaring(bare(), "true"),
+            &DriverKind::Firecracker,
+        )
+        .expect("admitted");
+        assert_eq!(fresh.label, StartingLabel::Clean);
     }
 
     /// A restored pod is never clean.

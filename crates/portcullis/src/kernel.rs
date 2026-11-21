@@ -87,7 +87,7 @@ mod consent;
 mod dlc;
 /// IFC flow gate (poison + tainted-outbound denial) — extends `impl Kernel`.
 mod ifc;
-pub use ifc::{EffectDecision, TaintHold};
+pub use ifc::{EffectDecision, TaintHold, WorkspaceReview};
 
 /// A single decision made by the kernel.
 ///
@@ -571,6 +571,9 @@ pub struct Kernel {
     /// lattice allows an operation, the isolation level can deny it
     /// (e.g., network operations in an airgapped environment).
     isolation: IsolationLattice,
+    /// What the operator declared about the workspace; immutable for the
+    /// session, like `isolation` ([`WorkspaceReview`]).
+    workspace: WorkspaceReview,
     /// Append-only session trace.
     trace: Vec<Decision>,
     /// Next sequence number.
@@ -721,6 +724,7 @@ impl Kernel {
             effective: initial,
             initial_hash,
             isolation,
+            workspace: WorkspaceReview::Unreviewed,
             trace: Vec::new(),
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
@@ -773,6 +777,7 @@ impl Kernel {
             effective: initial,
             initial_hash,
             isolation,
+            workspace: WorkspaceReview::Unreviewed,
             trace: Vec::new(),
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
@@ -1126,6 +1131,7 @@ impl Kernel {
             effective: verified.effective().clone(),
             initial_hash,
             isolation: IsolationLattice::localhost(),
+            workspace: WorkspaceReview::Unreviewed,
             trace: Vec::new(),
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
@@ -1184,6 +1190,7 @@ impl Kernel {
             effective: verified.effective().clone(),
             initial_hash,
             isolation,
+            workspace: WorkspaceReview::Unreviewed,
             trace: Vec::new(),
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
@@ -1208,6 +1215,19 @@ impl Kernel {
             signing_key: None,
             receipt_chain: None,
         }
+    }
+
+    /// [`Self::from_certificate`] for a pod whose operator declared its
+    /// workspace ([`WorkspaceReview`], ADR 0014 §10). The only constructor that
+    /// can state [`WorkspaceReview::ReviewGated`].
+    pub fn from_certificate_in_workspace(
+        verified: VerifiedPermissions,
+        certificate_fingerprint: [u8; 32],
+        workspace: WorkspaceReview,
+    ) -> Self {
+        let mut kernel = Self::from_certificate(verified, certificate_fingerprint);
+        kernel.workspace = workspace;
+        kernel
     }
 
     /// The core decision function. Complete mediation.
@@ -1913,6 +1933,11 @@ impl Kernel {
     /// Get the runtime isolation level.
     pub fn isolation(&self) -> &IsolationLattice {
         &self.isolation
+    }
+
+    /// What the operator declared about the workspace.
+    pub fn workspace(&self) -> WorkspaceReview {
+        self.workspace
     }
 
     /// Get the current runtime exposure accumulator.

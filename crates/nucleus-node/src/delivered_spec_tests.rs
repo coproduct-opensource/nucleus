@@ -93,7 +93,7 @@ async fn admitted(
             &root,
             request,
             uuid::Uuid::new_v4(),
-            crate::host_decide::StartingLabel::Clean,
+            crate::host_decide::HostStart::unreviewed(crate::host_decide::StartingLabel::Clean),
             delivery,
         )
         .await
