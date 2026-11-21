@@ -46,8 +46,12 @@ use sha2::{Digest, Sha256};
 /// SHA-256 of the PEM bundle rendered from `webpki-root-certs` at the version
 /// `crates/xtask/Cargo.toml` pins. Bumping that crate moves this; the build
 /// refuses until it is updated, so a trust-store change is a reviewed diff.
+///
+/// 1.0.12 (2026-11-16): 120 roots to 112. Removed: Buypass Class 2 and Class 3 Root CA,
+/// Certigna Root CA, DigiCert Trusted Root G4, emSign ECC Root CA - C3, emSign Root CA - C1,
+/// QuoVadis Root CA 1 G3 and QuoVadis Root CA 3 G3. None added.
 pub const CA_BUNDLE_SHA256: &str =
-    "778fb8e9e70cc01f2d062073a2778b943e18bdf82c36e3453ebb14cd300a419d";
+    "729b5dbbc5322583188b71fe0394a96971b2532fbef938970bdf62953dd55fd9";
 
 /// A guest architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
