@@ -143,6 +143,20 @@ impl SharedBudget {
         Ok(record)
     }
 
+    /// Debit a metered call's cost above its tariff, after the call happened.
+    /// Unlike `commit`, this cannot refuse for affordability: the spend already
+    /// occurred. The ledger saturates at its ceiling, so an overrun exhausts the
+    /// pod and its next `commit` refuses. Persisted like any debit.
+    pub(crate) fn settle(&self, micro_usd: u64) -> Result<(), String> {
+        let mut state = self.lock()?;
+        let amount = Decimal::from_i128_with_scale(i128::from(micro_usd), 6);
+        state
+            .ledger
+            .record_parent_consumed(amount)
+            .map_err(|e| e.to_string())?;
+        self.persist(&mut state)
+    }
+
     pub(super) fn checkpoint(&self) -> Result<(), String> {
         let mut state = self.lock()?;
         self.persist(&mut state)
