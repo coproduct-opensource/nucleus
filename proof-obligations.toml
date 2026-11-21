@@ -467,7 +467,8 @@ kind = "missing"
 status = "allowlisted"
 tracking = "#3314"
 
-# All 32 input combinations pinned against the precedence table.
+# All 16 input combinations pinned against the precedence table (32 until the
+# approval HMAC tier and its has_approval_pubkeys input were deleted, 2026-11-21).
 [[obligation]]
 function = "nucleus_tool_proxy::auth::select_auth_tier"
 kind = "parity"
