@@ -176,6 +176,12 @@ pub enum HostStricterSource {
     /// declassifies its flow (`ACTION_BOUND_SINKS`); the guest's approval came
     /// from its exposure gate, reached only because its own graph did not see
     /// the write as tainted.
+    ///
+    /// Amended 2026-10-29 (ADR 0014 §10): in a pod that declares a review-gated
+    /// workspace the host keeps writes in the cell, so such a pod produces no
+    /// write `flow_refused` pair. Where its guest still refuses such a write, the
+    /// pair is `GuestStricter` and stays red: these records do not carry the
+    /// declaration, so the declared rule cannot be told from a defect here.
     HostTaint,
     /// Anything else. §10 bounds these at zero.
     Unattributed,

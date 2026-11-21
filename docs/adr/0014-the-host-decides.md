@@ -12,6 +12,10 @@
   reaches the guest for an effect the host performs. The only id a guest holds is an
   approval id, and it expires (§4, §6). The amendment replaces "the broker performs only
   against a decision id the host issued", and the S5 rows of §9 and §13 change with it.
+- **Amended by the owner (2026-10-29):** a write or an edit in a workspace its operator
+  declares review-gated stays in the cell, and the egress gate does not treat it as a sink
+  (§10, "a write in a review-gated workspace stays in the cell"). S3's settlement that a
+  write is always a sink now holds only for an undeclared workspace.
 - Tracks: milestone M3 of the eval-cell programme, issue #2702 (L-1), ledger row **F12**.
 - Rests on: [ADR 0013](0013-eval-cell.md) (the threat model: the agent holds root in its
   guest), [ADR 0007](0007-make-the-defect-unwritable.md) (rule ids cited below),
@@ -372,6 +376,86 @@ in the host's favour. A write is not an action-bound sink, so no approval declas
 flow. The guest offered an approval only from its exposure gate, which it reached because
 its own graph did not count the write as tainted. Every other host-stricter pair is
 unattributed until a source is listed here, and the reader turns it red.
+
+#### Amended 2026-10-29 (owner decision): a write in a review-gated workspace stays in the cell
+
+> "Once a session has read web content or model output, it may still edit its own private
+> copy — and the right fix is a rule in nucleus's host decision logic, not an exception in
+> the gateway."
+
+**What forced it.** S3's settlement above, applied by an authoritative host, refuses every
+edit an agent makes to its own copy once it has read anything untrusted, and every operator
+write into the pod's `.console/` mailbox. Reported from the live node on 2026-10-29 (the
+owner's brief, not re-measured in this change): **181** `write_files`/`edit_files`
+disagreements across **67** pods, every one guest `approval_required` and host
+`denied:flow_refused`; in the latest window, **15,361** decisions at **99.93 %** agreement,
+all **10** disagreements host-stricter `flow_refused`. The cause is
+`Kernel::node_kind_for`, which classes a write as `NodeKind::OutboundAction`, so
+`exposure_core::ifc_egress_disposition` refuses it once the host's pod-wide `HostTaint` is
+tainted.
+
+**Why writes were sinks, and when that reason is absent.** Integrity: an injected agent
+could plant code in a workspace that a person later runs outside any sandbox. That threat is
+absent when the operator guarantees that nothing in the workspace is used outside a sandbox
+until a person reviews it (for instance, changes leave only as a proposal that is re-checked
+in a fresh pod and merged by a person). Nucleus cannot observe that pipeline, so the operator
+declares it, and host and guest read the declaration from the same spec bytes.
+
+**The declaration.** The label `workspace.coproduct.one/review-gated: "true"`
+(`nucleus_spec::workspace_review`, the one decider). Absent or `"false"` declares nothing.
+Any other value is refused at admission. It is a label rather than a `PodSpecInner` field for
+the reason `isolation_profile` gives: the guest's tool-proxy parses the spec with
+`deny_unknown_fields`, so a new field would make every declaring pod unparseable by the
+pinned guest release. Labels are already in the program identity and the receipt's
+`manifest_hash`.
+
+**The rule.** `portcullis::kernel::WorkspaceReview` is fixed when the kernel is built
+(`Kernel::from_certificate_in_workspace`; every other constructor states `Unreviewed`, and
+there is no `Default`, B-1). Under `ReviewGated`, a `write_files` or `edit_files` is
+pod-local: `kernel::ifc::workspace_flow_gate` does not apply the egress gate's integrity
+refusal (or its graded hold) to it. The confidentiality refusal is waived too, but it could
+never fire for a write: `sink_max_conf_for(WriteFiles)` is `Secret`, the top of `ConfLevel`.
+A poisoned session still refuses the write. Capabilities, path and sink scope, the
+approval obligation, budget, DLC admission and Cedar still decide it. Every other operation
+is decided exactly as before. That includes `run_bash`, `git_commit`, `git_push`,
+`create_pr`, `web_*`, `manage_pods` and `spawn_agent`, and the push/PR hold stays the only
+exit for a tainted session's data. The Kani-proved `kernel::ifc::ifc_flow_gate`
+(`proof-obligations.toml`) is not changed. The narrowing is applied to its result, in
+`Kernel::ifc_flow_gate`, which is not a proof subject.
+
+**The driver restriction.** `host_decide::HostStart::of` refuses the declaration when any
+source `workspace_scan::sources` names for the node's driver is a shared host directory
+(`Form::Directory`: the Container and Local drivers' `work_dir`). A write there lands in the
+caller's directory, not the cell. Only a microVM's disk is the cell's own.
+
+**The carry-forward.** The declaration lowers no label. A review-gated pod whose workspace
+arrives on a caller's disk (`image.scratch_path`, `image.data_path`, which is where a
+previous session's edits would come from) starts `Untrusted::Workspace`, exactly as an
+undeclared one does (§3, S3). So a fresh pod cannot launder an earlier session's tainted
+edits into a clean label. Only a disk the node made itself starts clean.
+
+**What it does not change.**
+- The guest. Its kernel is still built with `Kernel::from_certificate`, so it keeps today's
+  behaviour, which is stricter than or equal to the host's. The guest rootfs is not
+  rebuilt in this change. In shadow, a review-gated pod's writes now agree wherever the
+  guest passed its own flow gate: the pattern above becomes `approval_required` on both
+  sides, or both allowed when no obligation applies. Where the guest's per-node graph does
+  see a write's parents as tainted, the guest refuses and the host does not. That is
+  **guest stricter**, which §10 bounds at 0, and the reader turns it red on purpose. It is
+  the declared rule showing up, but a reader that cannot see the declaration cannot tell
+  it from a defect. **So a review-gated pod cannot clear this criterion until the guest
+  builds its kernel with the same declaration.** The reader's `HostTaint` attribution is
+  unchanged. A review-gated pod simply stops producing write `flow_refused` pairs.
+- `Kernel::decide_with_parents`, the guest's per-node DAG path, which the host does not
+  call.
+- A restored pod: neither its label nor its declaration is persisted, so it restarts
+  `Unreviewed` (A-2).
+- Who may declare. A pod may declare it for a child it creates. A tainted session cannot
+  create one (`manage_pods` is still refused by the flow gate). A clean session's child is
+  its own cell. Whether a child should be held to its parent's declaration is open.
+- Containment against guest root. A write is a guest-local effect that no host verdict
+  physically stops, so for an eval cell the workspace's integrity already rested on the
+  operator's review. The declaration states that dependence. It does not create it.
 
 **The threshold.** The host becomes authoritative for eval cells (step S6) when one
 window, of at least 14 consecutive days and at least 2,000 compared decisions, with at

@@ -21,8 +21,10 @@
 //! kernel session (the HTTP transport's kernel and the MCP transport's are two
 //! sessions, so two channels). The pod shares across every channel:
 //!
-//! * a [`Kernel`] built from the pod's certificate — the same constructor the
-//!   guest uses (`Kernel::from_certificate`), so the two start equal;
+//! * a [`Kernel`] built from the pod's certificate — the guest's constructor
+//!   (`Kernel::from_certificate`), so the two start equal, except that a pod
+//!   declaring a review-gated workspace gets `from_certificate_in_workspace`,
+//!   which the guest does not yet call (ADR 0014 §10, 2026-10-29);
 //! * a [`HostTaint`] — owner decision D2: the host's own label, which a guest
 //!   `Observe` can only raise (it is the lattice join, and no frame lowers it).
 //!
@@ -68,7 +70,7 @@ pub(crate) mod effects;
 pub(crate) mod evidence;
 pub(crate) mod starting_label;
 
-pub(crate) use starting_label::{StartingLabel, Untrusted};
+pub(crate) use starting_label::{HostStart, StartingLabel, Untrusted};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
