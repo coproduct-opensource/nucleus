@@ -645,13 +645,11 @@ fn run() -> Result<(), String> {
     );
 
     // The approval authority, and the shared-secret inputs this guest no
-    // longer reads (#2446 step 3a): each one present is named, never exported.
+    // longer reads (#2446 step 3a; the approval secret since 2026-11-21): each
+    // one present is named, never exported.
     let auth_env = proxy_auth_env(&cmdline, read_secret)?;
-    for name in &auth_env.retired {
-        eprintln!(
-            "{name} is retired (#2446): the shared-secret tier carries no authority and \
-             the sandbox proof is the pod's SVID; ignored, not passed to the tool-proxy"
-        );
+    for (name, why) in &auth_env.retired {
+        eprintln!("{name} is retired ({why}); ignored, not passed to the tool-proxy");
     }
     for (key, value) in auth_env.exports {
         export!(key, value);
@@ -1147,16 +1145,41 @@ fn read_secret(path: &str) -> Option<String> {
 }
 
 /// The shared-secret inputs a guest no longer reads, by boot arg and by the
-/// rootfs file `build-rootfs.sh --legacy-secrets` bakes.
+/// rootfs file `build-rootfs.sh --legacy-secrets` bakes, each with why.
 ///
 /// `nucleus.auth_secret` keyed the shared-secret tier, whose authority ceiling
 /// is zero since #2446 step 2, and the tier-3 sandbox token. That token is the
-/// other entry: with no key to verify it against, it proves nothing. No node
-/// built since 2026-08-08 sends either, so no supported pairing does; a
-/// guest that finds one says so by name rather than dropping it silently.
-const RETIRED_SHARED_SECRETS: [(&str, &str); 2] = [
-    ("nucleus.auth_secret", AUTH_SECRET),
-    ("nucleus.sandbox_token", SANDBOX_TOKEN),
+/// next entry: with no key to verify it against, it proves nothing. No node
+/// built since 2026-08-08 sends either, so no supported pairing does.
+///
+/// `nucleus.approval_secret` keyed the tool-proxy's legacy approval HMAC,
+/// deleted 2026-11-21 (zero static secrets, item 1). The node has not sent it
+/// since approvals moved to Ed25519 (`nucleus.approval_pubkeys`), so only a
+/// hand-built image or a hand-set boot argument still carries it. On the
+/// world-readable command line it let the workload sign its own approvals;
+/// the tool-proxy now refuses the variable it used to be exported as.
+///
+/// A guest that finds any of these says so by name rather than dropping it
+/// silently, and never exports it.
+const RETIRED_SHARED_SECRETS: [(&str, &str, &str); 3] = [
+    (
+        "nucleus.auth_secret",
+        AUTH_SECRET,
+        "#2446: the shared-secret tier carries no authority and the sandbox proof is the \
+         pod's SVID",
+    ),
+    (
+        "nucleus.sandbox_token",
+        SANDBOX_TOKEN,
+        "#2446: the shared-secret tier carries no authority and the sandbox proof is the \
+         pod's SVID",
+    ),
+    (
+        "nucleus.approval_secret",
+        APPROVAL_SECRET,
+        "2026-11-21: the shared-key approval tier is deleted, because any process that read \
+         the key could sign approvals; approvals are verified against nucleus.approval_pubkeys",
+    ),
 ];
 
 /// What guest-init hands the tool-proxy for authentication, decided from the
@@ -1165,48 +1188,49 @@ const RETIRED_SHARED_SECRETS: [(&str, &str); 2] = [
 struct ProxyAuthEnv {
     /// Exported to the tool-proxy, in order.
     exports: Vec<(&'static str, String)>,
-    /// Retired inputs that were present, by boot-arg name. Never exported.
-    retired: Vec<&'static str>,
+    /// Retired inputs that were present, by boot-arg name, with why each is
+    /// retired. Never exported.
+    retired: Vec<(&'static str, &'static str)>,
 }
 
 fn proxy_auth_env(
     cmdline: &str,
     read: impl Fn(&str) -> Option<String>,
 ) -> Result<ProxyAuthEnv, String> {
-    let mut exports = Vec::new();
+    let retired: Vec<(&'static str, &'static str)> = RETIRED_SHARED_SECRETS
+        .into_iter()
+        .filter(|(arg, path, _)| {
+            parse_cmdline_secret(cmdline, arg).is_some() || read(path).is_some()
+        })
+        .map(|(arg, _, why)| (arg, why))
+        .collect();
 
-    // Signature-based approvals: the node delivers the Ed25519 PUBLIC half of
-    // its approval signing key as `nucleus.approval_pubkeys`. A verification
-    // key is safe on the world-readable cmdline — reading it grants no
-    // forging power, which is exactly what the approval SECRET below lacked
-    // (HMAC is symmetric, so the workload could read `/proc/cmdline` and sign
-    // its own approvals). When keys are present the proxy accepts ONLY
-    // signatures; the secret is legacy for pods still provisioned with one.
-    let approval_pubkeys = parse_cmdline_secret(cmdline, "nucleus.approval_pubkeys");
-    let approval_secret =
-        parse_cmdline_secret(cmdline, "nucleus.approval_secret").or_else(|| read(APPROVAL_SECRET));
-    if approval_pubkeys.is_none() && approval_secret.is_none() {
+    // Approvals: the node delivers the Ed25519 PUBLIC half of its approval
+    // signing key as `nucleus.approval_pubkeys`. A verification key is safe on
+    // the world-readable cmdline — reading it grants no forging power, which
+    // is exactly what the deleted approval SECRET lacked (HMAC is symmetric, so
+    // the workload could read `/proc/cmdline` and sign its own approvals). The
+    // keys are the only approval authority a guest can be given.
+    let Some(keys) = parse_cmdline_secret(cmdline, "nucleus.approval_pubkeys") else {
         // Fail HERE, near the cause: the tool-proxy would refuse to start
         // anyway (its approval endpoint would be unauthenticatable), but its
-        // exit is four layers from this missing boot arg.
-        return Err(
-            "missing approval authority (set nucleus.approval_pubkeys or \
-                    nucleus.approval_secret in boot args, or /etc/nucleus/approval.secret)"
-                .to_string(),
-        );
-    }
-    if let Some(keys) = approval_pubkeys {
-        exports.push(("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", keys));
-    }
-    if let Some(secret) = approval_secret {
-        exports.push(("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", secret));
-    }
-
-    let retired = RETIRED_SHARED_SECRETS
-        .into_iter()
-        .filter(|(arg, path)| parse_cmdline_secret(cmdline, arg).is_some() || read(path).is_some())
-        .map(|(arg, _)| arg)
-        .collect();
+        // exit is four layers from this missing boot arg. A guest that still
+        // carries the retired secret is told that it is retired, not that it
+        // is enough.
+        let legacy = if retired
+            .iter()
+            .any(|(arg, _)| *arg == "nucleus.approval_secret")
+        {
+            "; nucleus.approval_secret (or /etc/nucleus/approval.secret) was given, but it is \
+             retired and is not an approval authority"
+        } else {
+            ""
+        };
+        return Err(format!(
+            "missing approval authority: set nucleus.approval_pubkeys in boot args{legacy}"
+        ));
+    };
+    let exports = vec![("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", keys)];
     Ok(ProxyAuthEnv { exports, retired })
 }
 
@@ -1663,7 +1687,7 @@ mod tests {
         let baked = |path: &str| (path == SANDBOX_TOKEN).then(|| "sandbox-proof.x".to_string());
         let env = proxy_auth_env(cmdline, baked).unwrap();
         assert_eq!(
-            env.retired,
+            names(&env),
             vec!["nucleus.auth_secret", "nucleus.sandbox_token"]
         );
         assert_eq!(
@@ -1672,13 +1696,72 @@ mod tests {
         );
     }
 
+    fn names(env: &ProxyAuthEnv) -> Vec<&'static str> {
+        env.retired.iter().map(|(name, _)| *name).collect()
+    }
+
+    /// 2026-11-21, zero static secrets item 1: the approval HMAC key, on the
+    /// command line or baked into the rootfs, is named as retired and never
+    /// exported. A guest with approver public keys starts with those alone.
+    /// Red before: guest-init exported it as
+    /// `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET` beside the keys.
+    #[test]
+    fn the_approval_secret_is_named_and_not_exported() {
+        let on_cmdline =
+            "console=ttyS0 nucleus.approval_pubkeys=ab nucleus.approval_secret=appr456";
+        let baked = |path: &str| (path == APPROVAL_SECRET).then(|| "appr456".to_string());
+        for env in [
+            proxy_auth_env(on_cmdline, |_| None).unwrap(),
+            proxy_auth_env("console=ttyS0 nucleus.approval_pubkeys=ab", baked).unwrap(),
+        ] {
+            assert_eq!(names(&env), vec!["nucleus.approval_secret"]);
+            assert!(
+                env.retired[0].1.contains("nucleus.approval_pubkeys"),
+                "the reason names what replaced it: {:?}",
+                env.retired
+            );
+            assert_eq!(
+                env.exports,
+                vec![("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", "ab".to_string())]
+            );
+            assert!(
+                env.exports
+                    .iter()
+                    .all(|(k, v)| *k != "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET" && v != "appr456"),
+                "the retired key is never exported: {:?}",
+                env.exports
+            );
+        }
+    }
+
+    /// A guest whose only approval authority is the retired secret does not
+    /// start, and the refusal names the secret as retired rather than as
+    /// missing. Red before: the secret alone was accepted and exported.
+    #[test]
+    fn the_approval_secret_alone_is_no_approval_authority() {
+        let err = proxy_auth_env("console=ttyS0 nucleus.approval_secret=appr456", |_| None)
+            .expect_err("a retired secret is not an approval authority");
+        for needle in [
+            "nucleus.approval_pubkeys",
+            "nucleus.approval_secret",
+            "retired",
+        ] {
+            assert!(err.contains(needle), "missing {needle:?} in {err}");
+        }
+        assert!(!err.contains("appr456"), "the refusal never echoes the key");
+        let baked = |path: &str| (path == APPROVAL_SECRET).then(|| "appr456".to_string());
+        assert!(proxy_auth_env("console=ttyS0", baked).is_err());
+    }
+
     /// A guest given neither is quiet about them, and still needs an approval
     /// authority.
     #[test]
     fn a_guest_with_no_retired_input_names_none() {
         let env = proxy_auth_env("nucleus.approval_pubkeys=ab", |_| None).unwrap();
         assert!(env.retired.is_empty());
-        assert!(proxy_auth_env("console=ttyS0", |_| None).is_err());
+        let err = proxy_auth_env("console=ttyS0", |_| None).expect_err("no authority");
+        assert!(err.contains("nucleus.approval_pubkeys"), "{err}");
+        assert!(!err.contains("retired"), "nothing retired was given: {err}");
     }
 
     #[test]
