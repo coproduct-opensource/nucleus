@@ -195,9 +195,16 @@ mod tests {
         };
         // Non-vacuity rides on the equality: each expected site must be SEEN,
         // so a broken walker or a stripper that ate production code fails too.
+        // link_proxy.rs binds two host-only sockets (ADR 0017 L4b), both in the pod directory and
+        // never of the `{vsock}_{port}` form Firecracker routes a guest's connect to: the link
+        // proxy's CONTROL socket (`LinkProxy::start` checks the prefix) and each link's
+        // FORWARDER socket (`Forwarder::start` checks the prefix, 391e16f7f).
         assert_eq!(
             count("UnixListener::bind("),
-            vec![("broker_transport.rs".to_string(), 1)],
+            vec![
+                ("broker_transport.rs".to_string(), 1),
+                ("link_proxy.rs".to_string(), 2),
+            ],
             "a production UnixListener::bind outside `prepare_socket`: bind a guest-reachable \
              socket through `guest_socket::bind_guest_listener`, which takes a VsockListener \
              (docs/architecture/mediated-set.md, 'Host listeners')"

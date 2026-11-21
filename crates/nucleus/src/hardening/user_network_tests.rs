@@ -165,7 +165,11 @@ fn the_receipt_reads_both_namespaces_off_the_isolation_the_hook_runs() {
             NamespaceSetup::Runtime {},
         ),
         (
-            Isolation::NetnsThenDrop { uid: 7, gid: 7 },
+            Isolation::NetnsThenDrop {
+                uid: 7,
+                gid: 7,
+                parent: 1,
+            },
             PidNamespace::Shared,
             NamespaceSetup::PrivateNetwork {},
         ),

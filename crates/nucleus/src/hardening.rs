@@ -292,8 +292,9 @@ enum Posture {
 enum Isolation {
     /// The uid, if it changes, was dropped by std before the hook.
     None,
-    /// `unshare(CLONE_NEWNET)`, then `setgroups(0)`, `setresgid`, `setresuid`.
-    NetnsThenDrop { uid: u32, gid: u32 },
+    /// `unshare(CLONE_NEWNET)`, then `setgroups(0)`, `setresgid`, `setresuid`,
+    /// then die with `parent` (the spawning process, read in the parent).
+    NetnsThenDrop { uid: u32, gid: u32, parent: u32 },
     /// The workload's own PID namespace, then the drop (#3344, `pidns.rs`).
     PidnsThenDrop { uid: u32, gid: u32 },
     /// The workload's own PID namespace, the drop, and only then a private
@@ -320,7 +321,12 @@ impl Isolation {
                 inner_uid: _,
                 loopback: _,
             } => PidNamespace::Own,
-            Self::None | Self::NetnsThenDrop { uid: _, gid: _ } => PidNamespace::Shared,
+            Self::None
+            | Self::NetnsThenDrop {
+                uid: _,
+                gid: _,
+                parent: _,
+            } => PidNamespace::Shared,
         }
     }
 
@@ -331,7 +337,11 @@ impl Isolation {
     fn namespace(self) -> NamespaceSetup {
         match self {
             Self::None | Self::PidnsThenDrop { uid: _, gid: _ } => NamespaceSetup::Runtime {},
-            Self::NetnsThenDrop { uid: _, gid: _ } => NamespaceSetup::PrivateNetwork {},
+            Self::NetnsThenDrop {
+                uid: _,
+                gid: _,
+                parent: _,
+            } => NamespaceSetup::PrivateNetwork {},
             Self::PidnsThenUserNetwork {
                 uid,
                 gid: _,
@@ -1183,7 +1193,11 @@ impl ChildConfinement {
             }
             Posture::Isolated { uid, gid } => Self::restrict(
                 cmd,
-                Isolation::NetnsThenDrop { uid, gid },
+                Isolation::NetnsThenDrop {
+                    uid,
+                    gid,
+                    parent: std::process::id(),
+                },
                 SyscallFilter::WorkloadDenylist,
                 FilesystemConfinement::NotApplied,
                 layer,
@@ -1662,7 +1676,11 @@ mod imp {
         // refused here like a filter is.
         let isolated = match isolation {
             Isolation::None => false,
-            Isolation::NetnsThenDrop { uid: _, gid: _ }
+            Isolation::NetnsThenDrop {
+                uid: _,
+                gid: _,
+                parent: _,
+            }
             | Isolation::PidnsThenDrop { uid: _, gid: _ }
             | Isolation::PidnsThenUserNetwork {
                 uid: _,

@@ -19,12 +19,16 @@
 pub mod capability_quantale;
 pub mod channel;
 pub mod credential;
+pub mod decision;
 pub mod declassify;
 pub mod egress;
+pub mod gauntlet;
 pub mod identity;
 pub mod ifc_authority;
 pub mod ifc_confidentiality;
 pub mod ifc_derivation;
 pub mod ifc_integrity;
 pub mod ifc_provenance;
+pub mod link;
 pub mod mediation;
+pub mod tls;

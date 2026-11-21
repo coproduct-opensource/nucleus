@@ -47,8 +47,10 @@ pub(crate) enum ApiError {
     Authority(String),
     #[error("request body error: {0}")]
     Body(String),
-    /// The request was decided against state that has since moved (a compare-and-swap whose
-    /// expected head is stale): 409, naming the current state so the caller can retry on it.
+    /// 409: the request is well formed and authorized, and the node's current state refuses
+    /// it. Either it was decided against state that has since moved (a compare-and-swap whose
+    /// expected head is stale; the message names the current state so the caller can retry on
+    /// it), or a link names the pod being cancelled, or the link table refuses a link (ADR 0017).
     #[error("conflict: {0}")]
     Conflict(String),
 }

@@ -157,17 +157,24 @@ mod tests {
                 .to_bytes()
         );
         assert!(!String::from_utf8_lossy(&bytes).contains("not-for-export"));
-        // The injected egress URL names the door the local launcher passes,
-        // and nothing about the credential crosses.
+        // The injected egress URL names the door the local launcher passes, the
+        // link proxy is named as every workload gets it (ADR 0017), and nothing
+        // about the credential crosses.
         let door =
             crate::lifecycle::local_workload_door(&crate::lifecycle::pod_dir(&state.state_dir, id))
                 .unwrap();
         assert_eq!(
             admission.runtime_environment_inputs,
-            std::collections::BTreeMap::from([(
-                "NUCLEUS_EGRESS_MODEL_API_URL".to_string(),
-                format!("unix://{}/v1/egress/model-api", door.display()),
-            )])
+            std::collections::BTreeMap::from([
+                (
+                    "NUCLEUS_EGRESS_MODEL_API_URL".to_string(),
+                    format!("unix://{}/v1/egress/model-api", door.display()),
+                ),
+                (
+                    nucleus_spec::workload_egress::LINK_PROXY_ENV.to_string(),
+                    format!("http://{}", nucleus_spec::workload_egress::LINK_PROXY_ADDR),
+                ),
+            ])
         );
         assert!(!String::from_utf8_lossy(&bytes).contains("LLM_API_TOKEN"));
         state

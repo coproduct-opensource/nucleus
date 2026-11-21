@@ -258,6 +258,23 @@ fn the_guest_cid_is_the_nodes() {
     admitted(&ok).expect("the node's own CID is admitted");
 }
 
+/// ADR 0017 L4c: the in-guest link relay listens on guest vsock 1031, so a spec may not make it
+/// the tool-proxy's control port. Its neighbours are admitted.
+#[test]
+fn the_link_relay_port_is_the_runtimes() {
+    let port = nucleus_spec::LINK_RELAY_GUEST_PORT;
+    let s = spec(&format!(
+        r#"{{"vsock":{{"guest_cid":{GUEST_CID},"port":{port}}}}}"#
+    ));
+    assert_eq!(refused(&s), PostureRefused::GuestPortReserved { port });
+    for neighbour in [port - 1, port + 1] {
+        let ok = spec(&format!(
+            r#"{{"vsock":{{"guest_cid":{GUEST_CID},"port":{neighbour}}}}}"#
+        ));
+        admitted(&ok).expect("a port the runtime does not own is admitted");
+    }
+}
+
 /// On the container driver `credentials.env` is appended after the runtime's own variables, so
 /// these names would have replaced the mediator's configuration.
 #[test]

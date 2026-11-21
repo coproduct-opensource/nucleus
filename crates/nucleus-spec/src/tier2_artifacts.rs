@@ -359,6 +359,22 @@ pub enum GuestCapability {
     /// the guest-local release. S6's `HostDecides` is the row that makes the
     /// host's answer load-bearing for an eval cell.
     HostApprovalRedeem,
+    /// The tool-proxy runs the guest halves of a link between pods (ADR 0017
+    /// L4c): a loopback HTTP-proxy port the workload learns as
+    /// `NUCLEUS_LINK_PROXY`, spliced to the host's `PodLink` listener (vsock
+    /// 1030), and a host-only vsock listener (port 1031) that delivers an inbound
+    /// link to the workload. [`Demand::Optional`] while it is in no published
+    /// release (`the_pinned_release_serves_this_tree` requires that of every
+    /// unreleased row): a guest without it relays nothing, so a link to or from
+    /// its pod carries no bytes, which refuses nothing the host decided.
+    PodLinkRelay,
+    /// guest-init fetches the pod egress CA CERTIFICATE (`FETCH_EGRESS_CA`, ADR
+    /// 0015 E3) and writes a trust bundle (the guest's roots plus that CA) the
+    /// tool-proxy hands the workload, so the pod's egress proxy can terminate
+    /// its TLS. [`Demand::Optional`] while unreleased: a guest without it trusts
+    /// no proxy leaf, so every TLS handshake through the proxy is refused
+    /// (`client_rejected_interception`), never tunnelled.
+    EgressProxyTrust,
     /// The tool-proxy signs its Article 12 decision log with the audit log's
     /// Ed25519 key and names it in every record (#3309). An older proxy MACs
     /// the log, under a key derived from the public session id when no operator
@@ -470,7 +486,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 26] = [
+    pub const ALL: [GuestCapability; 28] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -491,6 +507,8 @@ impl GuestCapability {
         GuestCapability::SignedAuditLog,
         GuestCapability::HostDecideTelemetry,
         GuestCapability::HostApprovalRedeem,
+        GuestCapability::PodLinkRelay,
+        GuestCapability::EgressProxyTrust,
         GuestCapability::SignedArt12Log,
         GuestCapability::ContainerBrokerSocket,
         GuestCapability::CanonicalManifestApproval,
@@ -534,6 +552,8 @@ impl GuestCapability {
             // Read by `cargo xtask host-decide-agreement`, never by the node.
             GuestCapability::HostDecideTelemetry => Demand::Optional,
             GuestCapability::HostApprovalRedeem => Demand::Optional,
+            GuestCapability::PodLinkRelay => Demand::Optional,
+            GuestCapability::EgressProxyTrust => Demand::Optional,
             // Read by a verifier, never by the node: the collector reads a
             // record's hash and authority, which both forms carry.
             GuestCapability::SignedArt12Log => Demand::Optional,
@@ -619,6 +639,8 @@ impl GuestCapability {
             // ADR 0014 S1: in this tree and in no release yet.
             GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
             GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
+            GuestCapability::PodLinkRelay => FirstShipped::NotYet,
+            GuestCapability::EgressProxyTrust => FirstShipped::NotYet,
             // #3309: in this tree and in no release yet.
             GuestCapability::SignedArt12Log => FirstShipped::NotYet,
             // #2906: in this tree and in no release yet.
@@ -748,6 +770,17 @@ impl GuestCapability {
                 "ADR 0014 (S4) has the tool-proxy redeem, on the host, the approval of a call its \
                  own grant released; an older guest never does, so the host never sees that \
                  release (the node does not require it)"
+            }
+            GuestCapability::PodLinkRelay => {
+                "ADR 0017 (L4c) has the tool-proxy relay links between pods: a loopback proxy \
+                 port for the workload and a host-only vsock listener for inbound links; an older \
+                 guest relays nothing, so its pod's links carry no bytes (the node does not \
+                 require it)"
+            }
+            GuestCapability::EgressProxyTrust => {
+                "ADR 0015 E3 has guest-init install the pod egress CA certificate into a trust \
+                 bundle for the workload; an older guest trusts no proxy leaf, so its TLS through \
+                 the proxy is refused, never tunnelled (the node does not require it)"
             }
             GuestCapability::SignedArt12Log => {
                 "#3309 has the tool-proxy sign its Article 12 log with its audit signer and name \
@@ -1207,6 +1240,8 @@ mod tests {
         let after_the_pin = [
             GuestCapability::HostDecideTelemetry,
             GuestCapability::HostApprovalRedeem,
+            GuestCapability::PodLinkRelay,
+            GuestCapability::EgressProxyTrust,
             GuestCapability::SignedArt12Log,
             GuestCapability::ContainerBrokerSocket,
             GuestCapability::CanonicalManifestApproval,
@@ -1389,7 +1424,9 @@ mod tests {
                 GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
                 GuestCapability::SignedAuditLog => GuestCapability::HostDecideTelemetry,
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
-                GuestCapability::HostApprovalRedeem => GuestCapability::SignedArt12Log,
+                GuestCapability::HostApprovalRedeem => GuestCapability::PodLinkRelay,
+                GuestCapability::PodLinkRelay => GuestCapability::EgressProxyTrust,
+                GuestCapability::EgressProxyTrust => GuestCapability::SignedArt12Log,
                 GuestCapability::SignedArt12Log => GuestCapability::ContainerBrokerSocket,
                 GuestCapability::ContainerBrokerSocket => {
                     GuestCapability::CanonicalManifestApproval

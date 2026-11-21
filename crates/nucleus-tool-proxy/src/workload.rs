@@ -80,7 +80,7 @@ pub(crate) struct ClassifiedEntry {
 /// key is `RuntimeInjected` regardless of whether the spec also named it, which
 /// is the correct attribution: the value that crossed is the runtime's.
 fn env_source(key: &str, spec: &WorkloadSpec) -> EnvSource {
-    if key == "NUCLEUS_TOOL_PROXY_URL" {
+    if key == "NUCLEUS_TOOL_PROXY_URL" || key == crate::link_relay::LINK_PROXY_ENV {
         EnvSource::RuntimeInjected
     } else if key.starts_with("NUCLEUS_EGRESS_") {
         EnvSource::Egress
@@ -169,8 +169,11 @@ pub(crate) fn workload_env(
     egress: &[nucleus_spec::CredentialedEgressSpec],
 ) -> BTreeMap<String, String> {
     let mut env = spec.env.clone();
-    // Local forwarder addresses for each credentialed upstream. Names and URLs
-    // only — the credential stays in the runtime, which is the point.
+    // Local forwarder addresses for each credentialed upstream, and the
+    // outbound link relay (ADR 0017 L4c). Names and URLs only — the credential
+    // stays in the runtime, which is the point. Runtime-injected, so a spec
+    // cannot point the workload elsewhere; one function decides the set, and
+    // the node publishes it in the admission record.
     env.extend(crate::egress::workload_egress_env(egress, door_url));
     env.insert("NUCLEUS_TOOL_PROXY_URL".to_string(), door_url.to_string());
     env
@@ -482,7 +485,8 @@ impl WorkloadLaunch {
         // other `NUCLEUS_*` name must be classified deliberately (as a secret
         // material kind if it carries identity, or added to this allowlist if it
         // is genuinely public runtime config) before it may cross.
-        const PUBLIC_RESERVED: &[&str] = &["NUCLEUS_TOOL_PROXY_URL"];
+        const PUBLIC_RESERVED: &[&str] =
+            &["NUCLEUS_TOOL_PROXY_URL", crate::link_relay::LINK_PROXY_ENV];
         for entry in &self.classified {
             if entry.key.starts_with("NUCLEUS_")
                 && entry.material == MaterialKind::OrdinaryData
@@ -1485,6 +1489,32 @@ mod tests {
             env.get("NUCLEUS_TOOL_PROXY_URL").map(String::as_str),
             Some(DOOR)
         );
+    }
+
+    /// **Every name the runtime injects is in the admission record** (#3219,
+    /// ADR 0017). The receipt's `environment_inputs_sha256` hashes the
+    /// workload's environment minus the two mediator bindings; a verifier
+    /// expects the declared env plus the admission's
+    /// `runtime_environment_inputs` (`injected_env`). Anything injected here
+    /// and not there makes every honest receipt refuse. Red on the branch's
+    /// first L4c, which inserted `NUCLEUS_LINK_PROXY` here only: the x86 pod
+    /// boot refused its receipt with `Binding("environment_inputs_sha256")`.
+    #[test]
+    fn the_admission_record_names_everything_the_runtime_injects() {
+        for upstreams in [vec![], vec![egress_spec()]] {
+            let declared = BTreeMap::from([("MODE".to_string(), "ci".to_string())]);
+            let mut env = workload_env(
+                &spec_with(&[("MODE", "ci")]),
+                DOOR,
+                &upstreams,
+            );
+            for binding in nucleus_spec::workload_result::MEDIATOR_BINDINGS {
+                env.remove(binding);
+            }
+            let mut expected = declared;
+            expected.extend(nucleus_spec::workload_egress::injected_env(&upstreams, DOOR));
+            assert_eq!(env, expected);
+        }
     }
 
     /// **The workload's environment carries no proxy credential** (#3031

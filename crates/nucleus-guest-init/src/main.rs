@@ -6,6 +6,7 @@ use std::process::Command;
 mod identity;
 
 use nucleus_guest_init::boot::{self, Boot, MountSpec, SealedProof};
+use nucleus_guest_init::egress_trust;
 use nucleus_guest_init::fence::{self, Fenced};
 use nucleus_guest_init::net::{self, NetConfig};
 use nucleus_spec::guest_layout::{
@@ -634,6 +635,36 @@ fn run() -> Result<(), String> {
             Ok(None) => eprintln!("no pod certificate was issued for this pod"),
             Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => eprintln!("failed to fetch pod certificate over vsock: {err}"),
+        }
+
+        // EgressProxyTrust (ADR 0015 E3): this pod's egress CA certificate, appended
+        // to the guest's roots in a bundle on /run. Absence is not fatal: a pod with no
+        // egress proxy has no CA, and a TLS client that does not trust the proxy's
+        // leaf is refused by the proxy, never tunnelled (`untrusting_client_refused`).
+        match timed("egress_ca", || identity::fetch_egress_ca(port)) {
+            Ok(Some(pem)) => {
+                let roots = CaBundle::resolve(|p| Path::new(p).exists())
+                    .path()
+                    .and_then(|p| fs::read_to_string(p).ok());
+                match egress_trust::trust_bundle(roots.as_deref(), &pem) {
+                    Ok(bundle) => {
+                        let written = Path::new(egress_trust::TRUST_BUNDLE)
+                            .parent()
+                            .is_some_and(|d| fs::create_dir_all(d).is_ok())
+                            && fs::write(egress_trust::TRUST_BUNDLE, bundle).is_ok();
+                        if written {
+                            export!(egress_trust::TRUST_BUNDLE_ENV, egress_trust::TRUST_BUNDLE);
+                            eprintln!("egress CA installed at {}", egress_trust::TRUST_BUNDLE);
+                        } else {
+                            eprintln!("could not write {}", egress_trust::TRUST_BUNDLE);
+                        }
+                    }
+                    Err(e) => eprintln!("egress CA refused: {e}"),
+                }
+            }
+            Ok(None) => eprintln!("no egress CA was minted for this pod"),
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
+            Err(err) => eprintln!("failed to fetch egress CA over vsock: {err}"),
         }
     }
     // Printed even when no port was configured, so a boot with NO handshake is
@@ -1461,7 +1492,7 @@ mod tests {
     /// Driven red by putting `Command::new("ip")` back into `configure_network`.
     #[test]
     fn the_only_programs_pid1_starts_are_the_guest_layers() {
-        const SOURCES: [(&str, &str); 7] = [
+        const SOURCES: [(&str, &str); 8] = [
             ("main.rs", include_str!("main.rs")),
             ("decisions.rs", include_str!("decisions.rs")),
             ("identity.rs", include_str!("identity.rs")),
@@ -1469,6 +1500,7 @@ mod tests {
             ("boot.rs", include_str!("boot.rs")),
             ("net.rs", include_str!("net.rs")),
             ("fence.rs", include_str!("fence.rs")),
+            ("egress_trust.rs", include_str!("egress_trust.rs")),
         ];
         // Spelled in pieces so this test's own text is not a match.
         let needle = ["Command", "::new("].concat();

@@ -33,6 +33,14 @@ enum Node {
     Silent,
     /// Read the frame and close the channel.
     Close,
+    /// Allow the first request after `delay` (past the deadline), then deny
+    /// every later one at once: a late allow must never be read as a later
+    /// request's answer.
+    LateAllowThenDeny(Duration),
+    /// Read every frame and never answer: a node that is up but not deciding.
+    Mute,
+    /// Answer with a number the proxy never issued.
+    Unissued,
 }
 
 /// Run a stand-in node on `end`; count the `Decide` frames it receives.
@@ -40,6 +48,7 @@ fn stand_in(end: UnixStream, node: Node, asked: Arc<AtomicUsize>) {
     tokio::spawn(async move {
         let mut end = end;
         let mut ledger = DecisionLedger::new(7);
+        let mut first = true;
         loop {
             let mut prefix = [0u8; LEN_PREFIX];
             if end.read_exact(&mut prefix).await.is_err() {
@@ -71,7 +80,31 @@ fn stand_in(end: UnixStream, node: Node, asked: Arc<AtomicUsize>) {
                     return;
                 }
                 Node::Close => return,
+                Node::LateAllowThenDeny(delay) if first => {
+                    tokio::time::sleep(delay).await;
+                    Verdict::Allowed {
+                        decision_id: ledger.allow(args_digest).unwrap(),
+                    }
+                }
+                Node::LateAllowThenDeny(_) => Verdict::Denied {
+                    reason: DenyReason::NotGranted,
+                },
+                Node::Mute => continue,
+                Node::Unissued => {
+                    let wrong = nucleus_decision_protocol::Seq::new(seq.get() + 100);
+                    let reply = HostFrame::Verdict {
+                        seq: wrong,
+                        verdict: Verdict::Denied {
+                            reason: DenyReason::NotGranted,
+                        },
+                    }
+                    .encode()
+                    .unwrap();
+                    end.write_all(&reply).await.unwrap();
+                    continue;
+                }
             };
+            first = false;
             let reply = HostFrame::Verdict { seq, verdict }.encode().unwrap();
             end.write_all(&reply).await.unwrap();
         }
@@ -187,8 +220,9 @@ async fn a_denied_request_is_not_performed() {
 
 /// **A-19: no decision answer means deny** (ADR 0014 §7). A node that never
 /// answers, and one that closes the channel, each refuse with their own
-/// reason; the upstream is never contacted; and the poisoned channel refuses
-/// the next request too rather than reading a late reply as its answer.
+/// reason, and the upstream is never contacted. A silent node's second request
+/// also times out (its first answer is owed, not a broken peer:
+/// `DecisionChannel.lean`); the channel poisons only past `OWED_CAP`.
 #[tokio::test]
 async fn no_answer_from_the_node_is_a_denial() {
     let (port, hits, _) = fixture().await;
@@ -209,7 +243,7 @@ async fn no_answer_from_the_node_is_a_denial() {
     let (served, _) = exchange(&silent, &req).await;
     assert_eq!(
         served,
-        Served::Refused(Refusal::HostUnavailable(HostUnavailable::Poisoned))
+        Served::Refused(Refusal::HostUnavailable(HostUnavailable::Timeout))
     );
 
     let closed = harness(
@@ -358,4 +392,103 @@ async fn connections_past_the_limit_are_refused() {
     assert_eq!(served, Served::Refused(Refusal::TooManyConnections));
     assert_eq!(refusal_of(&response), Some("too_many_connections"));
     drop(held);
+}
+
+/// **`channel_recovers_after_timeout`** (`DecisionChannel.lean`). The node's
+/// first answer is an allow that arrives after the deadline; every later answer
+/// is a denial, in time. The first request is refused as a timeout; the second
+/// is decided (denied), not refused as `Poisoned`, and the late allow is never
+/// read as its answer (`late_answer_never_admits`): nothing reaches the
+/// upstream. Found by the ADR 0017 rehearsal, where one 2.2 s answer left a pod
+/// refusing every request after it.
+#[tokio::test]
+async fn a_late_answer_is_dropped_and_the_channel_recovers() {
+    let (port, hits, _) = fixture().await;
+    let origin = format!("http://127.0.0.1:{port}");
+    let req = get(&origin, &format!("127.0.0.1:{port}"));
+    let h = harness(
+        Node::LateAllowThenDeny(Duration::from_millis(300)),
+        StaticResolver::default(),
+        Duration::from_millis(150),
+    );
+    let (served, _) = exchange(&h, &req).await;
+    assert_eq!(
+        served,
+        Served::Refused(Refusal::HostUnavailable(HostUnavailable::Timeout))
+    );
+    // Let the late allow arrive before the next request asks.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let (served, _) = exchange(&h, &req).await;
+    assert_eq!(
+        served,
+        Served::Refused(Refusal::Denied(DenyReason::NotGranted)),
+        "the second request gets its own answer"
+    );
+    // And the channel keeps working.
+    let (served, _) = exchange(&h, &req).await;
+    assert_eq!(
+        served,
+        Served::Refused(Refusal::Denied(DenyReason::NotGranted))
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "the late allow admitted nothing"
+    );
+}
+
+/// **`unissued_answer_poisons`**: an answer carrying a number the proxy never
+/// issued is a broken peer, not lateness. The request is refused and the
+/// channel refuses everything after it.
+#[tokio::test]
+async fn an_answer_with_an_unissued_number_poisons() {
+    let (port, hits, _) = fixture().await;
+    let origin = format!("http://127.0.0.1:{port}");
+    let req = get(&origin, &format!("127.0.0.1:{port}"));
+    let h = harness(
+        Node::Unissued,
+        StaticResolver::default(),
+        Duration::from_secs(2),
+    );
+    let (served, _) = exchange(&h, &req).await;
+    assert_eq!(
+        served,
+        Served::Refused(Refusal::HostUnavailable(HostUnavailable::OutOfSequence))
+    );
+    let (served, _) = exchange(&h, &req).await;
+    assert_eq!(
+        served,
+        Served::Refused(Refusal::HostUnavailable(HostUnavailable::Poisoned))
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+/// A node that never answers stops being asked once it owes more than
+/// `OWED_CAP` answers: every request is refused, and past the cap without
+/// asking.
+#[tokio::test]
+async fn a_node_owing_more_than_the_cap_poisons() {
+    let (port, hits, _) = fixture().await;
+    let origin = format!("http://127.0.0.1:{port}");
+    let req = get(&origin, &format!("127.0.0.1:{port}"));
+    let h = harness(
+        Node::Mute,
+        StaticResolver::default(),
+        Duration::from_millis(5),
+    );
+    let cap = crate::decision::OWED_CAP as usize;
+    for i in 0..=cap {
+        let (served, _) = exchange(&h, &req).await;
+        assert_eq!(
+            served,
+            Served::Refused(Refusal::HostUnavailable(HostUnavailable::Timeout)),
+            "request {i}"
+        );
+    }
+    let (served, _) = exchange(&h, &req).await;
+    assert_eq!(
+        served,
+        Served::Refused(Refusal::HostUnavailable(HostUnavailable::Poisoned))
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
 }

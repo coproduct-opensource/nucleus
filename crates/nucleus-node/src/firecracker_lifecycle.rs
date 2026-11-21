@@ -173,6 +173,7 @@ mod tests {
             broker: Mutex::new(None),
             decide: Mutex::new(None),
             egress_proxy: Mutex::new(None),
+            link_proxy: Mutex::new(None),
             jail: Mutex::new(None),
             snapshot: None,
         };

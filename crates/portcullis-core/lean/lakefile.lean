@@ -199,6 +199,47 @@ lean_lib «PodCrossView» where
 lean_lib «PodCrossViewIdentity» where
   roots := #[`PodCrossViewIdentity]
 
+-- VM-to-VM links (ADR 0017, proposed): the link table's meaning, before any
+-- code. Mathlib-free. Not yet listed in the proven-tier workflow; that lands
+-- with the implementation (a guardrail path).
+lean_lib «LinkTable» where
+  roots := #[`LinkTable]
+
+-- ADR 0017 L3: the link predicates as Aeneas extracted them from
+-- crates/nucleus-ifc-kernel/src/extracted/link.rs (same scoped run as
+-- generated-egress; one disclosed hand-edit, the Funs.lean import retarget).
+lean_lib «PortcullisCoreLink» where
+  roots := #[`PortcullisCoreLink.Types, `PortcullisCoreLink.Funs]
+  srcDir := "generated-link"
+
+-- The extracted predicates are LinkTable.lean's decisions.
+lean_lib «LinkTableExtracted» where
+  roots := #[`LinkTableExtracted]
+
+-- ADR 0015 E3: TLS termination's meaning (core Lean) and the extracted
+-- verdict held to it (the tls slice lives in generated-link, same run).
+lean_lib «TlsTermination» where
+  roots := #[`TlsTermination]
+
+lean_lib «TlsTerminationExtracted» where
+  roots := #[`TlsTerminationExtracted]
+
+-- The proxy–node decision channel: a late answer is dropped, never poisons
+-- (ADR 0014 §7, ADR 0015 §2, found by the ADR 0017 rehearsal).
+lean_lib «DecisionChannel» where
+  roots := #[`DecisionChannel]
+
+lean_lib «DecisionChannelExtracted» where
+  roots := #[`DecisionChannelExtracted]
+
+-- ADR 0017: the links gauntlet's verdicts, before the harness decides them
+-- (found three times on x86: a "pass" that had not observed what it claims).
+lean_lib «GauntletVerdict» where
+  roots := #[`GauntletVerdict]
+
+-- The extracted verdicts (`extracted::gauntlet`) are the model's.
+lean_lib «GauntletVerdictExtracted» where
+  roots := #[`GauntletVerdictExtracted]
 -- Program B M1: context-indexed, versioned memory — restriction laws, version-stable
 -- observation, assembly recovery, whole-candidate validity (the 6 + 6 > 10 budget
 -- counterexample), current-epoch admission, and contextual noninterference by

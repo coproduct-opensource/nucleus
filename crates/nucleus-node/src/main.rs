@@ -62,9 +62,11 @@ mod node_evidence;
 mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
+mod pod_ca;
 mod pod_caller_identity;
 mod pod_identity_files;
 mod pod_launch;
+mod pod_links;
 mod pod_receipt;
 mod pod_resources;
 mod pod_view;
@@ -128,6 +130,7 @@ mod jail_reclaim;
 mod jailer_limits;
 mod launch_resources;
 mod lifecycle;
+mod link_proxy;
 mod node_drain;
 mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
@@ -611,6 +614,8 @@ struct NodeState {
     lockdowns: Arc<std::sync::Mutex<lockdown::Active>>,
     /// The eval cells admitted by this process (ADR 0013), for their children.
     eval_cells: eval_cell::Admitted,
+    /// Links between pods (ADR 0017): the table and its drop receipts.
+    links: pod_links::SharedLinks,
 }
 
 #[derive(Debug)]
@@ -723,6 +728,8 @@ struct FirecrackerPod {
     /// The host egress proxy for an eval cell (ADR 0015 E2), owned so teardown kills it and
     /// unlinks its socket, which is derived from the pod's vsock path like the others.
     egress_proxy: Mutex<Option<egress_proxy::EgressProxy>>,
+    /// The pod's link relay (ADR 0017 L4b), owned so teardown kills it.
+    link_proxy: Mutex<Option<link_proxy::LinkProxy>>,
     /// The jail this pod runs in, when launched via the jailer. Held so teardown
     /// can remove it — a jail left behind leaks disk and, because writable drives
     /// are hard-linked in, keeps a reference to the caller's image alive.
@@ -1072,6 +1079,7 @@ async fn main() -> Result<(), ApiError> {
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
         lockdowns: Arc::default(),
         eval_cells: crate::eval_cell::Admitted::none(),
+        links: pod_links::shared(),
     };
 
     // From here a SIGTERM/SIGINT is queued for the drain below rather than killing the node.
@@ -1157,6 +1165,7 @@ async fn main() -> Result<(), ApiError> {
         .merge(workload_result::routes())
         .merge(pod_api::routes())
         .merge(memory_space_api::routes())
+        .merge(pod_links::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -2319,7 +2328,7 @@ async fn spawn_firecracker_pod(
         // Firecracker CREATES the vsock socket at its configured `uds_path`, which
         // under the jailer is inside the jail. The host must connect where the
         // socket actually appears, so this is the jail path when jailed — getting
-        // it wrong hangs `wait_for_vsock_socket` on a file nothing will ever make.
+        // it wrong hangs `firecracker_api::wait_for_vsock_socket` on a file nothing will ever make.
         let vsock_path = match jail_layout {
             Some(ref jail) => jail.host_path(firecracker_config::in_jail::VSOCK),
             None => pod_dir.join("vsock.sock"),
@@ -2334,6 +2343,7 @@ async fn spawn_firecracker_pod(
             config: firecracker_config::FirecrackerConfig,
             workload_filesystem: net::confinement::WorkloadFilesystem,
             egress_proxy: Option<egress_proxy::EgressProxy>,
+            link_proxy: Option<link_proxy::LinkProxy>,
         }
 
         // From here every resource the launch acquires is moved into one handle the moment it
@@ -2588,6 +2598,10 @@ async fn spawn_firecracker_pod(
                 let command = launch.command_mut();
                 firecracker_config::apply_seccomp_flags(command, spec, jail_layout.is_some())?;
                 let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
+                // Who owns what the jailed VMM opens: one decision for every helper below.
+                let jail_owner = jail_layout.as_ref().map(|_| (state.jailer_uid.get(), state.jailer_gid));
+                // ADR 0015 E3: the egress CA; certificate to the guest, key to the proxies (`pod_ca`).
+                let (egress_ca_pem, egress_ca, link_ca) = pod_ca::for_pod(egress_proxy::mint_for_pod(state, spec, id)?);
                 let prepared_pod = async {
                     let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
                         measured,
@@ -2599,9 +2613,7 @@ async fn spawn_firecracker_pod(
                         id,
                         grant: &identity_grant,
                         vsock_path: &vsock_path,
-                        jail_owner: jail_layout
-                            .as_ref()
-                            .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                        jail_owner,
                         task_token: task_token.clone(),
                         pod_certificate: pod_certificate.clone(),
                         broker_serve,
@@ -2609,6 +2621,7 @@ async fn spawn_firecracker_pod(
                         // resolved sink, never the node's own (#3160).
                         audit_creds: audit
                             .map(audit_sink::credentials::AuditGrant::served_credentials),
+                        egress_ca_pem,
                     })
                     .await?;
                     identity
@@ -2618,9 +2631,7 @@ async fn spawn_firecracker_pod(
                             &vsock_path,
                             id,
                             broker_verify,
-                            jail_layout
-                                .as_ref()
-                                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                            jail_owner,
                         )
                         .await?
                         .with_network_meter(res.net_plan())
@@ -2635,11 +2646,12 @@ async fn spawn_firecracker_pod(
                     id,
                     &vsock_path,
                     pod_dir,
-                    jail_layout
-                        .as_ref()
-                        .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                    jail_owner,
+                    egress_ca,
                 )
                 .await?;
+                let link_proxy =
+                    link_proxy::start_for_pod(state, id, &vsock_path, pod_dir, jail_owner, link_ca).await?;
                 command.stdout(log_stdout).stderr(log_stderr);
                 let vmm = launch.start(|command| prepared_pod.spawn(command)).await?;
                 let pid = vmm.pid();
@@ -2754,7 +2766,7 @@ async fn spawn_firecracker_pod(
                     res.hold_cgroup(cgroup::apply_cgroup(pid, &dir, &node_cgroup).await?);
                 }
 
-                wait_for_vsock_socket(&vsock_path).await?;
+                firecracker_api::wait_for_vsock_socket(&vsock_path).await?;
                 let bridge = vsock_bridge::VsockBridge::start(vsock_path.clone(), vsock_spec.port)
                     .await
                     .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
@@ -2789,6 +2801,7 @@ async fn spawn_firecracker_pod(
                     config,
                     workload_filesystem,
                     egress_proxy,
+                    link_proxy,
                 })
             })
             .await?;
@@ -2800,6 +2813,7 @@ async fn spawn_firecracker_pod(
             config,
             workload_filesystem,
             egress_proxy,
+            link_proxy,
         } = booted;
         let launch_resources::Committed {
             permit,
@@ -2900,6 +2914,7 @@ async fn spawn_firecracker_pod(
             broker: Mutex::new(broker),
             decide: Mutex::new(decide),
             egress_proxy: Mutex::new(egress_proxy),
+            link_proxy: Mutex::new(link_proxy),
             snapshot: verdict.found().map(|v| config.snapshot_inputs(v)),
         };
 
@@ -2959,22 +2974,6 @@ fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
         return None;
     }
     Some(Arc::new(Semaphore::new(args.firecracker_max_pods)))
-}
-
-#[cfg(target_os = "linux")]
-#[tracing::instrument(skip_all, fields(boot.stage = "vsock.wait"))]
-async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
-    let start = std::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(3) {
-        if tokio::fs::metadata(path).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    Err(ApiError::Driver(format!(
-        "vsock socket not found at {}",
-        path.display()
-    )))
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -3180,9 +3179,7 @@ impl NodeService for GrpcService {
 
         let (md, ext, req) = request.into_parts();
         let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
-        pod.cancel_detached()
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        pod_links::grpc_cancel(&self.state, &pod).await?;
         Ok(GrpcResponse::new(proto::CancelPodResponse {
             status: "cancelled".to_string(),
         }))

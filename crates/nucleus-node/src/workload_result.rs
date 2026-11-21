@@ -122,6 +122,17 @@ pub(crate) fn sign_claim(
     let projection = claim
         .to_projection()
         .map_err(|e| ApiError::Driver(format!("encoding execution claim: {e}")))?;
+    sign_projection(state, id, projection)
+}
+
+/// One node-signed receipt over `projection`, for session `id`, with the
+/// executor key (`state.trust_gate`). Shared by execution claims and link
+/// receipts (ADR 0017), so the two cannot sign differently.
+pub(crate) fn sign_projection(
+    state: &NodeState,
+    id: Uuid,
+    projection: nucleus_receipt::Projection,
+) -> Result<Receipt, ApiError> {
     let issued = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| ApiError::Driver(format!("execution receipt clock: {e}")))?;

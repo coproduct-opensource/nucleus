@@ -210,6 +210,14 @@
 # /home/runner/_work/nucleus/nucleus gives `55ec10a7…`, byte for byte. Both are built from this
 # tree's source, so neither is a superseded artifact. The second digest goes when the lane moves
 # to CI's path: the gate image's CI_WORKSPACE plus `checkout_at`, in the gatehouse repository.
-55ec10a781572a9c0d75379dc1c4491063ac3a84b05e8da1677be522d051f825  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
-17b4e15cfcceef894dd5eaa61034409309e95069c5842477855e0d71300349e4  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+#
+# 2026-11-20 (ADR 0017): `nucleus-receipt` gains `Projection::Link`, which the wasm verifier
+# compiles in, so both digests move. Built on an x86 spot VM with wasm-pack 0.13.1 and Rust
+# 1.96.1, CARGO_HOME=/home/runner/.cargo. Method check: the same build of a8c3da7d7 at CI's
+# path gives `af151451…`, the digest CI reported for that commit (job 136601012412), and
+# with the VM's own CARGO_HOME (/home/gauntlet/.cargo) it gives `21731e6d…`, so the registry
+# path is embedded as well as the checkout path. The lane digest `f0cb1d6a…` assumes the lane
+# also builds with CARGO_HOME /home/runner/.cargo, as the 2026-11-02 container did.
+af151451d79bf3c981a95ce1944ef053ff86a7c376b841e304d81fc58c237a64  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+f0cb1d6a78bedfbc4e8f282fe1ebb9f4a05fa1a647b276d7394c2ea1d4162372  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

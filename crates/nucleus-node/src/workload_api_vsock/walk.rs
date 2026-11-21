@@ -116,7 +116,7 @@ const CLEAN_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/init
 
 /// Every command. [`ordinal`] is an exhaustive match, so adding a command to the
 /// protocol stops this file compiling until the walk can draw it.
-const COMMANDS: [Cmd; 16] = [
+const COMMANDS: [Cmd; 17] = [
     Cmd::FetchSvid,
     Cmd::FetchBundle,
     Cmd::Ping,
@@ -133,6 +133,7 @@ const COMMANDS: [Cmd; 16] = [
     Cmd::SnapshotReady,
     Cmd::ShipSpend,
     Cmd::ShipClearing,
+    Cmd::FetchEgressCa,
 ];
 
 fn ordinal(c: Cmd) -> usize {
@@ -153,6 +154,7 @@ fn ordinal(c: Cmd) -> usize {
         Cmd::SnapshotReady => 13,
         Cmd::ShipSpend => 14,
         Cmd::ShipClearing => 15,
+        Cmd::FetchEgressCa => 16,
     }
 }
 
@@ -173,6 +175,7 @@ fn wire_name(c: Cmd) -> &'static str {
         Cmd::ShipReceipt => "SHIP_RECEIPT",
         Cmd::ShipSpend => "SHIP_SPEND",
         Cmd::ShipClearing => "SHIP_CLEARING",
+        Cmd::FetchEgressCa => "FETCH_EGRESS_CA",
         Cmd::SnapshotReady => "SNAPSHOT_READY",
     }
 }
@@ -262,6 +265,9 @@ impl Model {
                     OneShot::AuditCredentials,
                 ),
                 Cmd::FetchPodSpec => present(p.pod_spec, Material::PodSpec),
+                // The walk provisions no egress CA (`material_for`): always refused,
+                // never once-only — the certificate is public.
+                Cmd::FetchEgressCa => Expect::Refused(Refusal::NotProvisioned(Material::EgressCa)),
                 Cmd::FetchDlcAdmission => once(
                     p.dlc_admission,
                     Material::DlcAdmission,
@@ -344,6 +350,7 @@ impl Model {
             | Cmd::Ping
             | Cmd::PodList
             | Cmd::FetchPodSpec
+            | Cmd::FetchEgressCa
             | Cmd::ShipReceipt
             | Cmd::ShipSpend
             | Cmd::ShipClearing => None,
@@ -409,6 +416,7 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
             session_token: None,
         }),
         pod_spec_yaml: p.pod_spec.then(|| "kind: Pod".to_string()),
+        egress_ca_pem: None,
         decisions: None,
         at_snapshot_barrier: Arc::default(),
         personalized: Arc::default(),

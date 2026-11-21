@@ -51,6 +51,7 @@ mod host_decide;
 mod host_socket;
 mod identity_fusion;
 mod ingest;
+mod link_relay;
 mod lockdown_client;
 mod lockdown_signal;
 #[cfg(feature = "mcp")]
@@ -1744,6 +1745,9 @@ async fn main() -> Result<(), ApiError> {
     // describe how this server will actually be bound, not be patched in later.
     // A request can never influence it.
     let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
+    // ADR 0017 L4c: the guest link relays run only in a Firecracker guest (vsock).
+    #[cfg(target_os = "linux")]
+    let link_relay_cid = vsock_binding.as_ref().map(|v| v.cid);
     let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
@@ -2017,6 +2021,16 @@ async fn main() -> Result<(), ApiError> {
         // in-guest pod's workload never ran at all. It does not call this
         // listener (nothing in the guest can connect to it): it is pointed at
         // its own door, bound inside `start` (`workload::start_if_configured`).
+        // The link relays bind first, so the address in NUCLEUS_LINK_PROXY is
+        // listening when the workload reads it (ADR 0017 L4c).
+        #[cfg(target_os = "linux")]
+        // A relay that cannot bind leaves the pod without links, never without
+        // its tool-proxy: links are optional, the proxy is PID 1's.
+        if let Some(cid) = link_relay_cid
+            && let Err(e) = link_relay::start_in_guest(cid).await
+        {
+            tracing::warn!(error = %e, "link relay not started; this pod's links carry no bytes");
+        }
         let _workload = workload_supervisor::start(
             &spec,
             &args.workload_door,

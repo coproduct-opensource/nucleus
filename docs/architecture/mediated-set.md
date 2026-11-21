@@ -151,6 +151,7 @@ listens on `1027` and the flag is gone.
 | Credential broker | `credential_broker` | `vsock:1027` | `refused` | `vsock_transport` | `crates/nucleus-node/src/broker_transport.rs` `BrokerListener::start` |
 | Decision channel (host-decide shadow, #2702) | `decision_channel` | `vsock:1028` | `refused` | `vsock_transport` | `crates/nucleus-node/src/host_decide.rs` `DecideListener::start` |
 | Host egress proxy (ADR 0015), one `nucleus-egress-proxy` process per eval cell; no guest dials it before E4 | `egress_proxy` | `vsock:1029` | `filtered` | `in_shell_egress` | `crates/nucleus-egress-proxy/src/serve.rs` `serve` |
+| Link relay (ADR 0017): a request to another pod over a link in the node's table, decided per request; served to eval cells; nothing binds it before ADR 0017 L4 | `pod_link` | `vsock:1030` | `filtered` | `in_shell_egress` | not served yet (ADR 0017 L4) |
 | Per-pod DNS forwarder (`dnsmasq`, `no-resolv`), only when the pod names a DNS allowlist | `pod_dns` | `gateway:53` | `filtered` | `dns` | `crates/nucleus-node/src/net.rs` `start_dns_proxy` / `dnsmasq_config` |
 | Whatever the pod's `network.allow` admits | `allowlisted_egress` | `allowlist` | `filtered` | `netns_raw_socket` | `crates/nucleus-node/src/net.rs` netns iptables |
 
@@ -166,6 +167,12 @@ Deliberately not in the table:
 - **The proxy's workload door.** It is a Unix socket inside the guest, not a host
   service. Its route table is built from `DoorRoute::ALL`, which has no approval
   route (`nucleus-tool-proxy/src/workload_door.rs`).
+- **The guest link relays (ADR 0017 L4c).** Both are in the GUEST: a loopback TCP
+  port, `127.0.0.1:3129`, that the workload learns as `NUCLEUS_LINK_PROXY` and that
+  the tool-proxy splices to the host's `pod_link` row above; and a vsock listener on
+  guest port 1031 that only the host may dial (`peer_is_host`), to deliver an
+  inbound link. Neither parses or decides; the host relay does both
+  (`nucleus-tool-proxy/src/link_relay.rs`).
 
 What the `Workload` column does not yet prove: it states what the workload should
 get, and nothing yet connects from inside a booted guest to hold it to that. An

@@ -104,6 +104,12 @@ pub(crate) enum PostureRefused {
          CID 2 is the host, and the in-guest proxy authenticates the host by it."
     )]
     GuestCid { cid: u32 },
+    /// A guest vsock port the runtime owns: the in-guest link relay's (ADR 0017 L4c).
+    #[error(
+        "vsock.port {port} is refused: the in-guest link relay listens on it (ADR 0017), so the \
+         tool-proxy's own control port must be another"
+    )]
+    GuestPortReserved { port: u32 },
     /// `credentials.env` on the container driver, whose credentialed calls the host performs.
     #[error(
         "credentials.env ({keys}) is refused on the container driver: credentials are delivered \
@@ -204,6 +210,11 @@ pub(crate) fn admit(
         return Err(PostureRefused::GuestCid {
             cid: vsock.guest_cid,
         });
+    }
+    if let Some(vsock) = &inner.vsock
+        && vsock.port == nucleus_spec::LINK_RELAY_GUEST_PORT
+    {
+        return Err(PostureRefused::GuestPortReserved { port: vsock.port });
     }
     if let Some(creds) = &inner.credentials {
         for key in creds.env.keys() {

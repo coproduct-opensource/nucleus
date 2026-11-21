@@ -97,6 +97,7 @@ async fn prepare_labelled_for_test(
         // is both `None`, which makes the attestation hash the files itself -- the honest
         // reading of "no pinned artifact was read".
         measured: crate::image_identity::Measured::default(),
+        egress_ca_pem: None,
     })
     .await
 }

@@ -268,9 +268,18 @@ fn the_registry_refuses_what_it_cannot_mean() {
         "call_charge_micro_usd = 0",
     );
     assert!(UpstreamRegistry::from_toml_str(&ok).is_ok());
+    // ADR 0015 E3: an https origin is routed, and names the pod CA's constraint.
+    let tls = entry(
+        "https://a.example",
+        "[\"GET\"]",
+        "[\"/x\"]",
+        "call_charge_micro_usd = 0",
+    );
+    assert!(UpstreamRegistry::from_toml_str(&tls).is_ok());
     for bad in [
+        // An https address literal has no name a CA can be constrained to.
         entry(
-            "https://a.example",
+            "https://10.0.0.1",
             "[\"GET\"]",
             "[\"/x\"]",
             "call_charge_micro_usd = 0",
@@ -374,6 +383,7 @@ async fn the_real_proxy_runs_confined_with_no_route_out() {
         jail_owner: None,
         run_as: (65534, 65534),
         decider: EgressDecider::new(pod, registry(port), policy, 1),
+        ca: None,
     })
     .await
     .expect("the proxy starts confined");
@@ -409,6 +419,131 @@ async fn the_real_proxy_runs_confined_with_no_route_out() {
     let log = std::fs::read_to_string(dir.path().join(PROXY_LOG)).unwrap();
     assert!(log.contains("egress proxy confined and serving"), "{log}");
     proxy.shutdown().await;
+}
+
+/// The names a pod CA is constrained to are exactly the registry's https hosts:
+/// an http route, however named, is not one (ADR 0015 E3, `pod_ca`).
+#[test]
+fn https_hosts_are_the_https_routes_only() {
+    let toml = r#"
+[[egress]]
+name    = "plain"
+origin  = "http://plain.example"
+methods = ["GET"]
+paths   = ["/x"]
+call_charge_micro_usd = 0
+
+[[egress]]
+name    = "tls"
+origin  = "https://Api.Example"
+methods = ["GET"]
+paths   = ["/x"]
+call_charge_micro_usd = 0
+"#;
+    let registry = UpstreamRegistry::from_toml_str(toml).unwrap();
+    assert_eq!(
+        registry.egress().https_hosts(),
+        vec!["api.example".to_string()]
+    );
+}
+
+/// The parent half of `a_confined_child_dies_with_its_spawner`: spawns a
+/// confined child exactly as the node spawns a proxy (`spawn_confined`), prints
+/// its pid, and waits to be killed. Runs only when the outer test re-executes
+/// this binary with `NUCLEUS_PDEATH_HELPER` set.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "helper: run by a_confined_child_dies_with_its_spawner"]
+async fn pdeath_parent_helper() {
+    let Some(report) = std::env::var_os("NUCLEUS_PDEATH_HELPER") else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let vsock = dir.path().join("vsock.sock");
+    let log = dir.path().join("child.log");
+    let spawned = spawn_confined(Spawn {
+        what: "pdeath child",
+        binary: Path::new("/bin/sleep"),
+        vsock_path: &vsock,
+        listener: nucleus_ifc_kernel::VsockListener::EgressProxy,
+        log: &log,
+        jail_owner: None,
+        run_as: (65534, 65534),
+        args: vec!["300".into()],
+    })
+    .await
+    .expect("the confined child starts");
+    // A file, not stdout: libtest may capture a test's stdout.
+    std::fs::write(&report, spawned.child.id().expect("pid").to_string()).unwrap();
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    drop(spawned);
+}
+
+/// Found on the x86 gauntlet VM (2026-11-19): a killed node left every proxy it
+/// had spawned running under PID 1. A confined child must die with the process
+/// that spawned it. The spawner here is killed with SIGKILL, so nothing in it
+/// runs (no `kill_on_drop`, no destructor): only the kernel's parent-death
+/// signal can end the child. Root only (the namespace and the drop).
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs root"]
+fn a_confined_child_dies_with_its_spawner() {
+    let dir = tempfile::tempdir().unwrap();
+    let report = dir.path().join("child.pid");
+    let mut helper = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "egress_proxy::tests::pdeath_parent_helper",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("NUCLEUS_PDEATH_HELPER", &report)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let wait_until = std::time::Instant::now() + Duration::from_secs(30);
+    let pid: u32 = loop {
+        if let Some(pid) = std::fs::read_to_string(&report)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+        {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < wait_until,
+            "the helper reported no child pid"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let alive = |pid: u32| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+            // A zombie has died; only its reaping is left to whoever adopted it.
+            s.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_some_and(|state| state != "Z")
+        })
+    };
+    assert!(
+        alive(pid),
+        "the confined child is running before its spawner dies"
+    );
+    helper.kill().unwrap();
+    let _ = helper.wait();
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while alive(pid) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let survived = alive(pid);
+    if survived {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+    }
+    assert!(
+        !survived,
+        "the confined child outlived its spawner by more than 1 s"
+    );
 }
 
 /// #3493: which pods may get a proxy, decided before their VM is configured, so

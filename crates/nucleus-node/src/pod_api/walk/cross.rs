@@ -199,6 +199,7 @@ impl Run {
             served,
             audit_creds: None,
             pod_spec_yaml: None,
+            egress_ca_pem: None,
             decisions: None,
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
@@ -245,6 +246,7 @@ impl Run {
             broker: Mutex::new(None),
             decide: Mutex::new(None),
             egress_proxy: Mutex::new(None),
+            link_proxy: Mutex::new(None),
             snapshot: None,
         };
         let mut spec: nucleus_spec::PodSpec =

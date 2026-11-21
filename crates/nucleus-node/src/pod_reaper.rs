@@ -53,6 +53,7 @@ pub(crate) async fn reap_once(state: &NodeState, reaped: &mut std::collections::
                 error!(pod = %pod.id, %error, "expired pod cancellation failed; retrying on next reaper pass");
                 continue;
             }
+            crate::pod_links::pod_gone(state, pod.id).await;
             let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
             lifecycle::write_lifecycle_audit(
                 pod_dir,
@@ -72,6 +73,7 @@ pub(crate) async fn reap_once(state: &NodeState, reaped: &mut std::collections::
                 error!(pod = %pod.id, %error, "pod cleanup failed; retrying on next reaper pass");
                 continue;
             }
+            crate::pod_links::pod_gone(state, pod.id).await;
             reaped.insert(pod.id);
             // Write lifecycle audit for pod exit
             let detail = match &pod_state {
@@ -102,8 +104,9 @@ pub(crate) async fn reap_once(state: &NodeState, reaped: &mut std::collections::
                         "cascading cancel: killing child pod {} (parent {} exited)",
                         pod.id, parent_id
                     );
-                    if let Err(e) = pod.cancel().await {
-                        error!("failed to cascade cancel pod {}: {}", pod.id, e);
+                    match pod.cancel().await {
+                        Ok(()) => crate::pod_links::pod_gone(state, pod.id).await,
+                        Err(e) => error!("failed to cascade cancel pod {}: {}", pod.id, e),
                     }
                 }
             }

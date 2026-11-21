@@ -396,6 +396,106 @@ Order: E1 ∥ E2 → E3 → E4 → E5 → E6 → E7. E2's per-request decision i
 per-pod ledger (S5). If S5 has not landed, E2 calls `PodPolicy::decide_effect` directly,
 the one decider either way, and S5 adds the id.
 
+**E3, proxy side: landed 2026-11-19** (branch `adr/vm-links`, ahead of ADR 0017's links,
+which need it; owner decision of that date).
+
+- **Proved:**
+  - `crates/portcullis-core/lean/TlsTermination.lean` (core Lean, axioms `propext` and
+    `Quot.sound` only) proves the CA key never leaves its pod's proxy, leaves are issued only
+    for permitted names and never past the CA's deadline, a handshake is decided only with a
+    live CA, a permitted name, a client that accepted the leaf and SNI = `Host`, and an
+    untrusting client is refused, never tunnelled.
+  - The handshake decision the proxy runs, `nucleus_ifc_kernel::extracted::tls::tls_verdict`
+    (with `may_issue_leaf`), is Aeneas-extracted and proved equal to that model's outcome
+    (`TlsTerminationExtracted.lean::tls_verdict_is_step`), bound in `proof-obligations.toml`.
+- **Tested** (`crates/nucleus-egress-proxy/src/serve_tls_tests.rs`, in-process, any OS; a real
+  rustls client), each case checking the journalled verdict:
+  - a permitted name reaches the node's decision as `https://name:443/…`;
+  - a name outside the CA's constraints is refused and no leaf is minted;
+  - a client trusting another CA is refused as `client_rejected_interception`, with its name;
+  - SNI ≠ `Host`, and a `CONNECT` authority ≠ SNI, are `fronting`;
+  - an expired CA terminates nothing;
+  - an h2-only client gets no h2 (the handshake fails);
+  - a `CONNECT` that does not speak TLS is `not_tls`;
+  - without a CA, `CONNECT` is refused as in E2;
+  - the upstream client verifies roots and name.
+- **Driven red:** dropping the `Host` comparison failed the fronting test; a leaf minter
+  that ignored the permitted names failed the out-of-constraints test.
+- **Choices made here:**
+  - the permitted names and the deadline are read from the CA certificate itself
+    (`nameConstraints` permitted DNS subtrees, `notAfter`), never passed beside it;
+  - leaves are minted only for an exact permitted name, while the X.509 constraint, which also
+    admits subdomains, stays the client's ceiling;
+  - one request per terminated tunnel, as in E2;
+  - the key arrives on `--tls-ca-fd N`, a pipe the proxy reads once through
+    `/proc/self/fd/N` before Landlock. The crate forbids `unsafe`, so it cannot adopt a raw
+    descriptor. The key is never in argv, the environment or a file.
+- **Left for E3:**
+  - the node minting the per-pod CA at admission (P-256, name constraints from the pod's
+    registry hosts and ADR 0017 link names, `notAfter` ≤ the pod's timeout) and writing the
+    bundle to the proxy's pipe;
+  - the `trust_boundary` row `EgressCaKeyNeverServed`;
+  - credential injection;
+  - the guest installing the CA certificate (`EgressProxyTrust`, E4);
+  - an outbound path (the production resolver is still `NoOutboundPath`);
+  - the node's registry accepting `https://` origins (today it refuses them, so a terminated
+    request is denied `not_registered` at the node, which fails closed).
+- **Not verified here:** the Linux-only start path (`--tls-ca-fd` read and Landlock) was not
+  compiled for Linux on this Mac. The cross build needs a C toolchain for `ring`.
+  `read_pod_ca` itself compiles on every platform.
+
+**E3, node and guest sides: landed 2026-11-19** (branch `adr/vm-links`).
+
+- **Node, `crates/nucleus-node/src/pod_ca.rs`:** at admission an eval cell on a node with a
+  proxy gets a CA (`egress_proxy::mint_for_pod`): P-256, `nameConstraints` exactly the
+  registry's `https://` hosts plus the link subtree `link.nucleus.invalid`, `notAfter` = admission
+  + the pod's `timeout_seconds`. A CA that cannot be minted refuses the eval cell.
+- **The key's one hop** is the proxy's decision channel, not `--tls-ca-fd`: the confinement hook
+  (`nucleus::hardening`, `harden_child`) marks every descriptor from 3 up close-on-exec, so no
+  inherited descriptor above stderr survives a confined exec, and stdin and stdout are already
+  the guest listener and the decision channel. `EgressProxy::start` passes `--tls-ca-channel` and
+  writes the `nucleus-pod-ca/1` bundle as the first bytes on its end of the socket pair, before
+  any decision. `MintedCa` keeps the key in a `Zeroizing` buffer, is not `Clone`, and
+  `hand_over` takes it by value, so the node's copy is wiped when the write returns.
+- **The proxy's half is not built:** it reads `--tls-ca-fd` and refuses an unknown argument, so
+  until it reads the bundle from its decision channel under `--tls-ca-channel`, an eval cell on
+  a node with `--egress-proxy-bin` fails to start. That is a refusal by name, not a weaker proxy.
+- **Registry:** `https://` origins are routed; an https origin that is an address literal is
+  refused at load (a CA constrains names). The constraints are the node-wide registry's https
+  hosts: the registry is not per pod today.
+- **Guest:** `FETCH_EGRESS_CA` (workload API, personalising, not once-only) serves the
+  certificate only. guest-init (`egress_trust.rs`) checks it is one PEM certificate with no key,
+  appends it to the guest's roots in `/run/nucleus/egress-trust.pem`, and exports the path to the
+  tool-proxy as `NUCLEUS_EGRESS_TRUST_BUNDLE`; pointing the workload at it is the tool-proxy's.
+  `GuestCapability::EgressProxyTrust`, `NotYet`, Optional.
+- **Tested on macOS:** constraints read back from the certificate equal the https hosts plus the
+  link subtree; `notAfter` is the pod deadline; the bundle the node writes is the one
+  `PodCa::from_bundle` parses; no guest-facing or logged rendering contains the key; the guest
+  fetch has one field. Driven red: a CA valid an hour past the pod; constraints that drop the
+  registry hosts. **Not compiled for Linux** (`mint_for_pod`, the handover in `start`, the
+  `main.rs` wiring): the cross check fails on `ring`'s and `aws-lc-sys`'s C build.
+
+**The decision channel: a late answer is dropped, not a broken peer (2026-11-19).** §2's first
+implementation poisoned the channel on any non-answer, on the assumption that a late answer is
+evidence of a broken peer and could be read as the answer to the next request. The ADR 0017
+local rehearsal disproved the first half: one node answer arrived about 2.2 s after the 2 s
+deadline, after 103 answers of about 10 ms, and every later request on that pod was refused
+`HostUnavailable(Poisoned)`. The second half is a numbering problem, not a reason to stop.
+`crates/portcullis-core/lean/DecisionChannel.lean` now states the channel: a request whose deadline
+passes is refused (fail closed) and its number is *owed*; an owed answer is dropped by number; an
+answer applies only to the outstanding request with its number; poisoning is kept for evidence of a
+broken peer (a number neither outstanding nor owed, a frame that does not parse or is not a verdict,
+the socket closing, a request frame cut short, more than `OWED_CAP` = 64 owed answers). Theorems:
+`answer_admits_only_its_request`, `late_answer_never_admits` (an outcome is written once),
+`late_answer_dropped`, `channel_recovers_after_timeout`, `tick_resolves_overdue`,
+`unissued_answer_poisons`. The two decisions are extracted
+(`nucleus_ifc_kernel::extracted::decision::{disposition, on_deadline}`) and proved equal to the
+model's in `DecisionChannelExtracted.lean`; two `proof-obligations.toml` rows bind them. The proxy
+(`decision.rs`) reads frames cancel-safely, so a deadline that fires mid-frame loses no bytes. The
+deadline is unchanged. Tested in-process, egress and link mode; driven red: every timeout
+poisoning (the old rule), a late answer applied, an unissued number tolerated, and an extracted
+`disposition` that applies an owed answer.
+
 ## Consequences
 
 - No pod changes behaviour when this record is accepted. Before E4, everything is

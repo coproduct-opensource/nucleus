@@ -1,4 +1,4 @@
-//! Node-side pod-lifecycle audit entries.
+//! Nod-side pod-lifecycle audit entries.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -150,16 +150,6 @@ impl PodHandle {
 
     pub(crate) async fn cancel(&self) -> Result<(), ApiError> {
         self.teardown(Stop::Kill).await
-    }
-
-    /// `cancel` in a task of its own, for request handlers. A client that stops
-    /// waiting drops its handler's future; awaited inline, teardown was abandoned
-    /// after resources were taken and before the VMM kill, its last step, so the
-    /// VMM and the pod's capacity were held until the execution deadline.
-    pub(crate) async fn cancel_detached(self: std::sync::Arc<Self>) -> Result<(), ApiError> {
-        tokio::spawn(async move { self.cancel().await })
-            .await
-            .map_err(|e| ApiError::SupervisorUnavailable(format!("teardown task failed: {e}")))?
     }
 
     pub(crate) async fn cleanup_after_exit(&self) -> Result<(), ApiError> {

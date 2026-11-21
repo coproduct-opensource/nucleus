@@ -112,6 +112,7 @@ enum Entry {
     NetnsThenDrop {
         uid: u32,
         gid: u32,
+        parent: u32,
     },
     PidnsThenDrop {
         uid: u32,
@@ -128,7 +129,9 @@ impl Entry {
     fn of(isolation: Isolation) -> Self {
         match isolation {
             Isolation::None => Self::None,
-            Isolation::NetnsThenDrop { uid, gid } => Self::NetnsThenDrop { uid, gid },
+            Isolation::NetnsThenDrop { uid, gid, parent } => {
+                Self::NetnsThenDrop { uid, gid, parent }
+            }
             Isolation::PidnsThenDrop { uid, gid } => Self::PidnsThenDrop { uid, gid },
             Isolation::PidnsThenUserNetwork {
                 uid,
@@ -178,13 +181,35 @@ fn harden_child(
         // included, because the hook never sets `SECBIT_KEEP_CAPS`.
         match *entry {
             Entry::None => {}
-            Entry::NetnsThenDrop { uid, gid } => {
+            Entry::NetnsThenDrop { uid, gid, parent } => {
                 if libc::unshare(libc::CLONE_NEWNET) != 0
                     || libc::setgroups(0, std::ptr::null()) != 0
                     || libc::setresgid(gid, gid, gid) != 0
                     || libc::setresuid(uid, uid, uid) != 0
                 {
                     return Err(io::Error::last_os_error());
+                }
+                // A host service dies with the process that spawned it.
+                // Found on the x86 gauntlet VM (2026-11-19): a killed node
+                // left every proxy it had started running under PID 1,
+                // sockets open and its binary busy (24 after one run).
+                // AFTER the drop: a credential change clears the
+                // parent-death signal (`commit_creds`). Then the race: if
+                // the spawner died between fork and here, the signal will
+                // never come, so refuse instead. It fires when the
+                // spawning THREAD exits; see `spawn_confined`.
+                if libc::prctl(
+                    libc::PR_SET_PDEATHSIG,
+                    libc::SIGKILL as libc::c_ulong,
+                    0,
+                    0,
+                    0,
+                ) != 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if u32::try_from(libc::getppid()).ok() != Some(parent) {
+                    return Err(io::Error::from_raw_os_error(libc::ESRCH));
                 }
             }
             // Returns only in the workload, dropped (`pidns.rs`).
@@ -296,7 +321,12 @@ fn harden_child(
             }
             (
                 Landlock::Restrict(ruleset),
-                Entry::None | Entry::NetnsThenDrop { uid: _, gid: _ },
+                Entry::None
+                | Entry::NetnsThenDrop {
+                    uid: _,
+                    gid: _,
+                    parent: _,
+                },
             ) => ruleset.restrict_self()?,
         }
         // The write layer (#2907), a second Landlock domain over the

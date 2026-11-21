@@ -24,7 +24,9 @@ use nucleus_decision_protocol::{ArgsDigest, Operation, Subject};
 use sha2::{Digest, Sha256};
 
 use crate::Refusal;
-use crate::request::{Method, Origin, Request, check_path, check_query, parse_authority};
+use crate::request::{
+    Method, Origin, Request, Scheme, check_path, check_query, parse_authority_in,
+};
 
 /// The operation every proxied request is decided as. One constant, so the
 /// proxy and the node cannot ask and answer about different operations.
@@ -139,10 +141,16 @@ impl Summary {
         };
         let (method, url) = first.split_once(' ').ok_or(SummaryError::Shape)?;
         let method = Method::from_token(method).ok_or(SummaryError::Method)?;
-        let rest = url.strip_prefix("http://").ok_or(SummaryError::Url)?;
+        let (scheme, rest) = if let Some(rest) = url.strip_prefix("http://") {
+            (Scheme::Http, rest)
+        } else if let Some(rest) = url.strip_prefix("https://") {
+            (Scheme::Https, rest)
+        } else {
+            return Err(SummaryError::Url);
+        };
         let split = rest.find('/').ok_or(SummaryError::Url)?;
         let (authority, tail) = rest.split_at(split);
-        let origin = parse_authority(authority).map_err(|_| SummaryError::Url)?;
+        let origin = parse_authority_in(scheme, authority).map_err(|_| SummaryError::Url)?;
         let (path, query) = match tail.split_once('?') {
             Some((p, q)) => (p, Some(q)),
             None => (tail, None),

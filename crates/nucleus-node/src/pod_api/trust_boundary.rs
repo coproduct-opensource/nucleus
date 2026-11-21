@@ -875,6 +875,7 @@ impl Host for Node {
             broker_serve: serve,
             audit_creds: None,
             measured: crate::image_identity::Measured::default(),
+            egress_ca_pem: None,
         })
         .await
         .map_err(|e| e.to_string())?;

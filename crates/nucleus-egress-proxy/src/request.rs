@@ -108,17 +108,43 @@ impl std::fmt::Display for Host {
     }
 }
 
-/// `scheme://host:port`, with the scheme fixed to `http` in E2 and the port
-/// always explicit, so one origin has one spelling.
+/// How the proxy reached an origin: a plain `http://` proxy request, or a
+/// `CONNECT` it terminated (E3), whose requests are `https://`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Scheme {
+    Http,
+    Https,
+}
+
+impl Scheme {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Scheme::Http => "http",
+            Scheme::Https => "https",
+        }
+    }
+
+    /// The port an authority without one means.
+    pub const fn default_port(self) -> u16 {
+        match self {
+            Scheme::Http => 80,
+            Scheme::Https => 443,
+        }
+    }
+}
+
+/// `scheme://host:port`, with the port always explicit, so one origin has one
+/// spelling.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Origin {
+    pub scheme: Scheme,
     pub host: Host,
     pub port: u16,
 }
 
 impl std::fmt::Display for Origin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "http://{}:{}", self.host, self.port)
+        write!(f, "{}://{}:{}", self.scheme.as_str(), self.host, self.port)
     }
 }
 
@@ -147,11 +173,99 @@ pub enum Parsed {
     Complete { request: Request, head_len: usize },
 }
 
+/// Which request form a head must have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// A proxy request: absolute-form `http://` target (E2).
+    Proxy,
+    /// A request inside a `CONNECT` the proxy terminated (E3): origin-form
+    /// target, and the origin is the `Host` header's, `https://`.
+    Tunnelled,
+}
+
 /// Parse the head at the start of `buf`.
 ///
 /// # Errors
 /// The [`Refusal`] for the first thing wrong with it.
 pub fn parse_head(buf: &[u8]) -> Result<Parsed, Refusal> {
+    parse_head_in(buf, Form::Proxy)
+}
+
+/// Parse a head read inside a terminated `CONNECT` (E3). The same checks as
+/// [`parse_head`], except that the target is origin-form and the request's
+/// origin is its `Host` header, `https://`. Whether that `Host` is the TLS
+/// name is not this parser's to say: it is `tls_verdict`'s fronting check.
+///
+/// # Errors
+/// The [`Refusal`] for the first thing wrong with it.
+pub fn parse_head_tunnelled(buf: &[u8]) -> Result<Parsed, Refusal> {
+    parse_head_in(buf, Form::Tunnelled)
+}
+
+/// What [`parse_connect_head`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectParsed {
+    Partial,
+    /// `CONNECT host:port`: the origin, `https://`, and the head's length.
+    Complete {
+        origin: Origin,
+        head_len: usize,
+    },
+}
+
+/// Parse a `CONNECT` head (E3): authority-form target, HTTP/1.1, no body.
+/// A `Host` header, if sent, names the same authority.
+///
+/// # Errors
+/// [`Refusal::Connect`] for a target that is not `host[:port]`;
+/// [`Refusal::HostMismatch`] for a `Host` naming another authority;
+/// [`Refusal::UnsupportedFraming`] for a body; the parser's other refusals.
+pub fn parse_connect_head(buf: &[u8]) -> Result<ConnectParsed, Refusal> {
+    let mut fields = [httparse::EMPTY_HEADER; MAX_HEADERS];
+    let mut req = httparse::Request::new(&mut fields);
+    let head_len = match req.parse(buf) {
+        Ok(httparse::Status::Partial) => {
+            return if buf.len() >= MAX_HEAD {
+                Err(Refusal::HeadersTooLarge)
+            } else {
+                Ok(ConnectParsed::Partial)
+            };
+        }
+        Ok(httparse::Status::Complete(n)) => n,
+        Err(httparse::Error::TooManyHeaders) => return Err(Refusal::TooManyHeaders),
+        Err(httparse::Error::Version) => return Err(Refusal::NotHttp11),
+        Err(_) => return Err(Refusal::Malformed),
+    };
+    if req.version != Some(1) {
+        return Err(Refusal::NotHttp11);
+    }
+    if req.method != Some("CONNECT") {
+        return Err(Refusal::Malformed);
+    }
+    let target = req.path.ok_or(Refusal::Malformed)?;
+    if target.contains(['/', '?', '#']) {
+        return Err(Refusal::Connect);
+    }
+    let origin = parse_authority_in(Scheme::Https, target).map_err(|_| Refusal::Connect)?;
+    for field in req.headers.iter() {
+        let name = field.name.to_ascii_lowercase();
+        match name.as_str() {
+            "content-length" | "transfer-encoding" => return Err(Refusal::UnsupportedFraming),
+            "host" => {
+                let value = std::str::from_utf8(field.value)
+                    .map_err(|_| Refusal::BadHeaderValue)?
+                    .trim_matches([' ', '\t']);
+                if parse_authority_in(Scheme::Https, value)? != origin {
+                    return Err(Refusal::HostMismatch);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ConnectParsed::Complete { origin, head_len })
+}
+
+fn parse_head_in(buf: &[u8], form: Form) -> Result<Parsed, Refusal> {
     // HTTP/2's preface, even when only its first token has arrived.
     let probe = buf
         .get(..H2_PREFACE_START.len().min(buf.len()))
@@ -197,9 +311,37 @@ pub fn parse_head(buf: &[u8]) -> Result<Parsed, Refusal> {
         Some(token) => Method::from_token(token).ok_or(Refusal::MethodNotSupported)?,
         None => return Err(Refusal::Malformed),
     };
-    let (origin, path, query) = parse_target(req.path.ok_or(Refusal::Malformed)?)?;
-    let request = check_headers(req.headers, method, origin, path, query)?;
+    let target = req.path.ok_or(Refusal::Malformed)?;
+    let request = match form {
+        Form::Proxy => {
+            let (origin, path, query) = parse_target(target)?;
+            check_headers(req.headers, method, Scheme::Http, Some(origin), path, query)?
+        }
+        Form::Tunnelled => {
+            let (path, query) = parse_origin_form(target)?;
+            check_headers(req.headers, method, Scheme::Https, None, path, query)?
+        }
+    };
     Ok(Parsed::Complete { request, head_len })
+}
+
+/// Split and check an origin-form target (`/path[?query]`).
+fn parse_origin_form(target: &str) -> Result<(String, Option<String>), Refusal> {
+    if !target.starts_with('/') {
+        return Err(Refusal::NotOriginForm);
+    }
+    if target.contains('#') {
+        return Err(Refusal::AmbiguousPath);
+    }
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (target, None),
+    };
+    check_path(path)?;
+    if let Some(q) = query {
+        check_query(q)?;
+    }
+    Ok((path.to_string(), query.map(str::to_string)))
 }
 
 /// Split and check an absolute-form target.
@@ -239,6 +381,14 @@ fn parse_target(target: &str) -> Result<(Origin, String, Option<String>), Refusa
 /// trailing dot, a numeric-looking host that is not a dotted quad, or a port
 /// that is empty, zero, has a leading zero or does not fit.
 pub fn parse_authority(authority: &str) -> Result<Origin, Refusal> {
+    parse_authority_in(Scheme::Http, authority)
+}
+
+/// [`parse_authority`] for `scheme`: an absent port is the scheme's default.
+///
+/// # Errors
+/// As [`parse_authority`].
+pub fn parse_authority_in(scheme: Scheme, authority: &str) -> Result<Origin, Refusal> {
     if authority.contains('@') {
         return Err(Refusal::BadAuthority);
     }
@@ -258,10 +408,10 @@ pub fn parse_authority(authority: &str) -> Result<Origin, Refusal> {
         (parse_host(host)?, port)
     };
     let port = match port {
-        None => 80,
+        None => scheme.default_port(),
         Some(p) => parse_port(p)?,
     };
-    Ok(Origin { host, port })
+    Ok(Origin { scheme, host, port })
 }
 
 fn parse_port(p: &str) -> Result<u16, Refusal> {
@@ -389,7 +539,8 @@ const HOP_BY_HOP: [&str; 3] = ["connection", "proxy-connection", "keep-alive"];
 fn check_headers(
     fields: &[httparse::Header<'_>],
     method: Method,
-    origin: Origin,
+    scheme: Scheme,
+    target_origin: Option<Origin>,
     path: String,
     query: Option<String>,
 ) -> Result<Request, Refusal> {
@@ -422,7 +573,7 @@ fn check_headers(
             "te" | "trailer" | "expect" => return Err(Refusal::UnsupportedFraming),
             "proxy-authorization" => return Err(Refusal::ProxyAuthorization),
             "host" => {
-                if host.replace(parse_authority(value)?).is_some() {
+                if host.replace(parse_authority_in(scheme, value)?).is_some() {
                     return Err(Refusal::MissingHost);
                 }
             }
@@ -443,11 +594,14 @@ fn check_headers(
             _ => headers.push((name, value.to_string())),
         }
     }
-    match host {
-        None => return Err(Refusal::MissingHost),
-        Some(h) if h != origin => return Err(Refusal::HostMismatch),
-        Some(_) => {}
-    }
+    // A proxy request names its origin twice (target and Host) and they must
+    // agree; a tunnelled one names it once, in Host.
+    let origin = match (host, target_origin) {
+        (None, _) => return Err(Refusal::MissingHost),
+        (Some(h), Some(t)) if h != t => return Err(Refusal::HostMismatch),
+        (Some(_), Some(t)) => t,
+        (Some(h), None) => h,
+    };
     Ok(Request {
         method,
         origin,

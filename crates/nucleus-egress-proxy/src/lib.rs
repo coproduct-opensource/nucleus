@@ -31,12 +31,20 @@
 //! `_` arm and the unavailable arm refuses (ADR 0007 A-1, B-3). There is no
 //! direct-egress fallback, because there is no path for one.
 //!
-//! # Not yet (E3)
+//! # TLS termination (E3, proxy side)
 //!
-//! TLS termination and credential injection. In E2 a `CONNECT` is refused
-//! outright: without termination the proxy cannot see the request inside
-//! the tunnel, so it has nothing to ask the node about (§4: never tunnelled
-//! opaquely).
+//! Given the pod's CA at start ([`tls`]), a `CONNECT` whose next bytes are a
+//! TLS ClientHello is terminated with a leaf minted for the TLS name, and the
+//! one request inside is decided like any other. Each handshake ends in the
+//! kernel's extracted `tls_verdict`, proved equal to `TlsTermination.step`.
+//! Without a CA a `CONNECT` is refused, as in E2. Never tunnelled opaquely.
+//!
+//! # Not yet
+//!
+//! Credential injection; an outbound path (the resolver is `NoOutboundPath`).
+//! The CA arrives at the head of the decision channel (`--tls-ca-channel`,
+//! `tls::read_bundle`); the node mints it and the guest installs its
+//! certificate (E3 node side).
 
 #![forbid(unsafe_code)]
 // Declared panic-free for the shipped build (the scorecard's `tot` family):
@@ -57,11 +65,13 @@
 
 pub mod address;
 pub mod decision;
+pub mod link;
 pub mod posture;
 pub mod refusal;
 pub mod request;
 pub mod resolve;
 pub mod serve;
 pub mod summary;
+pub mod tls;
 
 pub use refusal::Refusal;

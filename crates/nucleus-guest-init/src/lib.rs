@@ -47,5 +47,6 @@
 
 pub mod boot;
 pub mod decisions;
+pub mod egress_trust;
 pub mod fence;
 pub mod net;

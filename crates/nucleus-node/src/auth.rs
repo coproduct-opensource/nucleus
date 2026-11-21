@@ -125,6 +125,13 @@ pub enum Operation {
     Lockdown,
     /// Inspect or decide an action-bound host approval; configured operator only.
     ApproveEffect,
+    /// Link two pods (ADR 0017). Which pods is the caller's scope, applied to
+    /// BOTH ends by the handler; the trust-domain rule is the link table's.
+    LinkPods,
+    /// Unmake a link; the source pod must be in the caller's scope.
+    UnlinkPods,
+    /// List the links naming a pod, and its drop receipts.
+    ListLinks,
     /// Declare a memory space, revoke a binding policy or a space, or list them
     /// (`memory_space_api`).
     ///
@@ -429,6 +436,9 @@ impl AuthorizationPolicy {
                 | Operation::CancelPod
                 | Operation::StreamLogs
                 | Operation::GetReceipt
+                | Operation::LinkPods
+                | Operation::UnlinkPods
+                | Operation::ListLinks
                 | Operation::MemorySpaces
                 | Operation::MemoryBinding
                 | Operation::PodManagement => Ok(()),
@@ -489,6 +499,9 @@ impl AuthorizationPolicy {
                     | Operation::ListPods
                     | Operation::GetReceipt
                     | Operation::SnapshotPod
+                    | Operation::LinkPods
+                    | Operation::UnlinkPods
+                    | Operation::ListLinks
                     | Operation::PodManagement => {
                         tracing::debug!(
                             spiffe_id = %spiffe_id,
@@ -517,6 +530,9 @@ impl AuthorizationPolicy {
                     | Operation::StreamLogs
                     | Operation::ListPods
                     | Operation::GetReceipt
+                    | Operation::LinkPods
+                    | Operation::UnlinkPods
+                    | Operation::ListLinks
                     | Operation::MemoryBinding
                     | Operation::PodManagement => {
                         tracing::debug!(
@@ -681,6 +697,11 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
         ) => Some(Operation::GetReceipt),
         (&axum::http::Method::POST, ["v1", "pods", _id, "execution-receipt"]) => {
             Some(Operation::GetReceipt)
+        }
+        (&axum::http::Method::POST, ["v1", "pods", _id, "links"]) => Some(Operation::LinkPods),
+        (&axum::http::Method::GET, ["v1", "pods", _id, "links"]) => Some(Operation::ListLinks),
+        (&axum::http::Method::DELETE, ["v1", "pods", _id, "links", _dst, _port]) => {
+            Some(Operation::UnlinkPods)
         }
         (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals"])
         | (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals", _])
@@ -1157,6 +1178,27 @@ mod tests {
         assert_eq!(
             operation_for_route(&Method::GET, "/v1/pods/abc-123/receipt"),
             Some(Operation::GetReceipt)
+        );
+        // ADR 0017: links.
+        assert_eq!(
+            operation_for_route(&Method::POST, "/v1/pods/abc-123/links"),
+            Some(Operation::LinkPods)
+        );
+        assert_eq!(
+            operation_for_route(&Method::GET, "/v1/pods/abc-123/links"),
+            Some(Operation::ListLinks)
+        );
+        assert_eq!(
+            operation_for_route(&Method::DELETE, "/v1/pods/abc-123/links/def-456/8080"),
+            Some(Operation::UnlinkPods)
+        );
+        assert_eq!(
+            operation_for_route(&Method::DELETE, "/v1/pods/abc-123/links"),
+            None
+        );
+        assert_eq!(
+            operation_for_route(&Method::POST, "/v1/pods/abc-123/links/def-456/8080"),
+            None
         );
         assert_eq!(
             operation_for_route(&Method::GET, "/v1/pods/abc-123/ended"),

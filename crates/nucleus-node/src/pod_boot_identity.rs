@@ -200,6 +200,9 @@ pub(crate) struct Inputs<'a> {
     /// What `image_identity::verify` read for this pod, so the attestation reports the bytes
     /// that were held to the pin rather than a second read of the same file.
     pub measured: crate::image_identity::Measured,
+    /// This pod's egress CA certificate, PEM, served over `FETCH_EGRESS_CA`
+    /// (ADR 0015 E3). The certificate only: the CA key never enters this module.
+    pub egress_ca_pem: Option<String>,
 }
 
 /// A Firecracker pod whose launch the node cannot attest is not started, whatever
@@ -242,6 +245,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         broker_serve,
         audit_creds,
         measured,
+        egress_ca_pem,
     } = inputs;
     // An eval cell is served only a launch that verifies; each fallback below is a refusal for
     // it, never the plain SVID a standard pod keeps (ADR 0016 D3, `Demand::When(EvalCell)`).
@@ -345,6 +349,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             manager.clone(),
             workload_api_vsock::PodMaterial {
                 pod_spec_yaml: Some(guest_spec),
+                // The egress CA certificate (never its key), for guest-init to trust.
+                egress_ca_pem,
                 // Served beside the spec, read from the bundle directory now (`decision_provisioning`).
                 decisions: state
                     .decisions
@@ -431,6 +437,10 @@ impl FirecrackerPod {
         }
 
         if let Some(proxy) = self.egress_proxy.lock().await.take() {
+            proxy.shutdown().await;
+        }
+
+        if let Some(proxy) = self.link_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
 

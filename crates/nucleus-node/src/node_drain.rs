@@ -261,6 +261,7 @@ pub(crate) async fn drain(
                 if let Some(set) = reaped.as_mut() {
                     set.insert(*id);
                 }
+                crate::pod_links::pod_gone(state, *id).await;
                 state.authority.release_child(*id).await;
             }
             PodDrain::AlreadyReaped => {}

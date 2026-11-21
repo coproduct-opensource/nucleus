@@ -26,9 +26,10 @@ pub struct WorkloadAdmission {
     /// compare this with the controller's configured signer when one exists.
     pub verifying_key: [u8; 32],
     /// The environment entries the runtime injects into the workload and the
-    /// execution receipt's `environment_inputs_sha256` binds: today one
-    /// `NUCLEUS_EGRESS_<NAME>_URL` per declared credentialed upstream, computed
-    /// by `workload_egress::injected_env`, the function the launcher calls.
+    /// execution receipt's `environment_inputs_sha256` binds: one
+    /// `NUCLEUS_EGRESS_<NAME>_URL` per declared credentialed upstream and the
+    /// link relay's `NUCLEUS_LINK_PROXY` (ADR 0017), computed by
+    /// `workload_egress::injected_env`, the function the launcher calls.
     /// Names and local addresses only; no credential is ever here.
     ///
     /// Required, with no serde default (ADR 0007 B-2): a record from a node

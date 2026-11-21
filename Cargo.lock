@@ -5815,8 +5815,10 @@ dependencies = [
  "nucleus-envelope",
  "nucleus-federation",
  "nucleus-identity",
+ "nucleus-ifc-kernel",
  "nucleus-jsonl",
  "nucleus-lineage",
+ "nucleus-link-probe",
  "nucleus-node-binding",
  "nucleus-node-evidence",
  "nucleus-oci-rootfs",
@@ -6047,10 +6049,17 @@ dependencies = [
  "ipnet",
  "landlock",
  "nucleus-decision-protocol",
+ "nucleus-ifc-kernel",
+ "rcgen",
+ "rustls",
  "sha2 0.11.0",
+ "time",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
+ "webpki-roots",
+ "x509-parser",
 ]
 
 [[package]]
@@ -6319,6 +6328,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-link-probe"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "vsock",
+]
+
+[[package]]
 name = "nucleus-machine"
 version = "1.0.0"
 dependencies = [
@@ -6486,6 +6507,7 @@ dependencies = [
  "spiffe",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-rustls",
  "tokio-stream",
@@ -6500,6 +6522,7 @@ dependencies = [
  "webpki-roots",
  "wiremock",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
