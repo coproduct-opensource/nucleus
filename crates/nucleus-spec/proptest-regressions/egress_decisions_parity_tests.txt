@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e6e57d3a47cfbc386f188c79ea66db73b83bb05a5ebdea7a4b2b69e2b5780969 # shrinks to entry = CredentialedEgressSpec { name: "forge", upstream: "https://b.invalid", credential_env: "NODE_VAR", header: "authorization", value_prefix: "", effects: EffectTable { kind: Api, effects: [] } }, ceiling = [CredentialedEgressSpec { name: "forge", upstream: "https://a.invalid", credential_env: "", header: "authorization", value_prefix: "", effects: EffectTable { kind: Api, effects: [] } }, CredentialedEgressSpec { name: "forge", upstream: "https://b.invalid", credential_env: "NODE_VAR", header: "authorization", value_prefix: "", effects: EffectTable { kind: Api, effects: [] } }]
+cc f9bfdd4594a7db3564da476f2d31465d82f25fc989f5fba0a973bbcc845471e6 # shrinks to requested = [CredentialedEgressSpec { name: "model", upstream: "https://a.invalid", credential_env: "NODE_VAR", header: "authorization", value_prefix: "Bearer ", effects: EffectTable { kind: Api, effects: [] } }], ceiling = [CredentialedEgressSpec { name: "forge", upstream: "https://a.invalid", credential_env: "", header: "authorization", value_prefix: "", effects: EffectTable { kind: Api, effects: [] } }, CredentialedEgressSpec { name: "model", upstream: "https://a.invalid", credential_env: "NODE_VAR", header: "authorization", value_prefix: "Bearer ", effects: EffectTable { kind: Api, effects: [] } }]
+cc ca6963c049d9eeef87e362f0c5cf17e144741cbfa2fc43edce43dfe952ada68d # shrinks to name = "session", value = ""
+cc e63d027f263752d15803468892d8170d3417b88f51300ee95b2ffc1eab172215 # shrinks to name = "key", value = "\u{7f}"
+cc 107a374108da77465146d769b9f7ff56500e0af187d6ea676ca5bfb23f2fef0c # shrinks to name = "via", value = ""
