@@ -13,14 +13,14 @@
 # mismatch costs). A deleted tier that can be re-added without this gate
 # noticing is the same problem with extra steps.
 #
-# Scope is deliberately narrow: nucleus-tool-proxy keeps its OWN residual
-# HMAC tier (`AuthTier::Hmac`, `AuthTier::ApprovalHmacDrand`,
-# `NUCLEUS_TOOL_PROXY_AUTH_SECRET`, `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET`) —
-# verified during the migration to be load-bearing for same-guest loopback
-# callers (an in-guest `workload:` child, the local/container drivers'
-# primary traffic via `nucleus-node`'s `SignedProxy`) and for
-# `nucleus run --local` / `nucleus shell`'s sandbox-proof token. Banning
-# those here would be WRONG, not just over-broad — they are not retired.
+# Scope is deliberately narrow, and the reason it was is now history:
+# nucleus-tool-proxy kept its OWN HMAC tiers after Move B. Its request tier
+# (`--auth-secret`) was deleted in #2446 step 3 and its approval tier
+# (`AuthTier::ApprovalHmacDrand`, `--approval-secret`) on 2026-11-21; both
+# flags are now refused by name at startup (`retired.rs`), and Rust tests,
+# not this script, pin that. Extending this denylist to the tool-proxy would
+# be new logic in shell, which the repository mandate forbids: a Rust gate is
+# the place for it.
 #
 # Allow-list mechanism: a grep match on a line is permitted if the same line
 # carries an end-of-line comment `// hmac-allow: <reason>`. Reviewer enforces
@@ -35,8 +35,8 @@ set -euo pipefail
 
 # nucleus-node: the crate Move B actually deleted this tier from.
 NODE_SCAN_PATH="crates/nucleus-node"
-# The two tool-proxy clients Move B converted to mTLS — scoped narrowly so
-# tool-proxy's OWN still-live HMAC tier (auth.rs, main.rs) is untouched.
+# The two tool-proxy clients Move B converted to mTLS. (The tool-proxy's own
+# HMAC tiers, once the reason for this narrow scope, are deleted.)
 TOOL_PROXY_CLIENT_FILES=(
     "crates/nucleus-tool-proxy/src/node_client.rs"
     "crates/nucleus-tool-proxy/src/lockdown_client.rs"
@@ -100,8 +100,8 @@ if [[ -s "$tmpfile" ]]; then
     echo "with no fallback — reintroducing any of these reopens exactly the" >&2
     echo "downgrade surface that deletion closed." >&2
     echo "" >&2
-    echo "(nucleus-tool-proxy's OWN residual HMAC tier — auth.rs, main.rs —" >&2
-    echo "is intentionally NOT in scope here; it is still load-bearing.)" >&2
+    echo "(nucleus-tool-proxy's HMAC tiers are deleted and refused by name" >&2
+    echo "in its own Rust code; they are not scanned here.)" >&2
     echo "" >&2
     echo "Allow-list a line by appending: hmac-allow: <reason>" >&2
     echo "" >&2

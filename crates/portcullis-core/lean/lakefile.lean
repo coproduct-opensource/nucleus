@@ -194,6 +194,11 @@ lean_lib «PodMachineSpike» where
 lean_lib «PodCrossView» where
   roots := #[`PodCrossView]
 
+-- Zero static secrets: which boundaries accept a credential someone besides the claimant
+-- can produce (docs/design/zero-static-secrets.md). Core Lean, decided instance.
+lean_lib «StaticSecrets» where
+  roots := #[`StaticSecrets]
+
 -- C2: the identity surface (SVID served per pod) — local-respect over the
 -- certificate cache and vm_registry. Imports PodCrossView.
 lean_lib «PodCrossViewIdentity» where

@@ -35,6 +35,7 @@ use std::path::{Path, PathBuf};
 use transport::{ProxyTransport, TcpAuth, TransportConfig};
 use uuid::Uuid;
 
+mod retired;
 mod session_root;
 mod spec;
 mod transport;
@@ -72,10 +73,6 @@ struct Args {
     /// the guest's own spec). Exclusive with `--spec`.
     #[arg(long, env = "NUCLEUS_MCP_SPEC_YAML")]
     spec_yaml: Option<String>,
-    /// RETIRED with `--auth-secret` (#2446 step 2): a bridge that holds an
-    /// approval secret lets the agent behind it approve its own operations.
-    #[arg(long, env = "NUCLEUS_MCP_APPROVAL_SECRET")]
-    approval_secret: Option<String>,
     /// Prompt on approval-required operations (uses /dev/tty).
     #[arg(long, default_value_t = true)]
     approval_prompt: bool,
@@ -88,34 +85,6 @@ struct Args {
     /// A summary line is written on session close.
     #[arg(long, env = "NUCLEUS_MCP_KERNEL_TRACE")]
     kernel_trace: Option<PathBuf>,
-}
-
-/// Environment variables of flags this bridge no longer has, each with why.
-///
-/// Once a flag is deleted, clap refuses it on the command line by name
-/// (`unexpected argument '--sandbox-token'`). Its variable is another matter:
-/// clap never looks at an environment variable it was not told about, so a
-/// caller still setting one would be ignored silently and believe the bridge
-/// was carrying it. Each is refused at startup by name instead (ADR 0007 B-2,
-/// fail closed; A-1, "not read" is not "read and fine").
-const RETIRED_ENV: &[(&str, &str)] = &[(
-    "NUCLEUS_MCP_SANDBOX_TOKEN",
-    "--sandbox-token was retired with the tool-proxy's tier-3 orchestrator token (#2446 \
-     step 3c); this bridge never sent it, and nothing mints one",
-)];
-
-/// Refuses the first retired variable that `is_set` reports, naming it.
-///
-/// # Errors
-///
-/// When any variable in [`RETIRED_ENV`] is set, empty or not.
-fn refuse_retired_env(is_set: impl Fn(&str) -> bool) -> Result<()> {
-    for (var, why) in RETIRED_ENV {
-        if is_set(var) {
-            anyhow::bail!("{var} is set, but {why}. Unset {var}.");
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -729,7 +698,7 @@ fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let args = Args::parse();
-    refuse_retired_env(|var| std::env::var_os(var).is_some())?;
+    retired::refuse_retired_env(|var| std::env::var_os(var).is_some())?;
     let policy = SpecSource::from_args(&args)?.load_policy()?;
     let tools = build_tool_defs(&policy);
     let tool_proxy_url = std::env::var("NUCLEUS_TOOL_PROXY_URL").ok();
@@ -737,7 +706,6 @@ fn main() -> Result<()> {
         proxy_url: args.proxy_url.as_deref(),
         tool_proxy_url: tool_proxy_url.as_deref(),
         auth_secret: args.auth_secret.as_deref(),
-        approval_secret: args.approval_secret.as_deref(),
         signed_upstream: args.signed_upstream,
     })?;
     let client = ProxyClient::new(transport, Some(args.actor.clone()), args.session_id.clone());
@@ -1483,34 +1451,6 @@ fn write_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message: &
 mod tests {
     use super::*;
 
-    /// #2446 step 3c: `--sandbox-token` is gone, so clap refuses the flag by
-    /// name. Red before: the flag parsed into a field nothing read.
-    #[test]
-    fn the_sandbox_token_flag_is_refused_by_name() {
-        let err = Args::try_parse_from([
-            "nucleus-mcp",
-            "--proxy-url",
-            "unix:///run/nucleus-door/workload.sock",
-            "--sandbox-token",
-            "test-token-123",
-        ])
-        .expect_err("--sandbox-token is retired");
-        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
-        assert!(err.to_string().contains("--sandbox-token"), "{err}");
-    }
-
-    /// The flag's variable, which clap no longer looks at, is refused by name
-    /// when set at all (an empty value included), and nothing else is.
-    #[test]
-    fn the_sandbox_token_variable_is_refused_by_name() {
-        let err = refuse_retired_env(|var| var == "NUCLEUS_MCP_SANDBOX_TOKEN")
-            .expect_err("a retired variable is refused")
-            .to_string();
-        assert!(err.contains("NUCLEUS_MCP_SANDBOX_TOKEN"), "{err}");
-        assert!(err.contains("#2446"), "{err}");
-        refuse_retired_env(|var| var == "NUCLEUS_MCP_PROXY_URL").expect("a live variable");
-    }
-
     /// Read one whole HTTP/1.1 request (head and `content-length` body) from
     /// `stream`, answer it with `status` and a JSON `body`, and return the
     /// request as text so a test can see what was sent.
@@ -1594,7 +1534,6 @@ mod tests {
             proxy_url: Some(url),
             tool_proxy_url: None,
             auth_secret: None,
-            approval_secret: None,
             signed_upstream,
         })
         .expect("transport")

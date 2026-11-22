@@ -1,7 +1,9 @@
 //! Client-side signing utilities for nucleus node/proxy APIs.
 //!
-//! This crate provides HMAC-based request signing for authenticating requests
-//! to nucleus-node and nucleus-tool-proxy.
+//! This crate provides request signing: HMAC request signers, which the SDKs'
+//! `HmacAuth` still uses (whether any server still accepts them is traced in
+//! `docs/design/zero-static-secrets.md`, item 2), and the Ed25519 approval
+//! signer the tool-proxy's `/v1/approve` accepts.
 //!
 //! # Standard Signing
 //!
@@ -20,21 +22,27 @@
 //! }
 //! ```
 //!
-//! # Drand-Anchored Signing
+//! # Approvals
 //!
-//! For approval requests that require protection against pre-computation attacks,
-//! use [`sign_approval_headers`] with a drand round number:
+//! An approval is signed with an approver's Ed25519 key, anchored to a drand
+//! round, using [`sign_approval_headers_ed25519`]. The tool-proxy holds only
+//! the approver's PUBLIC key, so nothing it stores can sign one:
 //!
 //! ```rust
-//! use nucleus_client::{sign_approval_headers, drand::current_expected_round};
+//! use nucleus_client::{sign_approval_headers_ed25519, drand::current_expected_round};
 //!
-//! let secret = b"approval-secret";
-//! let body = b"approve read /etc/passwd";
+//! let approver = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+//! let body = b"{\"operation\":\"read /etc/hosts\",\"count\":1,\"nonce\":\"n-1\"}";
 //! let round = current_expected_round();
-//! let headers = sign_approval_headers(secret, round, Some("user@example.com"), body);
+//! let headers = sign_approval_headers_ed25519(&approver, round, Some("approver"), body);
 //!
-//! // The signature now includes the drand round, preventing pre-computation
+//! assert!(headers.headers.iter().any(|(k, _)| k == "x-nucleus-drand-round"));
 //! ```
+//!
+//! The HMAC approval signer this crate used to export (`sign_approval_headers`,
+//! keyed by a shared approval secret) is deleted with the tool-proxy tier that
+//! accepted it (2026-11-21): a shared key is held by the verifier, so the
+//! verifier could forge what it checked.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -62,8 +70,8 @@ pub struct SignedHeaders {
 
 /// Signed headers with drand anchoring for approval requests.
 ///
-/// These headers include a drand round number that prevents pre-computation
-/// attacks even if the HMAC secret is compromised.
+/// These headers include a drand round number, so a signature cannot be made
+/// ahead of the round it names ([`sign_approval_headers_ed25519`]).
 #[derive(Debug, Clone)]
 pub struct DrandSignedHeaders {
     /// Unix timestamp used in the signature.
@@ -177,52 +185,17 @@ pub fn sign_grpc_headers(secret: &[u8], actor: Option<&str>, method: &str) -> Si
     }
 }
 
-/// Sign an approval request with drand anchoring.
+/// Sign an approval with an Ed25519 approver key, drand-anchored.
 ///
-/// This function creates a signature that includes a drand round number, preventing
-/// pre-computation attacks. Even if an attacker extracts the HMAC secret, they cannot
-/// pre-compute valid signatures because they don't know future drand rounds.
+/// The only approval signer: the tool-proxy's `/v1/approve` accepts an
+/// approver's Ed25519 signature against the public keys it was provisioned
+/// with (`nucleus.approval_pubkeys`) and nothing else. The HMAC signer
+/// (`sign_approval_headers`) and its `verify_drand_signature` were deleted on
+/// 2026-11-21 with the tool-proxy's HMAC approval tier: a shared key is held by
+/// whoever verifies it, so the verifier could forge the approvals it checked.
 ///
-/// The server expects: `signature = HMAC_SHA256(secret, "{round}.{ts}.{actor}.{body}")`.
-///
-/// # Security Model
-///
-/// Without drand anchoring:
-/// - Attacker extracts secret from compromised VM
-/// - Attacker pre-computes signatures for future timestamps
-/// - Attacker uses pre-computed tokens indefinitely
-///
-/// With drand anchoring:
-/// - Attacker extracts secret from compromised VM
-/// - Attacker cannot predict future drand rounds
-/// - Signatures become invalid after ~60 seconds (when round changes)
-/// - Attack window is limited to realtime compromise only
-///
-/// # Example
-///
-/// ```rust
-/// use nucleus_client::{sign_approval_headers, drand::current_expected_round};
-///
-/// let secret = b"approval-secret";
-/// let body = b"approve write /etc/hosts";
-/// let round = current_expected_round();
-///
-/// let headers = sign_approval_headers(secret, round, Some("admin"), body);
-///
-/// // Headers include x-nucleus-drand-round
-/// assert!(headers.headers.iter().any(|(k, _)| k == "x-nucleus-drand-round"));
-/// ```
-/// Sign an approval with an Ed25519 approver key.
-///
-/// This is the one a real pod accepts. [`sign_approval_headers`] signs with
-/// HMAC, and a Firecracker pod never selects that tier: the node puts
-/// `nucleus.approval_pubkeys` on every pod's kernel cmdline, and
-/// `select_auth_tier` takes `ApprovalEd25519Drand` whenever approver keys are
-/// configured. The HMAC tier is reachable only when NONE are, so the HMAC
-/// helper cannot approve anything on a default deployment.
-///
-/// The message is identical to the HMAC variant -- `{round}.{timestamp}.{actor}.`
-/// followed by the body -- so only the primitive differs. The signature header
+/// The message is `{round}.{timestamp}.{actor}.` followed by the body, the
+/// framing the deleted HMAC tier also used. The signature header
 /// carries 128 hex characters, and the verifier uses `verify_strict`, which
 /// rejects the small-order points a cofactored check would accept.
 pub fn sign_approval_headers_ed25519(
@@ -254,87 +227,6 @@ pub fn sign_approval_headers_ed25519(
     }
 }
 
-pub fn sign_approval_headers(
-    secret: &[u8],
-    drand_round: u64,
-    actor: Option<&str>,
-    body: &[u8],
-) -> DrandSignedHeaders {
-    let timestamp = now_unix();
-    let actor_value = actor.unwrap_or("");
-    let message = build_drand_message(drand_round, timestamp, actor_value, body);
-    let signature = sign_message(secret, &message);
-
-    let mut headers = vec![
-        ("x-nucleus-timestamp".to_string(), timestamp.to_string()),
-        ("x-nucleus-drand-round".to_string(), drand_round.to_string()),
-        ("x-nucleus-signature".to_string(), signature),
-    ];
-
-    if !actor_value.is_empty() {
-        headers.push(("x-nucleus-actor".to_string(), actor_value.to_string()));
-    }
-
-    DrandSignedHeaders {
-        timestamp,
-        drand_round,
-        actor: actor.map(|s| s.to_string()),
-        headers,
-    }
-}
-
-/// Verify a drand-anchored signature.
-///
-/// This is useful for testing or when implementing custom verification logic.
-/// The tool-proxy uses this format when validating approval requests.
-///
-/// # Example
-///
-/// ```rust
-/// use nucleus_client::{sign_approval_headers, verify_drand_signature, drand::current_expected_round};
-///
-/// let secret = b"test-secret";
-/// let body = b"test body";
-/// let round = current_expected_round();
-///
-/// let headers = sign_approval_headers(secret, round, Some("actor"), body);
-///
-/// // Extract values from headers
-/// let signature = headers.headers.iter()
-///     .find(|(k, _)| k == "x-nucleus-signature")
-///     .map(|(_, v)| v.as_str())
-///     .unwrap();
-///
-/// assert!(verify_drand_signature(
-///     secret,
-///     round,
-///     headers.timestamp,
-///     Some("actor"),
-///     body,
-///     signature
-/// ));
-/// ```
-pub fn verify_drand_signature(
-    secret: &[u8],
-    drand_round: u64,
-    timestamp: i64,
-    actor: Option<&str>,
-    body: &[u8],
-    signature: &str,
-) -> bool {
-    // Fail-closed: never authenticate against a world-known (empty) key.
-    if !auth_secret_is_usable(secret) {
-        return false;
-    }
-    let actor_value = actor.unwrap_or("");
-    let message = build_drand_message(drand_round, timestamp, actor_value, body);
-    let expected = sign_message(secret, &message);
-
-    // Constant-time comparison to prevent timing attacks
-    constant_time_eq(signature.as_bytes(), expected.as_bytes())
-}
-
-/// Verify a standard (non-drand) signature.
 /// Verify a request signature.
 ///
 /// `nonce` must be whatever the signer sent in `x-nucleus-nonce`, or `None` if
@@ -460,20 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_secret_never_verifies_drand_signature() {
-        let ts = now_unix();
-        let body = b"payload";
-        let forged = sign_message(b"", &build_drand_message(7, ts, "", body));
-        assert!(
-            !verify_drand_signature(b"", 7, ts, None, body, &forged),
-            "empty auth secret must never verify a drand signature (fail-closed)"
-        );
-        let real: &[u8] = b"a-real-16byte-secret!!";
-        let sig = sign_message(real, &build_drand_message(7, ts, "", body));
-        assert!(verify_drand_signature(real, 7, ts, None, body, &sig));
-    }
-
-    #[test]
     fn auth_secret_usable_rejects_only_empty() {
         assert!(!auth_secret_is_usable(b""));
         assert!(auth_secret_is_usable(b"x"));
@@ -513,87 +391,6 @@ mod tests {
 
         assert!(headers.actor.is_none());
         assert!(!headers.headers.iter().any(|(k, _)| k == "x-nucleus-actor"));
-    }
-
-    #[test]
-    fn test_sign_approval_headers() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let round = 12345u64;
-
-        let headers = sign_approval_headers(secret, round, Some("test-actor"), body);
-
-        assert!(headers.timestamp > 0);
-        assert_eq!(headers.drand_round, 12345);
-        assert_eq!(headers.actor, Some("test-actor".to_string()));
-        assert!(
-            headers
-                .headers
-                .iter()
-                .any(|(k, _)| k == "x-nucleus-drand-round")
-        );
-        assert!(
-            headers
-                .headers
-                .iter()
-                .any(|(k, v)| k == "x-nucleus-drand-round" && v == "12345")
-        );
-    }
-
-    #[test]
-    fn test_verify_drand_signature() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let round = 12345u64;
-
-        let headers = sign_approval_headers(secret, round, Some("actor"), body);
-
-        let signature = headers
-            .headers
-            .iter()
-            .find(|(k, _)| k == "x-nucleus-signature")
-            .map(|(_, v)| v.as_str())
-            .unwrap();
-
-        // Correct verification
-        assert!(verify_drand_signature(
-            secret,
-            round,
-            headers.timestamp,
-            Some("actor"),
-            body,
-            signature
-        ));
-
-        // Wrong round
-        assert!(!verify_drand_signature(
-            secret,
-            round + 1,
-            headers.timestamp,
-            Some("actor"),
-            body,
-            signature
-        ));
-
-        // Wrong secret
-        assert!(!verify_drand_signature(
-            b"wrong-secret",
-            round,
-            headers.timestamp,
-            Some("actor"),
-            body,
-            signature
-        ));
-
-        // Wrong body
-        assert!(!verify_drand_signature(
-            secret,
-            round,
-            headers.timestamp,
-            Some("actor"),
-            b"wrong body",
-            signature
-        ));
     }
 
     #[test]

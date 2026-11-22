@@ -138,7 +138,7 @@ pub(crate) enum DelegationAuthority {
 }
 
 /// The delegation authority of an authentication method. Only SPIFFE mTLS
-/// binds an identity; the shared-secret, approval, host-vsock, pod-peer and
+/// binds an identity; the approval, host-vsock, pod-peer and
 /// workload-door tiers do not, and a certificate on any of them is refused. A
 /// pod peer's `(uid, pid)` tells two bidders apart, but a uid is not a SPIFFE
 /// leaf a certificate can be checked against (#2988).
@@ -147,9 +147,7 @@ pub(crate) enum DelegationAuthority {
 pub(crate) fn delegation_authority(method: &AuthMethod) -> DelegationAuthority {
     match method {
         AuthMethod::SpiffeMtls => DelegationAuthority::Bound,
-        AuthMethod::Hmac
-        | AuthMethod::HmacDrand
-        | AuthMethod::HostVsock
+        AuthMethod::HostVsock
         | AuthMethod::Ed25519Drand
         | AuthMethod::PodPeer
         | AuthMethod::WorkloadDoor => DelegationAuthority::Unbound,
@@ -383,8 +381,6 @@ mod tests {
             DelegationAuthority::Bound
         );
         for m in [
-            AuthMethod::Hmac,
-            AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
             AuthMethod::PodPeer,
             AuthMethod::Ed25519Drand,

@@ -15,14 +15,18 @@ fn exits_78_without_sandbox_proof() {
     let bin = env!("CARGO_BIN_EXE_nucleus-tool-proxy");
 
     let output = Command::new(bin)
-        .arg("--approval-secret")
-        .arg("test-approval-secret")
+        // A well-formed approver public key (the Ed25519 base point), so the
+        // only thing missing is the sandbox proof. `--approval-secret` used to
+        // stand here; it is now refused by name before the proof gate runs.
+        .arg("--approval-pubkeys")
+        .arg("5866666666666666666666666666666666666666666666666666666666666666")
         .arg("--spec")
         .arg("/dev/null")
         // Ensure no sandbox-related env vars leak from the test environment
         .env_remove("NUCLEUS_SANDBOX_TOKEN")
         .env_remove("SPIFFE_ENDPOINT_SOCKET")
         .env_remove("NUCLEUS_IDENTITY_CERT")
+        .env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET")
         .output()
         .expect("failed to execute nucleus-tool-proxy binary");
 

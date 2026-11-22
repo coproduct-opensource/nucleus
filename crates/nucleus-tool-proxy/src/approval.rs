@@ -51,7 +51,7 @@ use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::auth::{self, AuthConfig, AuthContext, AuthError};
+use crate::auth::{self, AuthContext, AuthError};
 use crate::{ApiError, AppState, now_unix};
 
 /// The longest an approval requested over `/v1/approve` may live.
@@ -107,8 +107,7 @@ impl ApprovalCount {
 /// Who signed an approval. Carried for the audit line, never for a decision.
 #[derive(Debug)]
 enum ApprovalIssuer {
-    /// A `/v1/approve` request signed by an approver key (Ed25519) or the
-    /// approval secret (HMAC).
+    /// A `/v1/approve` request signed by an approver key (Ed25519).
     Request {
         actor: Option<String>,
         drand_round: Option<u64>,
@@ -161,23 +160,22 @@ impl std::fmt::Debug for VerifiedApproval {
     }
 }
 
-/// The approval authority this proxy was provisioned with.
+/// The approval authority this proxy was provisioned with: the Ed25519
+/// approver PUBLIC keys from `--approval-pubkeys`, and nothing else.
 ///
-/// Ed25519 approver PUBLIC keys when `--approval-pubkeys` is set — and then
-/// exclusively, so a residual copy of the old secret forges nothing — or the
-/// legacy drand-anchored HMAC secret otherwise.
+/// Until 2026-11-21 this was an enum with a second arm, the legacy
+/// drand-anchored approval HMAC, chosen when no keys were configured. Its key
+/// was held by the tool-proxy that recomputed it and, through the guest
+/// command line, by the workload, so either could sign an approval. The arm is
+/// deleted, `--approval-secret` is refused by name at startup
+/// (`retired::refuse_approval_secret`), and a request signed with the old key
+/// fails here as an invalid signature (`an_hmac_signed_approval_is_refused`).
 #[derive(Clone, Copy)]
-pub(crate) enum ApprovalKeys<'a> {
-    Ed25519(&'a auth::ApprovalVerifier),
-    Hmac(&'a AuthConfig),
-}
+pub(crate) struct ApprovalKeys<'a>(&'a auth::ApprovalVerifier);
 
 impl<'a> ApprovalKeys<'a> {
     pub(crate) fn of(state: &'a AppState) -> Self {
-        match state.approval_verifier {
-            Some(ref verifier) => Self::Ed25519(verifier),
-            None => Self::Hmac(&state.approval_auth),
-        }
+        Self(&state.approval_verifier)
     }
 
     /// Check the approver's signature over `"{round}.{ts}.{actor}.{body}"`.
@@ -187,21 +185,13 @@ impl<'a> ApprovalKeys<'a> {
         headers: &HeaderMap,
         body: &[u8],
     ) -> Result<AuthContext, AuthError> {
-        match self {
-            Self::Ed25519(verifier) => {
-                auth::verify_http_with_ed25519_drand(headers, body, verifier)
-            }
-            Self::Hmac(config) => auth::verify_http_with_drand(headers, body, config),
-        }
+        auth::verify_http_with_ed25519_drand(headers, body, self.0)
     }
 
     /// How far a signed timestamp may be from now — so how long the same
     /// signed bytes stay acceptable, and so how long their nonce must be kept.
     fn max_skew(self) -> Duration {
-        match self {
-            Self::Ed25519(verifier) => verifier.max_skew(),
-            Self::Hmac(config) => config.max_skew(),
-        }
+        self.0.max_skew()
     }
 }
 

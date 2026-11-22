@@ -370,9 +370,9 @@ fn the_census_holds_what_is_read_where_clap_found_it() {
             ])
             .is_err()
     );
-    let flag = parse(&["--approval-secret", "s3cret"]);
+    let flag = parse(&["--audit-secret", "s3cret"]);
     assert!(flag.contains(&Held {
-        name: "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
+        name: "NUCLEUS_TOOL_PROXY_AUDIT_SECRET",
         exposure: Exposure::Secret,
         at: At::Argv,
     }));

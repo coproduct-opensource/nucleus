@@ -220,6 +220,7 @@ jobs:
             UniversalDetection
             PodMachineSpike
             PodCrossView
+            StaticSecrets
             PodCrossViewIdentity
             MemoryContext
             IdentityOracleMirror

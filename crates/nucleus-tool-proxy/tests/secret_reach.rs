@@ -179,10 +179,12 @@ async fn bare_tier_decision_trust_roots_are_refused_by_name() {
 #[tokio::test]
 async fn a_secret_flag_is_refused_on_every_tier() {
     let dir = tempfile::tempdir().unwrap();
+    // `--approval-secret` was the example here until 2026-11-21; it is now
+    // refused by name earlier (`the_retired_approval_secret_is_refused_by_name`).
     let (mut command, announce, log) = command(
         dir.path(),
         &spec(),
-        &["--approval-secret", "shared-secret-on-argv"],
+        &["--audit-secret", "shared-secret-on-argv"],
     );
     let proxy = Proxy(command.spawn().unwrap());
     let log = match started(proxy, &announce, &log).await {
@@ -191,10 +193,51 @@ async fn a_secret_flag_is_refused_on_every_tier() {
     };
     assert!(
         log.contains(
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET (a secret) is on this process's command line"
+            "NUCLEUS_TOOL_PROXY_AUDIT_SECRET (a secret) is on this process's command line"
         ),
         "{log}"
     );
+}
+
+/// The legacy approval HMAC key is retired (zero static secrets, item 1). A
+/// launcher that still passes it, on the command line or in the environment,
+/// beside the approver public key every launcher now passes, is refused at
+/// startup by name, and the refusal never echoes the key. Red before
+/// 2026-11-21: the environment case started, holding a key that could sign
+/// approvals.
+#[tokio::test]
+async fn the_retired_approval_secret_is_refused_by_name() {
+    for via_env in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let extra: &[&str] = if via_env {
+            &[]
+        } else {
+            &["--approval-secret", "retired-approval-key"]
+        };
+        let (mut command, announce, log) = command(dir.path(), &spec(), extra);
+        if via_env {
+            command.env("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", "retired-approval-key");
+        }
+        let proxy = Proxy(command.spawn().unwrap());
+        let log = match started(proxy, &announce, &log).await {
+            Err(log) => log,
+            Ok(_) => panic!("a proxy started holding the retired approval key (env={via_env})"),
+        };
+        for needle in [
+            "--approval-secret",
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
+            "retired",
+        ] {
+            assert!(
+                log.contains(needle),
+                "env={via_env}: missing {needle:?} in {log}"
+            );
+        }
+        assert!(
+            !log.contains("retired-approval-key"),
+            "env={via_env}: the refusal echoed the key: {log}"
+        );
+    }
 }
 
 /// **A real workload child, at its decided uid, gets none of the proxy's
