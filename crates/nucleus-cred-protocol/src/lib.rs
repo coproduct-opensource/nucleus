@@ -457,6 +457,7 @@ mod tests {
             include_str!("stream.rs"),
             include_str!("egress.rs"),
             include_str!("egress/effects.rs"),
+            include_str!("egress/push_refs.rs"),
             include_str!("extracted/mod.rs"),
             include_str!("extracted/admission.rs"),
             include_str!("extracted/classify.rs"),
