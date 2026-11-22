@@ -1,6 +1,6 @@
-# ADR 0007 — Make the defect unwritable: thirty-nine Rust mandates from the defect record
+# ADR 0007 — Make the defect unwritable: Rust mandates from the defect record
 
-- Status: **accepted** (2026-09-11) for the mandates; **partially wired** — four entries in `clippy.toml` (C-1, C-5, H-1 ×2) plus `cargo xtask clippy-config`, the rest carry a named enforcement target and a measured baseline.
+- Status: **accepted** (2026-09-11) for the mandates; **partially wired** — the generated rule index before §Enforcement lists every mechanism that enforces a rule today; the rest carry a named enforcement target and a measured baseline.
 - Tracks: a full review of `coproduct-opensource/nucleus` (2,248 commits) and `coproduct-private/gatehouse` (232 commits + 62 `FINDINGS.md` rows), 2026-09-11
 - Applies to: all Rust under `crates/` and `tools/`. New code from this ADR forward; existing code as each file is touched.
 
@@ -51,7 +51,7 @@ text instead of call sites:
 
 ## Decision
 
-Thirty-nine mandates in nine families. Each carries an id, a headline stated so a
+The mandates, in nine families, are counted in the generated rule index, not restated here (F-3). Each carries an id, a headline stated so a
 static analyser could in principle decide it, the defect that motivated it with its
 commit, and the tier that enforces it. Ids are stable and are cited from `clippy.toml`
 and from lint sources.
@@ -251,7 +251,7 @@ What it covers, precisely, because "dylint" alone reads as more than it is:
 | gates on | `MEDIATED_CRATES = ["portcullis_effects"]` — the sealed effect boundary, and the crate the Lean Tier-A mediation theorem is stated over |
 | advisory elsewhere | by design: outside that set a higher-order call is "a call-graph observation, not an unmediated sink", and the job deliberately does not gate on it |
 | not covered | a `&` on an affine type away from an effect boundary. That is the residue a narrower `authority_by_reference` would close, and it is the only part still proposed |
-| CI context | `Dylint passes (one pod)` — **not in `ci/required-checks.txt`.** So even the gating half reports through a context the merge rollup does not consult |
+| CI context | `Dylint passes (one pod)` — in `ci/required-checks.txt` since `7d8237464` (2026-10-04). Before that the gating half reported through a context the merge rollup did not consult |
 
 Measured 2026-09-11: **0** `&Authority` in production code across `crates/`. The
 only occurrence in the tree is the lint's own UI fixture. C-4 holds today; what is
@@ -310,7 +310,8 @@ not. `60c22053` names the remedy: **mechanism, not vigilance.**
 naming *some* of them, so a thirteenth field would be granted to children by default.
 Exhaustive destructuring makes that `E0027` — the build breaks until someone decides
 what the new field means.
-*Enforcement: dylint (proposed `rest_pattern_on_policy_path`).*
+*Enforcement: **dylint, wired** — `tools/nucleus-rest-pattern-lint` (`rest_pattern_on_policy_path`),
+gated at zero by `scripts/check-rest-pattern-dylint.sh` in the required Dylint job since `cff5ad3db`.*
 
 **E-2 — A policy enum is matched exhaustively. A new variant must break the build.**
 `a17fa16f`: the isolation backend was read from an environment variable rather than
@@ -336,7 +337,9 @@ written out a second time by hand, with nothing holding the two equal.
 gatehouse `b2ded50`: a hand-written format drifted from its datatype, and the
 differential meant to catch the drift was blind to anything that never reached the
 artifact. `#[derive(Serialize, Deserialize)]` makes a dropped section unwritable.
-*Enforcement: review.*
+*Enforcement: **dylint, wired** for preimages — `tools/nucleus-preimage-lint`
+(`debug_format_in_preimage`): no format macro reaches a hash or signature preimage, gated at zero
+in the required Dylint job since `0dd26746e`. Review for every other hand-written encoding.*
 
 **F-2 — Config is one `Deserialize` struct and a loop over the parsed collection.**
 `3ba99eb9`, in its own words: *"a `for` loop over a parsed `Vec` cannot enforce only
@@ -374,14 +377,19 @@ with no term, type or gate holding the copies equal.
 **G-1 — If a fact is written twice, delete one. A parity test is not a fix.**
 `3f850437` states the principle against itself: a parity test *leaves two copies* and
 converts the next drift into a test failure rather than an impossibility.
-*Enforcement: review.*
+*Enforcement: **clippy.toml, wired** for two single-writer facts — record logs
+(`OpenOptions::append`, one writer: `nucleus-jsonl`, `8f47ec6d8`) and YAML (every `serde_saphyr`
+entry point and the old `serde_yaml` ones, one reader and writer: `nucleus_yaml`, `3aad0509c`).
+Review for every other duplicated fact.*
 
 **G-2 — Where a second copy is unavoidable, the gate lives at the declaration.**
 gatehouse `ccc5c46`: a declared value well-formed locally and unusable by the external system it
 was handed to, with the validator one layer away from the declaration. gatehouse `F-21`
 is the two-sided version — an import digest and a build ref that must move together,
 where testing the wrong side produced the wrong diagnosis and a closed PR.
-*Enforcement: review; `ci/merge-group-scope-parity.sh` is the existing model.*
+*Enforcement: **xtask, wired** for the `clippy.toml` shadow — `cargo xtask clippy-config`
+(§Enforcement) runs in the clippy-ceiling job and has a gates-can-fail probe. Review elsewhere;
+`ci/merge-group-scope-parity.sh` is the existing model.*
 
 **G-3 — A collection carrying a uniqueness law is a keyed map, not a `Vec`.**
 `1702fb12` — *"one re-run per workflow per PR" as a type, not a rule to remember*.
@@ -438,16 +446,17 @@ move to Rust.
 **I-1 — Every gate is driven red on the real defect before it ships.**
 A-19 is a row of gatehouse's assurance ledger and `UNCOVERED_CEILING = 0` lives in
 gatehouse's `crates/xtask/src/gates.rs:21`; this repository's own `CLAUDE.md` already
-cites both in the "gates are Rust, not shell" mandate. nucleus has no local equivalent
-constant — its gate probes live in `crates/xtask/src/{allowlist_gates,law_mechanisms}.rs`
-without a population ceiling, which is itself worth fixing and is out of scope here.
+cites both in the "gates are Rust, not shell" mandate. nucleus's counterpart is
+`UNCOVERED_CEILING` in `crates/xtask/src/gates_can_fail/table.rs`, run by
+`scripts/check-gates-can-fail.sh`; this paragraph said there was none until 2026-11-22.
 `f7f9719b` carries a gate whose green was indistinguishable from vacuity; gatehouse
 `F-12` records the subtler failure — a probe whose subject is red either way is never
 recorded as probed, and the accounting then reports a coverage gap when the fault is a
 broken subject.
 **This rule applies to every lint proposed in this ADR, including the two already
 wired.**
-*Enforcement: review today; a nucleus-side probe ceiling is the proposed follow-up.*
+*Enforcement: **xtask, wired** in part — nucleus's gates-can-fail table pins
+`UNCOVERED_CEILING`. Review for each lint this ADR proposes.*
 
 **I-2 — Parse to a type. A string compared to a string is not a check.**
 gatehouse `e8f7582`: a value crossed a trust boundary as text, and relating it to the
@@ -472,7 +481,60 @@ bug, not a precision one.
 
 ---
 
+<!-- concord:begin rule-index — generated from gatehouse-concord kernel/Adr0007.lean; a hand edit fails the check -->
+**40 mandates in 9 families**; 41 claimed `clippy.toml` entries.
+
+| id | rule | enforcement | mechanisms | cites |
+|---|---|---|---|---|
+| A-1 | A `bool` may not carry a decision whose domain has three or more outcomes. | review |  | gatehouse `0109d29`, `dc97daaa` |
+| A-2 | "I could not look" is never "I looked and it was fine." | proposed | `dylint:evidence_free_success` — proposed | `417ea1b0`, `b0b2d07e` |
+| A-3 | A search returns `Result<Vec<T>, E>`. "Found nothing" and "could not search" are different constructors. | review |  | `9fe86607` |
+| A-4 | No blanket `map_err` onto a single variant. | proposed | `dylint:map_err-ignores-value` — proposed | `15e3530f` |
+| A-5 | Absence is a third value, never a pass. | proposed | `dylint:absence-as-pass (xtask, ci-spec)` — proposed | gatehouse F-28 |
+| A-6 | A sum type keeps its payload. | review |  | `60c22053` (rationale) |
+| A-7 | Mutually exclusive alternatives are an enum, not an untyped map. | review |  | `079bc6c6` |
+| A-8 | Split a rejection type when its halves carry different consequences. | review |  | gatehouse `112bea6` |
+| B-1 | No `#[derive(Default)]` on a security-relevant type. | proposed | `dylint:derived_default_on_authority` — proposed | `af52442c` |
+| B-2 | `Option<T>` may not mean "unrestricted" when `None`. | proposed | `dylint:option-none-unrestricted` — proposed | `7348f024`, #2440 |
+| B-3 | A `_ =>` arm in a policy match denies. Prefer no fallthrough at all. | proposed | `clippy:wildcard_enum_match_arm (policy crates)` — proposed | `661606a9` |
+| B-4 | No `unwrap_or` / `unwrap_or_default` on an operand that decides a gate or a permission. | proposed | `dylint:unwrap_or-on-decision` — proposed | `79604ae4`, `61c0b1dd` |
+| B-5 | A declaration with no consumer is a defect. | proposed | `dylint:declaration-without-consumer (via E-1)` — proposed | `4401ab61`, `3242ebf0`, gatehouse F-16 |
+| B-6 | A TLS client that does not check the hostname checks the identity instead. | wired | `clippy.toml` disallowed-methods: `reqwest::ClientBuilder::danger_accept_invalid_hostnames`, `reqwest::ClientBuilder::danger_accept_invalid_certs`, `reqwest::ClientBuilder::tls_danger_accept_invalid_hostnames`, `reqwest::ClientBuilder::tls_danger_accept_invalid_certs`, `reqwest::blocking::ClientBuilder::danger_accept_invalid_hostnames`, `reqwest::blocking::ClientBuilder::danger_accept_invalid_certs`, `reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_hostnames`, `reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_certs` |  |
+| C-1 | A type that names evidence has a private constructor. | wired | `clippy.toml` disallowed-methods: `std::mem::transmute` (part: the transmute escape hatch; constructor privacy itself is review) | `60c22053` (rationale) |
+| C-2 | Evidence is minted by the thing that checks, never by the caller. | review |  | `023b7c7f`, `61c0b1dd` |
+| C-3 | A capability is indexed by what it authorizes. | review |  | `e080c4d7`, `f8b06284` |
+| C-4 | A one-shot right is taken by value. A `&` on a consuming parameter is the bug. | wired | `dylint:nucleus-mediation-lint:MEDIATED` (part: by-value Authority at the sealed effect boundary (MEDIATED_CRATES)); `dylint:authority_by_reference` (part: a & on an affine type away from an effect boundary) — proposed | `f7f9719b` |
+| C-5 | Capability and authority types are `!Clone`, `!Copy`, `#[must_use]`. | wired | `clippy.toml` disallowed-methods: `std::vec::Vec::leak` (part: the leak escape hatch); `dylint:capability-derive-list` (part: the !Clone/!Copy/#[must_use] derive list) — proposed |  |
+| C-6 | Two witnesses that must both hold need an operator that conjoins them. | review |  | `60c22053` (rationale) |
+| D-1 | An ordering invariant is a value, not source-line adjacency. | review |  | `5b6d0a8d`, `ef54df79` |
+| D-2 | A safety-critical construction sequence is not replicated per call site. | proposed | `dylint:unhardened_spawn` — proposed | `a346ab27`, `f1aac68e` |
+| D-3 | A `compile_fail` doctest is not a substitute for a type. | review |  | `5b6d0a8d` |
+| E-1 | No `..` in a record pattern on a delegation or policy path. | wired | `dylint:nucleus-rest-pattern-lint:REST_PATTERN_ON_POLICY_PATH` | `60c22053` (rationale) |
+| E-2 | A policy enum is matched exhaustively. A new variant must break the build. | proposed | `clippy:wildcard_enum_match_arm (scoped)` — proposed | `a17fa16f` |
+| E-3 | Three or more components means named fields, never a positional tuple. | review |  | gatehouse F-34 |
+| F-1 | Serialization is derived, never hand-written. | wired | `dylint:nucleus-preimage-lint:DEBUG_FORMAT_IN_PREIMAGE` (part: a human-readable format (Debug, Display) reaching a hash or signature preimage) | gatehouse `b2ded50` |
+| F-2 | Config is one `Deserialize` struct and a loop over the parsed collection. | mandate | `mandate:CLAUDE.md:gates-are-Rust` (part: gate parsers are Rust; new Rust parsers are review) | `3ba99eb9`, gatehouse F-20 |
+| F-3 | A count, width or arity is never restated as a literal beside the thing it counts. | review |  | gatehouse F-13, gatehouse F-43 |
+| F-4 | One algorithm, generic. Never N monomorphic copies. | review |  | gatehouse `fafe910` |
+| G-1 | If a fact is written twice, delete one. A parity test is not a fix. | wired | `clippy.toml` disallowed-methods: `std::fs::OpenOptions::append`, `tokio::fs::OpenOptions::append` (part: record logs have one writer (nucleus-jsonl)); `clippy.toml` disallowed-methods: `serde_saphyr::from_str`, `serde_saphyr::from_str_with_options`, `serde_saphyr::from_slice`, `serde_saphyr::from_slice_with_options`, `serde_saphyr::from_reader`, `serde_saphyr::from_reader_with_options`, `serde_saphyr::from_multiple`, `serde_saphyr::from_multiple_with_options`, `serde_saphyr::from_slice_multiple`, `serde_saphyr::from_slice_multiple_with_options`, `serde_saphyr::read`, `serde_saphyr::read_with_options`, `serde_saphyr::to_string`, `serde_saphyr::to_string_with_options`, `serde_saphyr::to_string_multiple`, `serde_saphyr::to_string_multiple_with_options`, `serde_saphyr::to_fmt_writer`, `serde_saphyr::to_fmt_writer_with_options`, `serde_saphyr::to_io_writer`, `serde_saphyr::to_io_writer_with_options`, `serde_yaml::from_str`, `serde_yaml::from_slice`, `serde_yaml::from_reader`, `serde_yaml::from_value`, `serde_yaml::to_string`, `serde_yaml::to_writer`, `serde_yaml::to_value` (part: one YAML reader and writer (nucleus_yaml)) | `3f850437` |
+| G-2 | Where a second copy is unavoidable, the gate lives at the declaration. | wired | `xtask:clippy-config` (part: a crate clippy.toml shadowing the root's entries) | gatehouse `ccc5c46`, gatehouse F-21 |
+| G-3 | A collection carrying a uniqueness law is a keyed map, not a `Vec`. | review |  | `1702fb12` |
+| H-1 | No `std::env::set_var` or `std::env::remove_var`. | wired | `clippy.toml` disallowed-methods: `std::env::set_var`, `std::env::remove_var` | `7caaa1a8` |
+| H-2 | A client that performs an effect is constructible only from a witness. | wired | `dylint:nucleus-egress-lint:UNPOLICED_HTTP_CLIENT` (part: HTTP clients; other effect surfaces not yet) | `57920b28`, `8ef8d45d` |
+| H-3 | A single-writer resource is owned, not named by path. | review |  | `af52442c` |
+| I-1 | Every gate is driven red on the real defect before it ships. | wired | `xtask:gates-can-fail:UNCOVERED_CEILING` (part: nucleus probe population ceiling) | `f7f9719b`, gatehouse F-12 |
+| I-2 | Parse to a type. A string compared to a string is not a check. | review |  | gatehouse `e8f7582` |
+| I-3 | The error path and the allow path may not share an exit status. | review |  | `8ec7bf72`, `74ba4c8b` |
+| I-4 | An ordering question is not answered by substring matching. | review |  | `b797ec00` |
+<!-- concord:end rule-index -->
+
 ## Enforcement
+
+> **Updated 2026-11-22.** The counts and the wiring described below are as measured on
+> 2026-09-11. Since then `observed` was wired (`87c8abaa4`), `rest-pattern` (`cff5ad3db`) and
+> `preimage` (`0dd26746e`) were added, the Dylint job became a required check (`7d8237464`), and
+> `cargo xtask clippy-config` is run by CI. `guarantee` is still wired to nothing. The generated
+> rule index above is the current record; this section is the history of how it got there.
 
 Three tiers, in descending order of preference. The tier is named on every rule above
 so that "review" is on the record as a gap rather than mistaken for coverage.

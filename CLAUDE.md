@@ -158,7 +158,8 @@ is an `if`, a count, or a pipeline whose status matters, it is Rust.
 
 ## Mandate: make the defect unwritable
 
-**`docs/adr/0007-make-the-defect-unwritable.md` is thirty-nine rules, each derived from a defect
+**`docs/adr/0007-make-the-defect-unwritable.md` is a set of rules (its generated rule index
+counts them; this file does not restate the count, per F-3), each derived from a defect
 this repository shipped and fixed. New Rust follows them; existing Rust follows them as each file
 is touched. Cite the rule id (`C-4`, `E-1`, …) in review.**
 
