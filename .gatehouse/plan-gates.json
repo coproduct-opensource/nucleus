@@ -29,7 +29,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -105,7 +105,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -285,7 +285,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -463,7 +463,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -603,7 +603,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -706,7 +706,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -888,7 +888,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -1164,7 +1164,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -1377,7 +1377,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -1829,7 +1829,7 @@
         "platform": "linux/arm64"
       },
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
         "platform": "linux/amd64"
       }
     ],
@@ -1933,6 +1933,68 @@
       "cargo@1.96.1",
       "rustc@1.96.1",
       "git@2.39.5"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 15000,
+      "exec": "scoped",
+      "fs_read": [
+        "**"
+      ],
+      "fs_write": [],
+      "mem_mb": 2048,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 15000
+    },
+    "cmd": [],
+    "disk_mb": 4096,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "exclude": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 1701,
+    "mem_mb": 2048,
+    "name": "concord",
+    "outputs": [],
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/arm64",
+    "reads": [],
+    "replaces": [
+      "ADR 0007 agrees with what enforces it, both directions"
+    ],
+    "scope": [
+      "**"
+    ],
+    "seeds": [],
+    "steps": [
+      {
+        "args": [
+          "gaps",
+          "--tree",
+          "."
+        ],
+        "loopback": 0,
+        "program": "concord",
+        "reads": [
+          "**"
+        ],
+        "uid": 0,
+        "writes": []
+      }
+    ],
+    "timeout_ms": 15000,
+    "tools": [
+      "concord@0.0.1"
     ]
   }
 ]

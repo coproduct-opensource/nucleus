@@ -1,0 +1,66 @@
+{
+  "scope": {
+    "include": [
+      "**"
+    ],
+    "exclude": [],
+    "external": [],
+    "git_history": true
+  },
+  "env": {
+    "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+    "platform": "linux/arm64",
+    "toolchains": {
+      "rust": "1.96.1"
+    },
+    "env_vars": {},
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:16adf89bcb4aedc98b4e8a9a46569fa6d9b5b2626cd5cd1ab7f602ec551402a8"
+      }
+    ]
+  },
+  "cap": {
+    "net": "none",
+    "fs_read": [
+      "**"
+    ],
+    "fs_write": [],
+    "exec": "scoped",
+    "wall_ms": 15000,
+    "cpu_ms": 15000,
+    "mem_mb": 2048,
+    "secrets": []
+  },
+  "cmd": [],
+  "steps": [
+    {
+      "program": "concord",
+      "args": [
+        "gaps",
+        "--tree",
+        "."
+      ],
+      "reads": [
+        "**"
+      ]
+    }
+  ],
+  "tools": [
+    "concord@0.0.1"
+  ],
+  "cwd": "",
+  "timeout_s": 15,
+  "outputs": [],
+  "resources": {
+    "cpus": 2,
+    "mem_mb": 2048,
+    "disk_mb": 4096
+  },
+  "falsifier": null
+}
