@@ -518,6 +518,10 @@ pub fn perturb_allowlist_pin(_: &Path, t: &str) -> Perturbed {
     ok(awk_replace(t, r"^mediation/net=", "mediation/net=255").0)
 }
 
+pub fn perturb_clippy_config_drop_root_entry(_: &Path, t: &str) -> Perturbed {
+    ok(sed_d(t, r#"path = "std::mem::transmute""#))
+}
+
 pub fn perturb_push_auth_strip(_: &Path, t: &str) -> Perturbed {
     ok(sed_d(t, r"git remote set-url origin"))
 }

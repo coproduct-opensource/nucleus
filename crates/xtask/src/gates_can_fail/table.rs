@@ -198,6 +198,14 @@ pub fn probes() -> Vec<Probe> {
             desc: "an allowlist grown past its pinned size",
             perturb: pert!(perturb_allowlist_pin),
         },
+        // ADR 0007 G-2: the shadow 886e0eef2 closed, re-opened in the crate whose config
+        // dropped C-1's entry before that commit.
+        Probe {
+            family: xtask("clippy-config"),
+            target: "crates/nucleus-tool-proxy/clippy.toml",
+            desc: "a crate-level clippy.toml that drops a root entry",
+            perturb: pert!(perturb_clippy_config_drop_root_entry),
+        },
         // `--parity` is the mode that checks the Rust harness implements every gate its shell
         // scripts announce. A mode nothing probes is a gate that cannot fail.
         Probe {
