@@ -31,7 +31,7 @@ jobs:
       # restate every root entry or that entry is not enforced in the crate. This gate existed
       # (886e0eef2) and nothing ran it; a completeness check over the ADR reported it unwired.
       - name: Every crate-level clippy.toml carries the root's entries
-        run: cargo xtask clippy-config
+        run: cargo run -q -p xtask -- clippy-config
 
   # The gate's own falsifier. `check-gates-can-fail.sh` requires every ci/*.sh
   # gate to prove it can go red; this one cannot be probed there because its

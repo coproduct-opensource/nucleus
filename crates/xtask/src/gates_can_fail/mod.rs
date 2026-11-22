@@ -1492,7 +1492,8 @@ mod tests {
         let probes = table::probes();
         assert_eq!(
             probes.len(),
-            65,
+            // 66: `xtask clippy-config` (ADR 0007 G-2), 2026-11-22.
+            66,
             "the probe count is part of the accounting line"
         );
         let shell = probes
