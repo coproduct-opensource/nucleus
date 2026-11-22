@@ -673,9 +673,14 @@ population_floor = 23
 # suggestions whose forms Aeneas cannot translate (`RangeInclusive::contains`,
 # `Vec::is_empty`, `Option::map`'s closure) or that the crate's no-credential scan
 # forbids, under nine reasoned #[expect]s. 50/155 = 32.25%; both pins follow the tree.
-floor_bp = 3225
+# 2026-11-21 (#3569, zero static secrets step 1): deleting the tool-proxy's approval HMAC
+# tier removed two undischarged #[allow(dead_code)]s on its AuthConfig drand accessors
+# with the code they excused (155 -> 153). As with #3419, the ratio rises because the
+# denominator shrank, not because anything was discharged; pinned at the measurement.
+# 50/153 = 32.67%.
+floor_bp = 3267
 floor_set = "measurement"
-population_floor = 155
+population_floor = 153
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
