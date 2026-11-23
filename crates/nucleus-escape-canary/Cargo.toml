@@ -17,4 +17,4 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["mount", "fs", "ptrace", "socket", "time", "net"] }
+nix = { version = "0.32", default-features = false, features = ["mount", "fs", "ptrace", "socket", "time", "net"] }

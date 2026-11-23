@@ -199,7 +199,7 @@ anyhow = "1.0"
 # NOT drag in a second ed25519-dalek (v2) / sha2 (0.10) line — letting the whole
 # workspace converge on ed25519-dalek 3 + sha2 0.11. Supports the full alg set
 # (RS/PS/ES/EdDSA) we verify. See docs/PROOFS.md and scripts/check-dep-ceiling.sh.
-jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 async-trait = "0.1"
 
 # Async runtime
@@ -232,7 +232,7 @@ ring = "0.17"
 # creditworthiness credit ledger behind its `persist` feature). `4` floats to
 # 4.1.0, which is ALREADY resolved transitively (via the iroh-blobs/rcgen
 # neighborhood), so this unifies on the existing version with zero new crates.
-redb = "4"
+redb = "5"
 
 # TLS
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
