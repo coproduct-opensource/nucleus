@@ -10,7 +10,7 @@
     "git_history": true
   },
   "env": {
-    "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+    "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
     "platform": "linux/arm64",
     "toolchains": {
       "rust": "1.96.1"
@@ -19,7 +19,7 @@
     "pins": [
       {
         "platform": "linux/arm64",
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4"
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95"
       },
       {
         "platform": "linux/amd64",
