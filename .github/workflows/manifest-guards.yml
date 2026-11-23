@@ -100,6 +100,13 @@ jobs:
       # The pin is currently 404 commits old and matches; nothing was keeping it that way.
       - name: A SHA of this repo pinned by this repo still matches the tree
         run: cargo run -q -p xtask -- self-pin
+      # A Cargo.lock is derived from the manifests in its path closure, and this repository keeps
+      # twenty-one of them. nucleus #3574 (35 dependency bumps) moved a shared requirement and
+      # only the root lock: all ten gatehouse gates then failed at input preparation, exit 65,
+      # `lockfile_needs_update:sdks/verifier-js/Cargo.lock`. Main itself carried two stale locks
+      # for weeks because CI built those crates without `--locked`. Resolves, never builds.
+      - name: Every Cargo.lock is the resolution of its manifests
+        run: cargo run -q -p xtask -- lockfiles
       # The same shape as the two guards above, applied to the pins that had no guard.
       # The elan release and its SHA-256 are copied into 13 workflow steps; AENEAS_RELEASE
       # and CHARON_NIGHTLY into 6 each; the first-party lean-toolchain into 9 files. All

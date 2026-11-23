@@ -277,6 +277,22 @@ enum Command {
     /// ADR 0007 wired were not enforced in `nucleus-tool-proxy`, which holds the HTTP
     /// and MCP effect boundary. Decided from committed files alone.
     ClippyConfig,
+    /// Every tracked `Cargo.lock` is the resolution of its manifests (`cargo metadata --locked`,
+    /// which builds nothing). nucleus #3574's ten gates all failed at input preparation on a lock
+    /// a dependency bump left behind; `--fix` regenerates each stale lock and asks again.
+    Lockfiles {
+        /// Regenerate stale locks (cargo's minimal update), then require them fresh.
+        #[arg(long)]
+        fix: bool,
+        /// The checkout to look at (default: the current directory). The Dependabot fixer runs
+        /// main's xtask against the pull request's checkout, so no PR code is built with a token.
+        #[arg(long)]
+        root: Option<std::path::PathBuf>,
+        /// After `--fix`, commit the regenerated locks and push them to this branch with
+        /// `LOCKFILES_TOKEN` (a token whose push triggers CI). Without it nothing is pushed.
+        #[arg(long, requires = "fix")]
+        push: Option<String>,
+    },
     /// The committed `POOLS` default in ci/fly-runner/manager.toml must be a
     /// configuration the manager accepts, checked with the manager's own validator.
     FlyPools,
@@ -689,6 +705,7 @@ mod life;
 mod line_ratchet;
 mod live_boot_evidence;
 mod local_coverage;
+mod lockfiles;
 mod mediate;
 mod microvm_host_context;
 mod mutants_gate;
@@ -849,6 +866,28 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::Lockfiles { fix, root, push } => {
+            let root = match root {
+                Some(r) => r,
+                None => std::env::current_dir()?,
+            };
+            let code = lockfiles::run(&root, fix)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            if let Some(branch) = push {
+                match lockfiles::push(&root, &branch)? {
+                    lockfiles::Pushed::Nothing => println!("every lockfile was already fresh"),
+                    lockfiles::Pushed::Sent => println!("pushed the regenerated locks to {branch}"),
+                    lockfiles::Pushed::Withheld => println!(
+                        "::notice::stale lockfiles regenerated but NOT pushed: no LOCKFILES_TOKEN \
+                         (a GITHUB_TOKEN push triggers no CI). Run `cargo xtask lockfiles --fix` \
+                         and commit the result."
+                    ),
+                }
+            }
+            Ok(())
+        }
         Command::AgentBuilder { action } => agent_builder::run(action),
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),

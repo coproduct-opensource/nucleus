@@ -1493,7 +1493,8 @@ mod tests {
         assert_eq!(
             probes.len(),
             // 66: `xtask clippy-config` (ADR 0007 G-2), 2026-11-22.
-            66,
+            // 67: `xtask lockfiles` (Goal 2, derived drift), 2026-11-23.
+            67,
             "the probe count is part of the accounting line"
         );
         let shell = probes
