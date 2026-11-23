@@ -25,7 +25,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -101,7 +101,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -281,7 +281,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -459,7 +459,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -599,7 +599,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -702,7 +702,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -884,7 +884,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -1160,7 +1160,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -1373,7 +1373,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -1694,103 +1694,6 @@
   },
   {
     "cap": {
-      "cpu_ms": 3600000,
-      "exec": "scoped",
-      "fs_read": [
-        "crates/portcullis-core/lean/*.lean",
-        "crates/portcullis-core/lean/lean-toolchain",
-        "crates/portcullis-core/lean/lake-manifest.json",
-        "crates/portcullis-core/lean/generated/**",
-        "crates/portcullis-core/lean/generated-attenuation/**",
-        "crates/portcullis-core/lean/generated-cap-quantale/**",
-        "crates/portcullis-core/lean/generated-certchain/**",
-        "crates/portcullis-core/lean/generated-channel/**",
-        "crates/portcullis-core/lean/generated-credential/**",
-        "crates/portcullis-core/lean/generated-decide/**",
-        "crates/portcullis-core/lean/generated-declass/**",
-        "crates/portcullis-core/lean/generated-egress/**",
-        "crates/portcullis-core/lean/generated-identity/**",
-        "crates/portcullis-core/lean/generated-ifc/**",
-        "crates/portcullis-core/lean/generated-mediation/**"
-      ],
-      "fs_write": [
-        "crates/portcullis-core/lean/.lake/**"
-      ],
-      "mem_mb": 16384,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 3600000
-    },
-    "cmd": [],
-    "disk_mb": 16384,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "exclude": [],
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 145000,
-    "mem_mb": 8192,
-    "name": "lean-build",
-    "outputs": [],
-    "pins": [],
-    "platform": "linux/arm64",
-    "reads": [],
-    "replaces": [],
-    "scope": [
-      "crates/portcullis-core/lean/*.lean",
-      "crates/portcullis-core/lean/lean-toolchain",
-      "crates/portcullis-core/lean/lake-manifest.json",
-      "crates/portcullis-core/lean/generated/**",
-      "crates/portcullis-core/lean/generated-attenuation/**",
-      "crates/portcullis-core/lean/generated-cap-quantale/**",
-      "crates/portcullis-core/lean/generated-certchain/**",
-      "crates/portcullis-core/lean/generated-channel/**",
-      "crates/portcullis-core/lean/generated-credential/**",
-      "crates/portcullis-core/lean/generated-decide/**",
-      "crates/portcullis-core/lean/generated-declass/**",
-      "crates/portcullis-core/lean/generated-egress/**",
-      "crates/portcullis-core/lean/generated-identity/**",
-      "crates/portcullis-core/lean/generated-ifc/**",
-      "crates/portcullis-core/lean/generated-mediation/**"
-    ],
-    "seeds": [],
-    "steps": [
-      {
-        "args": [
-          "build",
-          "PortcullisCoreBridge"
-        ],
-        "loopback": 0,
-        "program": "lake",
-        "reads": [
-          "crates/portcullis-core/lean/*.lean",
-          "crates/portcullis-core/lean/lean-toolchain",
-          "crates/portcullis-core/lean/lake-manifest.json",
-          "crates/portcullis-core/lean/generated/**",
-          "crates/portcullis-core/lean/generated-attenuation/**",
-          "crates/portcullis-core/lean/generated-cap-quantale/**",
-          "crates/portcullis-core/lean/generated-certchain/**",
-          "crates/portcullis-core/lean/generated-channel/**",
-          "crates/portcullis-core/lean/generated-credential/**",
-          "crates/portcullis-core/lean/generated-decide/**",
-          "crates/portcullis-core/lean/generated-declass/**",
-          "crates/portcullis-core/lean/generated-egress/**",
-          "crates/portcullis-core/lean/generated-identity/**",
-          "crates/portcullis-core/lean/generated-ifc/**",
-          "crates/portcullis-core/lean/generated-mediation/**"
-        ],
-        "uid": 0,
-        "writes": [
-          "crates/portcullis-core/lean/.lake/**"
-        ]
-      }
-    ],
-    "timeout_ms": 400000,
-    "tools": [
-      "lake@4.30.0",
-      "lean@4.30.0"
-    ]
-  },
-  {
-    "cap": {
       "cpu_ms": 1200000,
       "exec": "scoped",
       "fs_read": [
@@ -1825,7 +1728,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
@@ -1959,7 +1862,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
+        "image": "gatehouse/nucleus-gate-tools@sha256:5ddf312fc2864c1d8c4287173a9aeaee3a52c45bac14acfbeee960c35778fa95",
         "platform": "linux/arm64"
       },
       {
