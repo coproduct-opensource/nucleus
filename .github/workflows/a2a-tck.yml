@@ -71,7 +71,7 @@ jobs:
           cache-workspaces: examples/a2a-server
       - name: Build the transport-conformance target
         working-directory: examples/a2a-server
-        run: cargo build --bin tck-target
+        run: cargo build --locked --bin tck-target
       - name: Start the target on :9999
         working-directory: examples/a2a-server
         run: |

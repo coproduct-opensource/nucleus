@@ -206,6 +206,14 @@ pub fn probes() -> Vec<Probe> {
             desc: "a crate-level clippy.toml that drops a root entry",
             perturb: pert!(perturb_clippy_config_drop_root_entry),
         },
+        // Goal 2 (derived drift): nucleus #3574's shape -- a path package's lock entry no longer
+        // records a dependency its manifest requires, in the second workspace a bump left behind.
+        Probe {
+            family: xtask("lockfiles"),
+            target: "sdks/verifier-js/Cargo.lock",
+            desc: "a lockfile a manifest change left behind",
+            perturb: pert!(perturb_lockfiles_drop_resolved_dependency),
+        },
         // `--parity` is the mode that checks the Rust harness implements every gate its shell
         // scripts announce. A mode nothing probes is a gate that cannot fail.
         Probe {

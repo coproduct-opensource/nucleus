@@ -884,8 +884,8 @@ jobs:
         working-directory: examples/a2a-server
         run: |
           cargo fmt --all -- --check
-          cargo clippy --all-targets --all-features -- -D warnings
-          cargo test --all-features
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
 
   musl-check:
     name: musl type-check (nucleus-node, nucleus-tool-proxy)
