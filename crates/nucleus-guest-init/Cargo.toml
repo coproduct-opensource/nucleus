@@ -21,7 +21,7 @@ path = "src/main.rs"
 ci-podlist-probe = []
 
 [dependencies]
-nix = { version = "0.31", default-features = false, features = ["mount", "fs", "net"] }
+nix = { version = "0.32", default-features = false, features = ["mount", "fs", "net"] }
 vsock = "0.5"
 serde = { workspace = true }
 serde_json = { workspace = true }

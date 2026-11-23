@@ -19,7 +19,7 @@ nucleus-spec = { path = "../nucleus-spec" }
 [dev-dependencies]
 # The pod's real egress ledger, metering the composed test's stand-in host.
 portcullis = { path = "../portcullis", default-features = false }
-nix = { version = "0.31", default-features = false, features = ["process"] }
+nix = { version = "0.32", default-features = false, features = ["process"] }
 tempfile = { workspace = true }
 tokio-stream = "0.1"
 tokio = { workspace = true, features = ["io-util"] }

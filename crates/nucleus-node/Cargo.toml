@@ -55,7 +55,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # RFC 8785 JCS, for the snapshot derivation name. The same crate nucleus-spec
 # uses for `program_digest` — one canonical form, not a second one.
-serde_json_canonicalizer = "0.3"
+serde_json_canonicalizer = "0.4"
 ipnet = "2.12"
 
 reqwest = { workspace = true, features = ["json", "rustls-no-provider", "stream"] }
@@ -139,7 +139,7 @@ libc = "0.2"
 # Namespace-local packet admission; async readiness and close-on-exec ownership.
 netlink-sys = "0.9.0"
 # `vmm_process`: waitid(P_PIDFD) and a zero-timeout poll on the jailed VMM's pidfd.
-nix = { version = "0.31.3", features = ["sched", "process", "signal", "poll"] }
+nix = { version = "0.32.0", features = ["sched", "process", "signal", "poll"] }
 # `vmm_process`: pidfd_open and pidfd_send_signal as safe calls; neither std nor nix has them.
 # Already in the tree (tempfile, cap-std), so no new crate.
 rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
