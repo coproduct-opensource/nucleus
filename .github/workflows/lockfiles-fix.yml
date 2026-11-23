@@ -1,0 +1,58 @@
+name: Lockfiles fix (Dependabot)
+
+# A dependency bump that moves a shared requirement must move every lockfile that resolves it.
+# Dependabot updates the root Cargo.lock only; nucleus keeps twenty-one, so its bumps left the
+# others stale and every gatehouse gate then failed at input preparation (nucleus #3574, exit 65,
+# `lockfile_needs_update:sdks/verifier-js/Cargo.lock`). This job regenerates them on the
+# Dependabot branch, so the bump arrives with the locks it needs instead of ten red gates.
+#
+# Trust: the fixer is MAIN's xtask, built in a checkout that holds no credential, and it only
+# resolves the pull request's manifests (`cargo metadata`, which runs no build script). Nothing
+# from the pull request is compiled while a token is present.
+#
+# The push needs LOCKFILES_TOKEN (a Dependabot secret): a GITHUB_TOKEN push triggers no
+# `pull_request` workflow, so the new head would carry no required checks. WITHOUT the secret
+# this job pushes nothing, says so as a notice, and exits 0 -- the stale lock still reds Manifest
+# Guards on the pull request itself.
+
+on: pull_request
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    name: Regenerate the lockfiles a dependency bump left behind
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The same guard as dependabot-automerge.yml: the PR author, and no forks.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == github.event.pull_request.head.repo.full_name
+    steps:
+      - name: Main's xtask, from a checkout with no credential
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: false
+          rustflags: ""
+      - name: Build main's xtask
+        working-directory: base
+        run: cargo build --locked -q -p xtask
+      - name: The pull request's checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          path: head
+          persist-credentials: false
+      - name: Regenerate stale lockfiles and push them to the Dependabot branch
+        env:
+          LOCKFILES_TOKEN: ${{ secrets.LOCKFILES_TOKEN }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: base/target/debug/xtask lockfiles --fix --root head --push "$BRANCH"
